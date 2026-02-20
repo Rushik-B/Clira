@@ -47,6 +47,7 @@ import { encryptEmailContent, decryptEmailContent } from '@/lib/security/emailCr
 // AI queue label removed: no longer creating/applying a dedicated Gmail label
 import { normalizeGmailLabelColor } from '@/lib/gmail/labelColors';
 import { triggerReminderNotification, markReminderMissed } from '@/lib/services/reminderNotificationService';
+import { isTelegramEnabled, startTelegramMonitor, stopTelegramMonitor, processTelegramMessage } from '@/lib/services/telegram';
 
 console.log('🚀 Background Worker process started...');
 console.log('🔧 Environment variables loaded:');
@@ -60,6 +61,7 @@ console.log(`  - NODE_ENV: ${process.env.NODE_ENV}`);
 // Track active workers for graceful shutdown
 const workers: Worker[] = [];
 let heartbeatInterval: NodeJS.Timeout | null = null;
+let telegramMonitorStarted = false;
 
 // --- Onboarding Worker ---
 // IMPORTANT: Queue name must match the producer in queues.ts ('user-onboarding')
@@ -1107,6 +1109,12 @@ async function gracefulShutdown(signal: string) {
       heartbeatInterval = null;
     }
 
+    if (telegramMonitorStarted) {
+      console.log('📨 Stopping Telegram monitor...');
+      await stopTelegramMonitor();
+      telegramMonitorStarted = false;
+    }
+
     // Close all workers
     console.log('📦 Closing all workers...');
     await Promise.all(workers.map(worker => worker.close()));
@@ -1172,6 +1180,21 @@ void writeSupermemoryWorkerHeartbeat();
 heartbeatInterval = setInterval(() => {
   void writeSupermemoryWorkerHeartbeat();
 }, 30_000);
+
+if (isTelegramEnabled()) {
+  startTelegramMonitor({
+    onMessage: processTelegramMessage,
+  })
+    .then(() => {
+      telegramMonitorStarted = true;
+      console.log('📨 Telegram long-polling monitor started in worker process');
+    })
+    .catch((error) => {
+      console.error('❌ Failed to start Telegram monitor:', error);
+    });
+} else {
+  console.log('📨 Telegram monitor disabled (missing token or TELEGRAM_ENABLED=false)');
+}
 
 console.log('🧠 Supermemory bootstrap worker is ready and listening for supermemory-bootstrap jobs...');
 console.log('🎯 Background workers are ready and listening for jobs...');
