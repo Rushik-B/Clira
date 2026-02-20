@@ -5,10 +5,10 @@ import { AccountPrivacyPage } from './settings/AccountPrivacyPage';
 import { AssistantRepliesPage } from './settings/AssistantRepliesPage';
 import { FoldersLabelsPage } from './settings/FoldersLabelsPage';
 import { MailboxConnectionsPage } from './settings/MailboxConnectionsPage';
-import { WhatsAppIntegrationPage } from './settings/WhatsAppIntegrationPage';
+import { TextChannelsIntegrationPage } from './settings/TextChannelsIntegrationPage';
 
 interface SettingsPageProps {
-  activeSection?: 'account-privacy' | 'assistant-replies' | 'folders-labels' | 'whatsapp-integration' | 'inboxes';
+  activeSection?: 'account-privacy' | 'assistant-replies' | 'folders-labels' | 'text-channels' | 'inboxes';
 }
 
 export const SettingsPage: React.FC<SettingsPageProps> = ({ activeSection = 'account-privacy' }) => {
@@ -18,8 +18,8 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ activeSection = 'acc
       return <AssistantRepliesPage />;
     case 'folders-labels':
       return <FoldersLabelsPage />;
-    case 'whatsapp-integration':
-      return <WhatsAppIntegrationPage />;
+    case 'text-channels':
+      return <TextChannelsIntegrationPage />;
     case 'inboxes':
       return <MailboxConnectionsPage />;
     case 'account-privacy':

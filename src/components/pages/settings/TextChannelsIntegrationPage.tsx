@@ -27,6 +27,26 @@ interface TextingSettings {
   twilioVerified: boolean;
 }
 
+type NotificationDeliveryChannel = 'WHATSAPP' | 'TELEGRAM' | 'BOTH';
+
+interface TelegramLinkSettings {
+  id: string;
+  telegramUserId: string;
+  chatId: string;
+  telegramUsername: string | null;
+  telegramFirstName: string | null;
+  linkedAt: string;
+  lastSeenAt: string | null;
+  updatedAt?: string;
+}
+
+interface TelegramSettingsState {
+  telegramConfigured: boolean;
+  telegramEnabled: boolean;
+  botUsername: string | null;
+  links: TelegramLinkSettings[];
+}
+
 interface CountryOption {
   code: string;
   name: string;
@@ -97,16 +117,27 @@ const isValidPhoneInput = (countryCode: string, nationalNumber: string) => {
 };
 
 /**
- * Texting Integration Settings Page
- * Allows users to configure the number they text from.
+ * Text Channel Integration Settings Page
+ * Configures SMS, WhatsApp, and Telegram messaging channels.
  */
-export const WhatsAppIntegrationPage: React.FC = () => {
+export const TextChannelsIntegrationPage: React.FC = () => {
   const [settings, setSettings] = useState<TextingSettings>({
     whatsappPhoneNumber: null,
     whatsappVerified: false,
     twilioPhoneNumber: null,
     twilioVerified: false,
   });
+  const [telegramSettings, setTelegramSettings] = useState<TelegramSettingsState>({
+    telegramConfigured: false,
+    telegramEnabled: false,
+    botUsername: null,
+    links: [],
+  });
+  const [notificationDeliveryChannel, setNotificationDeliveryChannel] =
+    useState<NotificationDeliveryChannel>('BOTH');
+  const [savedNotificationDeliveryChannel, setSavedNotificationDeliveryChannel] =
+    useState<NotificationDeliveryChannel>('BOTH');
+  const [pairingCodeInput, setPairingCodeInput] = useState('');
   const [smsCountryCode, setSmsCountryCode] = useState(DEFAULT_COUNTRY_CODE);
   const [smsNumberInput, setSmsNumberInput] = useState('');
   const [whatsappCountryCode, setWhatsappCountryCode] = useState(DEFAULT_COUNTRY_CODE);
@@ -114,6 +145,9 @@ export const WhatsAppIntegrationPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [smsSaving, setSmsSaving] = useState(false);
   const [whatsappSaving, setWhatsappSaving] = useState(false);
+  const [deliveryChannelSaving, setDeliveryChannelSaving] = useState(false);
+  const [telegramPairingSaving, setTelegramPairingSaving] = useState(false);
+  const [telegramUnlinking, setTelegramUnlinking] = useState(false);
   const [successMessage, setSuccessMessage] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle');
@@ -122,13 +156,17 @@ export const WhatsAppIntegrationPage: React.FC = () => {
   useEffect(() => {
     const fetchSettings = async () => {
       try {
-        const [whatsappResponse, smsResponse] = await Promise.all([
+        const [whatsappResponse, smsResponse, telegramResponse, deliveryPreferenceResponse] = await Promise.all([
           fetch('/api/settings/whatsapp'),
           fetch('/api/settings/twilio'),
+          fetch('/api/settings/telegram'),
+          fetch('/api/settings/messaging-channels'),
         ]);
 
         const whatsappData = await whatsappResponse.json();
         const smsData = await smsResponse.json();
+        const telegramData = await telegramResponse.json();
+        const deliveryPreferenceData = await deliveryPreferenceResponse.json();
 
         if (!whatsappResponse.ok || !whatsappData.success) {
           throw new Error('Failed to load WhatsApp settings');
@@ -136,6 +174,14 @@ export const WhatsAppIntegrationPage: React.FC = () => {
 
         if (!smsResponse.ok || !smsData.success) {
           throw new Error('Failed to load SMS settings');
+        }
+
+        if (!telegramResponse.ok || !telegramData.success) {
+          throw new Error('Failed to load Telegram settings');
+        }
+
+        if (!deliveryPreferenceResponse.ok || !deliveryPreferenceData.success) {
+          throw new Error('Failed to load messaging channel settings');
         }
 
         const nextSettings: TextingSettings = {
@@ -146,6 +192,20 @@ export const WhatsAppIntegrationPage: React.FC = () => {
         };
 
         setSettings(nextSettings);
+        setTelegramSettings({
+          telegramConfigured: !!telegramData.settings.telegramConfigured,
+          telegramEnabled: !!telegramData.settings.telegramEnabled,
+          botUsername: telegramData.settings.botUsername ?? null,
+          links: Array.isArray(telegramData.settings.links) ? telegramData.settings.links : [],
+        });
+
+        const selectedDeliveryChannel: NotificationDeliveryChannel =
+          deliveryPreferenceData.settings.notificationDeliveryChannel === 'WHATSAPP' ||
+          deliveryPreferenceData.settings.notificationDeliveryChannel === 'TELEGRAM'
+            ? deliveryPreferenceData.settings.notificationDeliveryChannel
+            : 'BOTH';
+        setNotificationDeliveryChannel(selectedDeliveryChannel);
+        setSavedNotificationDeliveryChannel(selectedDeliveryChannel);
 
         const parsedWhatsApp = parseE164Number(nextSettings.whatsappPhoneNumber);
         setWhatsappCountryCode(parsedWhatsApp.countryCode);
@@ -174,6 +234,14 @@ export const WhatsAppIntegrationPage: React.FC = () => {
     !isValidPhoneInput(whatsappCountryCode, whatsappNumberInput);
   const hasSmsChanges = (smsE164 || null) !== settings.twilioPhoneNumber;
   const hasWhatsAppChanges = (whatsappE164 || null) !== settings.whatsappPhoneNumber;
+  const hasDeliveryChannelChanges =
+    notificationDeliveryChannel !== savedNotificationDeliveryChannel;
+  const activeTelegramLink = telegramSettings.links[0] ?? null;
+  const hasTelegramLink = Boolean(activeTelegramLink);
+  const normalizedPairingCodeInput = pairingCodeInput
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, '');
   const isSmsConnected = !!settings.twilioPhoneNumber;
   const isWhatsAppConnected = !!settings.whatsappPhoneNumber;
   const hasWhatsAppCtaLink = WHATSAPP_CTA_URL.trim().length > 0;
@@ -317,10 +385,125 @@ export const WhatsAppIntegrationPage: React.FC = () => {
     await updateWhatsAppSettings(null);
   };
 
+  const handleSaveDeliveryChannelPreference = async () => {
+    if (!hasDeliveryChannelChanges) return;
+
+    setDeliveryChannelSaving(true);
+    setErrorMessage('');
+    setSuccessMessage('');
+
+    try {
+      const response = await fetch('/api/settings/messaging-channels', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          notificationDeliveryChannel,
+        }),
+      });
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        setErrorMessage(data.error || 'Failed to save reminder delivery channel');
+        return;
+      }
+
+      const savedChannel: NotificationDeliveryChannel =
+        data.settings?.notificationDeliveryChannel === 'WHATSAPP' ||
+        data.settings?.notificationDeliveryChannel === 'TELEGRAM'
+          ? data.settings.notificationDeliveryChannel
+          : 'BOTH';
+
+      setNotificationDeliveryChannel(savedChannel);
+      setSavedNotificationDeliveryChannel(savedChannel);
+      setSuccessMessage('Reminder and alert delivery channel updated.');
+    } catch (error) {
+      console.error('Error saving messaging channel preference:', error);
+      setErrorMessage('Failed to save reminder delivery channel');
+    } finally {
+      setDeliveryChannelSaving(false);
+    }
+  };
+
+  const handleApproveTelegramPairingCode = async () => {
+    if (normalizedPairingCodeInput.length !== 8) {
+      setErrorMessage('Pairing code must be 8 characters.');
+      return;
+    }
+
+    setTelegramPairingSaving(true);
+    setErrorMessage('');
+    setSuccessMessage('');
+
+    try {
+      const response = await fetch('/api/settings/telegram', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pairingCode: normalizedPairingCodeInput,
+        }),
+      });
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        setErrorMessage(data.error || 'Failed to link Telegram account');
+        return;
+      }
+
+      const nextLink = data.link as TelegramLinkSettings;
+      setTelegramSettings((prev) => {
+        const remaining = prev.links.filter((link) => link.id !== nextLink.id);
+        return {
+          ...prev,
+          links: [nextLink, ...remaining],
+        };
+      });
+      setPairingCodeInput('');
+      setSuccessMessage('Telegram account linked successfully.');
+    } catch (error) {
+      console.error('Error linking Telegram account:', error);
+      setErrorMessage('Failed to link Telegram account');
+    } finally {
+      setTelegramPairingSaving(false);
+    }
+  };
+
+  const handleUnlinkTelegram = async () => {
+    if (!activeTelegramLink) return;
+
+    setTelegramUnlinking(true);
+    setErrorMessage('');
+    setSuccessMessage('');
+
+    try {
+      const response = await fetch('/api/settings/telegram', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ linkId: activeTelegramLink.id }),
+      });
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        setErrorMessage(data.error || 'Failed to unlink Telegram account');
+        return;
+      }
+
+      setTelegramSettings((prev) => ({
+        ...prev,
+        links: prev.links.filter((link) => link.id !== activeTelegramLink.id),
+      }));
+      setSuccessMessage('Telegram account unlinked.');
+    } catch (error) {
+      console.error('Error unlinking Telegram account:', error);
+      setErrorMessage('Failed to unlink Telegram account');
+    } finally {
+      setTelegramUnlinking(false);
+    }
+  };
+
   return (
     <SettingsShell
       title="Text Clira"
-      subtitle="Send SMS or WhatsApp messages to your assistant for fast drafts and quick actions."
+      subtitle="Send SMS, WhatsApp, or Telegram messages to your assistant for fast drafts and quick actions."
       icon={MessageSquare}
       iconColor="text-emerald-400"
     >
@@ -624,6 +807,165 @@ export const WhatsAppIntegrationPage: React.FC = () => {
                         <span>Save</span>
                       </>
                     )}
+                  </Button>
+                </div>
+              </div>
+            )}
+          </SettingsSectionCard>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <SettingsSectionCard
+            title="Reminder Delivery Channel"
+            description="Choose where reminders and alert notifications are sent."
+            icon={<Sparkles className="w-5 h-5 text-emerald-300" />}
+          >
+            {loading ? (
+              <div className="flex items-center space-x-2 text-gray-400 text-sm py-4">
+                <Loader2 className="w-4 h-4 animate-spin" />
+                <span>Loading settings…</span>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div>
+                  <label className="text-sm font-medium text-gray-300 mb-2 block">
+                    Delivery channel
+                  </label>
+                  <select
+                    value={notificationDeliveryChannel}
+                    onChange={(event) =>
+                      setNotificationDeliveryChannel(
+                        event.target.value as NotificationDeliveryChannel,
+                      )
+                    }
+                    className="w-full h-10 rounded-md border border-gray-800 bg-black/40 px-3 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/40 focus:border-emerald-500/50"
+                  >
+                    <option value="BOTH">WhatsApp + Telegram (Default)</option>
+                    <option value="WHATSAPP">WhatsApp only</option>
+                    <option value="TELEGRAM">Telegram only</option>
+                  </select>
+                  <p className="mt-2 text-xs text-gray-500">
+                    If your selected channel is unavailable, delivery is skipped and tracked in action history.
+                  </p>
+                </div>
+
+                <div className="flex justify-end">
+                  <Button
+                    onClick={handleSaveDeliveryChannelPreference}
+                    disabled={deliveryChannelSaving || !hasDeliveryChannelChanges}
+                    size="sm"
+                    className="cursor-pointer inline-flex items-center space-x-2 bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded-xl text-sm font-medium disabled:opacity-60 disabled:cursor-not-allowed"
+                  >
+                    {deliveryChannelSaving ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <span>Saving…</span>
+                      </>
+                    ) : (
+                      <>
+                        <Save className="w-4 h-4" />
+                        <span>Save</span>
+                      </>
+                    )}
+                  </Button>
+                </div>
+              </div>
+            )}
+          </SettingsSectionCard>
+
+          <SettingsSectionCard
+            title="Telegram Integration"
+            description="Link your Telegram account using the pairing code from the bot DM."
+            icon={<MessageSquare className="w-5 h-5 text-cyan-300" />}
+          >
+            {loading ? (
+              <div className="flex items-center space-x-2 text-gray-400 text-sm py-4">
+                <Loader2 className="w-4 h-4 animate-spin" />
+                <span>Loading settings…</span>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {!telegramSettings.telegramConfigured ? (
+                  <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+                    Telegram bot token is not configured on this environment.
+                  </div>
+                ) : (
+                  <div className="rounded-xl border border-white/10 bg-black/30 px-4 py-3">
+                    <p className="text-sm text-gray-300">
+                      Bot status:{' '}
+                      <span className="font-semibold text-white">
+                        {telegramSettings.telegramEnabled ? 'Enabled' : 'Disabled'}
+                      </span>
+                    </p>
+                    <p className="mt-1 text-xs text-gray-500">
+                      {telegramSettings.botUsername
+                        ? `Bot username: @${telegramSettings.botUsername}`
+                        : 'Bot username unavailable'}
+                    </p>
+                  </div>
+                )}
+
+                <div className="rounded-xl border border-white/10 bg-black/30 px-4 py-3 space-y-2">
+                  <p className="text-sm font-medium text-white">Linked account</p>
+                  {hasTelegramLink ? (
+                    <>
+                      <p className="text-sm text-gray-300">
+                        {activeTelegramLink?.telegramUsername
+                          ? `@${activeTelegramLink.telegramUsername}`
+                          : activeTelegramLink?.telegramFirstName || 'Telegram account'}
+                      </p>
+                      <p className="text-xs text-gray-500">Chat ID: {activeTelegramLink?.chatId}</p>
+                    </>
+                  ) : (
+                    <p className="text-sm text-gray-400">No linked Telegram account yet.</p>
+                  )}
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-gray-300 block">
+                    Pairing code
+                  </label>
+                  <Input
+                    type="text"
+                    placeholder="ABCD1234"
+                    value={pairingCodeInput}
+                    maxLength={16}
+                    onChange={(event) => setPairingCodeInput(event.target.value.toUpperCase())}
+                    className="bg-black/40 border-gray-800 focus:ring-emerald-500/40 focus:border-emerald-500/50 placeholder:text-gray-500 font-mono tracking-[0.2em]"
+                  />
+                  <p className="text-xs text-gray-500">
+                    Send any message to the Telegram bot, then paste the 8-character code shown in DM.
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap gap-2 justify-end">
+                  <Button
+                    onClick={handleApproveTelegramPairingCode}
+                    disabled={
+                      telegramPairingSaving ||
+                      normalizedPairingCodeInput.length !== 8 ||
+                      !telegramSettings.telegramConfigured
+                    }
+                    size="sm"
+                    className="cursor-pointer inline-flex items-center space-x-2 bg-cyan-600 hover:bg-cyan-500 text-white px-4 py-2 rounded-xl text-sm font-medium disabled:opacity-60 disabled:cursor-not-allowed"
+                  >
+                    {telegramPairingSaving ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <span>Linking…</span>
+                      </>
+                    ) : (
+                      <span>Link Telegram</span>
+                    )}
+                  </Button>
+                  <Button
+                    onClick={handleUnlinkTelegram}
+                    disabled={telegramUnlinking || !hasTelegramLink}
+                    variant="outline"
+                    size="sm"
+                    className="cursor-pointer border-red-500/30 text-red-300 hover:bg-red-500/10 disabled:opacity-60 disabled:cursor-not-allowed"
+                  >
+                    {telegramUnlinking ? 'Unlinking…' : 'Unlink'}
                   </Button>
                 </div>
               </div>

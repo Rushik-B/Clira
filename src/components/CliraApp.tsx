@@ -21,7 +21,7 @@ import { LoaderFive } from '@/components/ui/loader';
 import { OnboardingStatusBanner } from '@/components/ui/OnboardingStatusBanner';
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary';
 
-type SettingsSection = 'account-privacy' | 'assistant-replies' | 'folders-labels' | 'whatsapp-integration' | 'inboxes';
+type SettingsSection = 'account-privacy' | 'assistant-replies' | 'folders-labels' | 'text-channels' | 'inboxes';
 
 const CliraAppContent: React.FC = () => {
   const { data: session } = useSession();
