@@ -20,7 +20,7 @@ import type { EmailData } from '@/lib/email/gmail';
 // ─────────────────────────────────────────────────────────────────────────────
 
 export type EmailRetrievalMode = 'quick' | 'deep';
-export type EmailRetrievalProfile = 'default' | 'whatsapp';
+export type EmailRetrievalProfile = 'default' | 'messaging' | 'whatsapp' | 'telegram';
 
 export type EmailRetrievalConstraints = {
   sender?: string;
@@ -161,7 +161,9 @@ const STOPWORDS = new Set([
   'would',
 ]);
 
-const RETRIEVAL_BUDGETS_BY_PROFILE: Record<EmailRetrievalProfile, Record<EmailRetrievalMode, RetrievalBudgets>> =
+type EffectiveEmailRetrievalProfile = 'default' | 'messaging';
+
+const RETRIEVAL_BUDGETS_BY_PROFILE: Record<EffectiveEmailRetrievalProfile, Record<EmailRetrievalMode, RetrievalBudgets>> =
   {
     default: {
       quick: {
@@ -185,7 +187,7 @@ const RETRIEVAL_BUDGETS_BY_PROFILE: Record<EmailRetrievalProfile, Record<EmailRe
         snippetChars: 240,
       },
     },
-    whatsapp: {
+    messaging: {
       quick: {
         maxQueries: 2,
         maxPagesPerQuery: 1,
@@ -208,6 +210,11 @@ const RETRIEVAL_BUDGETS_BY_PROFILE: Record<EmailRetrievalProfile, Record<EmailRe
       },
     },
   };
+
+function normalizeRetrievalProfile(profile: EmailRetrievalProfile | undefined): EffectiveEmailRetrievalProfile {
+  if (!profile || profile === 'default') return 'default';
+  return 'messaging';
+}
 
 const EMAIL_REGEX = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
 const QUOTED_PHRASE_REGEX = /"([^"]+)"/g;
@@ -301,7 +308,7 @@ function wrapQuoted(term: string): string {
 function buildTimeFilters(
   constraints: EmailRetrievalConstraints | undefined,
   mode: EmailRetrievalMode,
-  profile: EmailRetrievalProfile,
+  profile: EffectiveEmailRetrievalProfile,
 ): { filters: string[]; label: string } {
   const start = formatDateForGmail(constraints?.startDate);
   const end = formatDateForGmail(constraints?.endDate);
@@ -331,7 +338,7 @@ function buildTimeFilters(
   }
 
   if (mode === 'deep') {
-    if (profile === 'whatsapp') {
+    if (profile === 'messaging') {
       return {
         filters: ['newer_than:60d', 'newer_than:180d'],
         label: 'last 60/180 days',
@@ -343,7 +350,7 @@ function buildTimeFilters(
     };
   }
 
-  if (profile === 'whatsapp') {
+  if (profile === 'messaging') {
     return { filters: ['newer_than:90d'], label: 'last 90 days' };
   }
 
@@ -354,7 +361,7 @@ function buildSearchPlan(
   intent: string,
   constraints: EmailRetrievalConstraints | undefined,
   mode: EmailRetrievalMode,
-  profile: EmailRetrievalProfile,
+  profile: EffectiveEmailRetrievalProfile,
 ): SearchPlan {
   const notes: string[] = [];
   const phrases = extractQuotedPhrases(intent);
@@ -794,7 +801,7 @@ export async function runEmailRetrieval(
   dependencies: EmailRetrievalDependencies,
 ): Promise<EmailEvidencePackDTO> {
   const mode: EmailRetrievalMode = request.mode ?? 'quick';
-  const profile: EmailRetrievalProfile = request.profile ?? 'default';
+  const profile: EffectiveEmailRetrievalProfile = normalizeRetrievalProfile(request.profile);
   const budgets = RETRIEVAL_BUDGETS_BY_PROFILE[profile][mode];
 
   const plan = buildSearchPlan(request.intent, request.constraints, mode, profile);
@@ -818,7 +825,7 @@ export async function runEmailRetrieval(
     userId: dependencies.userId,
     mailboxId: request.mailboxId,
     mailboxEmail: request.mailboxEmail,
-    purpose: `whatsapp:email-retrieval:${mode}`,
+    purpose: `${profile}:email-retrieval:${mode}`,
   });
 
   if (mailboxContexts.length === 0) {
