@@ -1,7 +1,19 @@
+import crypto from 'crypto';
 import { prisma } from '@/lib/prisma';
 import { logger } from '@/lib/logger';
 import { getExecutiveAgent } from '@/lib/ai/agents/executiveAgent';
-import { getWhatsAppClient, isWhatsAppConfigured, getConversationManager } from '@/lib/services/whatsapp';
+import type { ProgressUpdateContext } from '@/lib/ai/tools/sendProgressUpdate';
+import {
+  getWhatsAppClient,
+  isWhatsAppConfigured,
+  getConversationManager as getWhatsAppConversationManager,
+} from '@/lib/services/whatsapp';
+import {
+  getTelegramClient,
+  getConversationManager as getTelegramConversationManager,
+  getPairingManager,
+  isTelegramEnabled,
+} from '@/lib/services/telegram';
 import type { Prisma } from '@prisma/client';
 
 interface AlertNotificationInput {
@@ -11,31 +23,83 @@ interface AlertNotificationInput {
   alert: { id: string; description: string };
 }
 
-// Orchestrates alert notifications via ExecutiveAgent + WhatsApp.
+function buildNotificationProgressContext(
+  channel: 'whatsapp' | 'telegram',
+  conversationId: string,
+): ProgressUpdateContext {
+  return {
+    channel,
+    requestId: crypto.randomUUID(),
+    conversationId,
+    persistMessage: async () => undefined,
+  };
+}
+
+// Orchestrates alert notifications via ExecutiveAgent + messaging channels.
 export async function triggerAlertNotification(input: AlertNotificationInput): Promise<void> {
   const settings = await prisma.userSettings.findUnique({
     where: { userId: input.userId },
     select: { whatsappPhoneNumber: true, whatsappVerified: true },
   });
 
-  if (!settings?.whatsappPhoneNumber || !settings.whatsappVerified || !isWhatsAppConfigured()) {
-    logger.info(`[alertNotification] Skipping - WhatsApp not configured for user ${input.userId}`);
+  const hasWhatsApp =
+    Boolean(settings?.whatsappPhoneNumber) &&
+    settings?.whatsappVerified === true &&
+    isWhatsAppConfigured();
+
+  let telegramTarget:
+    | {
+        chatId: string;
+        telegramUserId: string;
+      }
+    | null = null;
+
+  if (isTelegramEnabled()) {
+    const telegramConversationManager = getTelegramConversationManager();
+    const pairingManager = getPairingManager();
+    const [recentConversation, recentLink] = await Promise.all([
+      telegramConversationManager.getMostRecentConversationForUser(input.userId),
+      pairingManager.getMostRecentActiveLinkForUser(input.userId),
+    ]);
+
+    if (recentConversation && recentLink) {
+      telegramTarget =
+        recentConversation.updatedAt >= recentLink.updatedAt
+          ? {
+              chatId: recentConversation.chatId,
+              telegramUserId: recentConversation.telegramUserId,
+            }
+          : {
+              chatId: recentLink.chatId,
+              telegramUserId: recentLink.telegramUserId,
+            };
+    } else if (recentConversation) {
+      telegramTarget = {
+        chatId: recentConversation.chatId,
+        telegramUserId: recentConversation.telegramUserId,
+      };
+    } else if (recentLink) {
+      telegramTarget = {
+        chatId: recentLink.chatId,
+        telegramUserId: recentLink.telegramUserId,
+      };
+    }
+  }
+
+  if (!hasWhatsApp && !telegramTarget) {
+    logger.info(`[alertNotification] Skipping - no messaging channels configured for user ${input.userId}`);
 
     await prisma.actionHistory.create({
       data: {
         userId: input.userId,
         actionType: 'ALERT_SKIPPED',
-        actionSummary: 'Alert matched but WhatsApp not configured',
+        actionSummary: 'Alert matched but no messaging channel is configured',
         actionDetails: { alertId: input.alert.id, email: input.email },
         undoable: false,
       },
     });
     return;
   }
-
-  const conversationManager = getConversationManager();
-  const waId = settings.whatsappPhoneNumber.replace(/^\+/, '');
-  const conversation = await conversationManager.getOrCreateConversation(input.userId, waId);
 
   const agent = getExecutiveAgent();
   const systemMessage =
@@ -48,17 +112,45 @@ export async function triggerAlertNotification(input: AlertNotificationInput): P
     'search for related emails, or just inform them. Keep it concise and friendly.';
 
   try {
-    // Log the system trigger as an inbound message for conversation continuity
-    await conversationManager.addMessage(conversation.id, {
-      content: systemMessage,
-      role: 'USER',
-      direction: 'INBOUND',
-      metadata: { source: 'alert_notification', alertId: input.alert.id },
-    });
+    const whatsappConversationManager = getWhatsAppConversationManager();
+    const telegramConversationManager = getTelegramConversationManager();
+    const waId = settings?.whatsappPhoneNumber?.replace(/^\+/, '') ?? '';
+    const whatsappConversation = hasWhatsApp
+      ? await whatsappConversationManager.getOrCreateConversation(input.userId, waId)
+      : null;
+    const telegramConversation = telegramTarget
+      ? await telegramConversationManager.getOrCreateConversation(
+          input.userId,
+          telegramTarget.chatId,
+          telegramTarget.telegramUserId,
+        )
+      : null;
 
-    // Fetch recent conversation history so the EA has context
-    const recentMessages = await conversationManager.getRecentMessages(conversation.id, 15);
-    const conversationHistory = recentMessages.map((msg) => ({
+    if (whatsappConversation) {
+      await whatsappConversationManager.addMessage(whatsappConversation.id, {
+        content: systemMessage,
+        role: 'USER',
+        direction: 'INBOUND',
+        metadata: { source: 'alert_notification', alertId: input.alert.id, channel: 'whatsapp' },
+      });
+    }
+    if (telegramConversation) {
+      await telegramConversationManager.addMessage(telegramConversation.id, {
+        content: systemMessage,
+        role: 'USER',
+        direction: 'INBOUND',
+        metadata: { source: 'alert_notification', alertId: input.alert.id, channel: 'telegram' },
+      });
+    }
+
+    const primaryChannel: 'telegram' | 'whatsapp' = telegramConversation ? 'telegram' : 'whatsapp';
+    const primaryConversationId = primaryChannel === 'telegram'
+      ? telegramConversation!.id
+      : whatsappConversation!.id;
+    const primaryConversationMessages = primaryChannel === 'telegram'
+      ? await telegramConversationManager.getRecentMessages(telegramConversation!.id, 15)
+      : await whatsappConversationManager.getRecentMessages(whatsappConversation!.id, 15);
+    const conversationHistory = primaryConversationMessages.map((msg) => ({
       id: msg.id,
       content: msg.content,
       role: msg.role,
@@ -73,28 +165,67 @@ export async function triggerAlertNotification(input: AlertNotificationInput): P
       userId: input.userId,
       userEmail: input.userEmail,
       userRequest: systemMessage,
-      conversationId: conversation.id,
+      conversationId: primaryConversationId,
       conversationHistory,
+      progressContext: buildNotificationProgressContext(primaryChannel, primaryConversationId),
     });
 
-    const client = getWhatsAppClient();
-    const { messageId: waResponseId } = await client.sendMessage(settings.whatsappPhoneNumber, result.response);
+    const deliveredChannels: Array<'whatsapp' | 'telegram'> = [];
 
-    // Log the assistant response for conversation continuity
-    const outboundMetadata =
-      result.metadata != null && typeof result.metadata === 'object' && !Array.isArray(result.metadata)
-        ? { ...(result.metadata as Record<string, unknown>) }
-        : {};
-    outboundMetadata.source = 'alert_notification';
-    outboundMetadata.alertId = input.alert.id;
+    if (whatsappConversation && settings?.whatsappPhoneNumber) {
+      const client = getWhatsAppClient();
+      const { messageId: waResponseId } = await client.sendMessage(settings.whatsappPhoneNumber, result.response);
+      const outboundMetadata =
+        result.metadata != null && typeof result.metadata === 'object' && !Array.isArray(result.metadata)
+          ? { ...(result.metadata as Record<string, unknown>) }
+          : {};
+      outboundMetadata.source = 'alert_notification';
+      outboundMetadata.alertId = input.alert.id;
+      outboundMetadata.channel = 'whatsapp';
 
-    await conversationManager.addMessage(conversation.id, {
-      content: result.response,
-      role: 'ASSISTANT',
-      direction: 'OUTBOUND',
-      waMessageId: waResponseId,
-      metadata: outboundMetadata as Prisma.InputJsonObject,
-    });
+      await whatsappConversationManager.addMessage(whatsappConversation.id, {
+        content: result.response,
+        role: 'ASSISTANT',
+        direction: 'OUTBOUND',
+        waMessageId: waResponseId,
+        metadata: outboundMetadata as Prisma.InputJsonObject,
+      });
+      deliveredChannels.push('whatsapp');
+    }
+
+    if (telegramConversation && telegramTarget) {
+      const client = getTelegramClient();
+      const { messageId: telegramResponseId } = await client.sendMessage(telegramTarget.chatId, result.response);
+      const outboundMetadata =
+        result.metadata != null && typeof result.metadata === 'object' && !Array.isArray(result.metadata)
+          ? { ...(result.metadata as Record<string, unknown>) }
+          : {};
+      outboundMetadata.source = 'alert_notification';
+      outboundMetadata.alertId = input.alert.id;
+      outboundMetadata.channel = 'telegram';
+
+      await telegramConversationManager.addMessage(telegramConversation.id, {
+        content: result.response,
+        role: 'ASSISTANT',
+        direction: 'OUTBOUND',
+        telegramMessageId: telegramResponseId,
+        metadata: outboundMetadata as Prisma.InputJsonObject,
+      });
+      deliveredChannels.push('telegram');
+    }
+
+    if (deliveredChannels.length === 0) {
+      await prisma.actionHistory.create({
+        data: {
+          userId: input.userId,
+          actionType: 'ALERT_SKIPPED',
+          actionSummary: 'Alert matched but delivery to messaging channels failed',
+          actionDetails: { alertId: input.alert.id, email: input.email },
+          undoable: false,
+        },
+      });
+      return;
+    }
 
     logger.info(`[alertNotification] Sent notification for alert ${input.alert.id}`);
 
@@ -107,6 +238,7 @@ export async function triggerAlertNotification(input: AlertNotificationInput): P
           alertId: input.alert.id,
           email: input.email,
           response: result.response,
+          channels: deliveredChannels,
         },
         undoable: false,
       },

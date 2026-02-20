@@ -1,9 +1,21 @@
+import crypto from 'crypto';
 import { DEFAULT_CALENDAR_TIMEZONE } from '@/constants/time';
 import { getExecutiveAgent } from '@/lib/ai/agents/executiveAgent';
 import { logger } from '@/lib/logger';
 import { prisma } from '@/lib/prisma';
-import { getWhatsAppClient, isWhatsAppConfigured, getConversationManager } from '@/lib/services/whatsapp';
+import {
+  getWhatsAppClient,
+  isWhatsAppConfigured,
+  getConversationManager as getWhatsAppConversationManager,
+} from '@/lib/services/whatsapp';
+import {
+  getTelegramClient,
+  getConversationManager as getTelegramConversationManager,
+  getPairingManager,
+  isTelegramEnabled,
+} from '@/lib/services/telegram';
 import { convertUserLocalTimeToUtc, getZonedTimeComponents } from '@/lib/utils/timezone';
+import type { ProgressUpdateContext } from '@/lib/ai/tools/sendProgressUpdate';
 import type { Prisma, ReminderStatus } from '@prisma/client';
 
 type ReminderRecurrence = {
@@ -128,6 +140,18 @@ function calculateNextOccurrence(
   return nextUtc;
 }
 
+function buildNotificationProgressContext(
+  channel: 'whatsapp' | 'telegram',
+  conversationId: string,
+): ProgressUpdateContext {
+  return {
+    channel,
+    requestId: crypto.randomUUID(),
+    conversationId,
+    persistMessage: async () => undefined,
+  };
+}
+
 export async function markReminderMissed({
   reminderId,
   userId,
@@ -234,19 +258,73 @@ export async function triggerReminderNotification(input: ReminderNotificationInp
   }
 
   const settings = reminder.user?.settings;
-  if (!settings?.whatsappPhoneNumber || !settings.whatsappVerified || !isWhatsAppConfigured()) {
-    logger.info(`[reminderNotification] Skipping - WhatsApp not configured for user ${reminder.userId}`);
+  const hasWhatsApp =
+    Boolean(settings?.whatsappPhoneNumber) &&
+    settings?.whatsappVerified === true &&
+    isWhatsAppConfigured();
+
+  let telegramTarget:
+    | {
+        chatId: string;
+        telegramUserId: string;
+      }
+    | null = null;
+
+  if (isTelegramEnabled()) {
+    const telegramConversationManager = getTelegramConversationManager();
+    const pairingManager = getPairingManager();
+    const [recentConversation, recentLink] = await Promise.all([
+      telegramConversationManager.getMostRecentConversationForUser(reminder.userId),
+      pairingManager.getMostRecentActiveLinkForUser(reminder.userId),
+    ]);
+
+    if (recentConversation && recentLink) {
+      telegramTarget =
+        recentConversation.updatedAt >= recentLink.updatedAt
+          ? {
+              chatId: recentConversation.chatId,
+              telegramUserId: recentConversation.telegramUserId,
+            }
+          : {
+              chatId: recentLink.chatId,
+              telegramUserId: recentLink.telegramUserId,
+            };
+    } else if (recentConversation) {
+      telegramTarget = {
+        chatId: recentConversation.chatId,
+        telegramUserId: recentConversation.telegramUserId,
+      };
+    } else if (recentLink) {
+      telegramTarget = {
+        chatId: recentLink.chatId,
+        telegramUserId: recentLink.telegramUserId,
+      };
+    }
+  }
+
+  if (!hasWhatsApp && !telegramTarget) {
+    logger.info(`[reminderNotification] Skipping - no messaging channels configured for user ${reminder.userId}`);
     await markReminderMissed({
       reminderId: reminder.id,
       userId: reminder.userId,
-      reason: 'whatsapp-not-configured',
+      reason: 'messaging-not-configured',
     });
     return;
   }
 
-  const conversationManager = getConversationManager();
-  const waId = settings.whatsappPhoneNumber.replace(/^\+/, '');
-  const conversation = await conversationManager.getOrCreateConversation(reminder.userId, waId);
+  const whatsappConversationManager = getWhatsAppConversationManager();
+  const telegramConversationManager = getTelegramConversationManager();
+  const waId = settings?.whatsappPhoneNumber?.replace(/^\+/, '') ?? '';
+  const whatsappConversation = hasWhatsApp
+    ? await whatsappConversationManager.getOrCreateConversation(reminder.userId, waId)
+    : null;
+  const telegramConversation = telegramTarget
+    ? await telegramConversationManager.getOrCreateConversation(
+        reminder.userId,
+        telegramTarget.chatId,
+        telegramTarget.telegramUserId,
+      )
+    : null;
 
   const agent = getExecutiveAgent();
   const systemMessage =
@@ -257,17 +335,31 @@ export async function triggerReminderNotification(input: ReminderNotificationInp
     'Notify the user naturally and concisely. Treat this as on-time delivery (within ~1 min of scheduled time); do not say "in X minutes" or "X minutes ago". ' +
     'Offer to snooze or dismiss if appropriate. If the user responds with a snooze or dismiss request, use the reminder tools.';
 
-  // Log the system trigger as an inbound message for conversation continuity
-  await conversationManager.addMessage(conversation.id, {
-    content: systemMessage,
-    role: 'USER',
-    direction: 'INBOUND',
-    metadata: { source: 'reminder_notification', reminderId: reminder.id },
-  });
+  if (whatsappConversation) {
+    await whatsappConversationManager.addMessage(whatsappConversation.id, {
+      content: systemMessage,
+      role: 'USER',
+      direction: 'INBOUND',
+      metadata: { source: 'reminder_notification', reminderId: reminder.id, channel: 'whatsapp' },
+    });
+  }
+  if (telegramConversation) {
+    await telegramConversationManager.addMessage(telegramConversation.id, {
+      content: systemMessage,
+      role: 'USER',
+      direction: 'INBOUND',
+      metadata: { source: 'reminder_notification', reminderId: reminder.id, channel: 'telegram' },
+    });
+  }
 
-  // Fetch recent conversation history so the EA has context
-  const recentMessages = await conversationManager.getRecentMessages(conversation.id, 15);
-  const conversationHistory = recentMessages.map((msg) => ({
+  const primaryChannel: 'telegram' | 'whatsapp' = telegramConversation ? 'telegram' : 'whatsapp';
+  const primaryConversationId = primaryChannel === 'telegram'
+    ? telegramConversation!.id
+    : whatsappConversation!.id;
+  const primaryConversationHistorySource = primaryChannel === 'telegram'
+    ? await telegramConversationManager.getRecentMessages(telegramConversation!.id, 15)
+    : await whatsappConversationManager.getRecentMessages(whatsappConversation!.id, 15);
+  const conversationHistory = primaryConversationHistorySource.map((msg) => ({
     id: msg.id,
     content: msg.content,
     role: msg.role,
@@ -282,29 +374,65 @@ export async function triggerReminderNotification(input: ReminderNotificationInp
     userId: reminder.userId,
     userEmail: reminder.user?.email ?? input.userEmail,
     userRequest: systemMessage,
-    conversationId: conversation.id,
+    conversationId: primaryConversationId,
     conversationHistory,
+    progressContext: buildNotificationProgressContext(primaryChannel, primaryConversationId),
   });
 
-  const client = getWhatsAppClient();
-  const { messageId: waResponseId } = await client.sendMessage(settings.whatsappPhoneNumber, result.response);
+  const deliveredChannels: Array<'whatsapp' | 'telegram'> = [];
 
-  // Log the assistant response for conversation continuity
-  const outboundMetadata =
-    result.metadata != null && typeof result.metadata === 'object' && !Array.isArray(result.metadata)
-      ? { ...(result.metadata as Record<string, unknown>) }
-      : {};
-  outboundMetadata.source = 'reminder_notification';
-  outboundMetadata.reminderId = reminder.id;
-  outboundMetadata.dueAt = dueAt.toISOString();
+  if (whatsappConversation && settings?.whatsappPhoneNumber) {
+    const client = getWhatsAppClient();
+    const { messageId: waResponseId } = await client.sendMessage(settings.whatsappPhoneNumber, result.response);
+    const outboundMetadata =
+      result.metadata != null && typeof result.metadata === 'object' && !Array.isArray(result.metadata)
+        ? { ...(result.metadata as Record<string, unknown>) }
+        : {};
+    outboundMetadata.source = 'reminder_notification';
+    outboundMetadata.reminderId = reminder.id;
+    outboundMetadata.dueAt = dueAt.toISOString();
+    outboundMetadata.channel = 'whatsapp';
 
-  await conversationManager.addMessage(conversation.id, {
-    content: result.response,
-    role: 'ASSISTANT',
-    direction: 'OUTBOUND',
-    waMessageId: waResponseId,
-    metadata: outboundMetadata as Prisma.InputJsonObject,
-  });
+    await whatsappConversationManager.addMessage(whatsappConversation.id, {
+      content: result.response,
+      role: 'ASSISTANT',
+      direction: 'OUTBOUND',
+      waMessageId: waResponseId,
+      metadata: outboundMetadata as Prisma.InputJsonObject,
+    });
+    deliveredChannels.push('whatsapp');
+  }
+
+  if (telegramConversation && telegramTarget) {
+    const client = getTelegramClient();
+    const { messageId: telegramResponseId } = await client.sendMessage(telegramTarget.chatId, result.response);
+    const outboundMetadata =
+      result.metadata != null && typeof result.metadata === 'object' && !Array.isArray(result.metadata)
+        ? { ...(result.metadata as Record<string, unknown>) }
+        : {};
+    outboundMetadata.source = 'reminder_notification';
+    outboundMetadata.reminderId = reminder.id;
+    outboundMetadata.dueAt = dueAt.toISOString();
+    outboundMetadata.channel = 'telegram';
+
+    await telegramConversationManager.addMessage(telegramConversation.id, {
+      content: result.response,
+      role: 'ASSISTANT',
+      direction: 'OUTBOUND',
+      telegramMessageId: telegramResponseId,
+      metadata: outboundMetadata as Prisma.InputJsonObject,
+    });
+    deliveredChannels.push('telegram');
+  }
+
+  if (deliveredChannels.length === 0) {
+    await markReminderMissed({
+      reminderId: reminder.id,
+      userId: reminder.userId,
+      reason: 'messaging-delivery-failed',
+    });
+    return;
+  }
 
   await prisma.reminder.update({
     where: { id: reminder.id },
@@ -327,6 +455,7 @@ export async function triggerReminderNotification(input: ReminderNotificationInp
         deliveredAt: now.toISOString(),
         linkedEmailId: reminder.linkedEmailId,
         linkedEventId: reminder.linkedEventId,
+        channels: deliveredChannels,
       },
       undoable: false,
     },

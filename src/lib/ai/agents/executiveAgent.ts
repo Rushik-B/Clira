@@ -14,7 +14,7 @@
  * 3. check_calendar - Analyzes calendar availability
  * 4. search_calendar - Searches for specific events in the calendar
  * 5. append_to_supermemory - Stores user preferences/facts to memory
- * 6. add_email_alert - Creates an email alert that triggers WhatsApp notifications
+ * 6. add_email_alert - Creates an email alert that triggers messaging notifications
  * 7. remove_email_alert - Deletes an email alert by ID or description match
  * 8. list_email_alerts - Lists active email alerts
  * 9. add_reminder - Creates a time-based reminder
