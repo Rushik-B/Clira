@@ -1,0 +1,230 @@
+/* 120Hz Performance Optimizations & Reduced Motion Support */
+
+/* Custom gradient utilities */
+.bg-gradient-radial {
+  background-image: radial-gradient(circle, var(--tw-gradient-stops));
+}
+
+.bg-gradient-conic {
+  background-image: conic-gradient(var(--tw-gradient-stops));
+}
+
+/* Global reduced motion preferences */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  
+  /* Disable scale transforms for reduced motion */
+  .email-queue-card {
+    transform: none !important;
+  }
+  
+  /* Reduce glow effect intensity for reduced motion but keep them visible */
+  .glow::after {
+    animation-duration: 0.01ms !important;
+    opacity: 0.3 !important;
+  }
+}
+
+/* Performance optimizations for 120Hz displays */
+.processing-glow {
+  animation: processing-pulse 2s ease-in-out infinite;
+  will-change: opacity;
+}
+
+@keyframes processing-pulse {
+  0%, 100% { opacity: 0.7; }
+  50% { opacity: 1; }
+}
+
+/* Enhanced card glow animations */
+.processing-card-glow {
+  animation: processing-card-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes processing-card-pulse {
+  0%, 100% { 
+    box-shadow: 0 0 20px rgba(59, 130, 246, 0.3), 0 0 40px rgba(59, 130, 246, 0.1);
+  }
+  50% { 
+    box-shadow: 0 0 30px rgba(59, 130, 246, 0.5), 0 0 60px rgba(59, 130, 246, 0.2);
+  }
+}
+
+.processing-glow-outer {
+  animation: processing-outer-pulse 2s ease-in-out infinite;
+}
+
+@keyframes processing-outer-pulse {
+  0%, 100% { opacity: 0.8; }
+  50% { opacity: 1; }
+}
+
+.processing-glow-inner {
+  animation: processing-inner-pulse 1.8s ease-in-out infinite 0.2s;
+}
+
+@keyframes processing-inner-pulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 0.9; }
+}
+
+.processing-glow-pulse {
+  animation: processing-pulse-overlay 2.5s ease-in-out infinite 0.4s;
+}
+
+@keyframes processing-pulse-overlay {
+  0%, 100% { 
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  50% { 
+    opacity: 1;
+    transform: scale(1.05);
+  }
+}
+
+/* Success state animations */
+.success-state {
+  animation: success-glow 0.8s ease-out;
+  will-change: transform, opacity;
+}
+
+@keyframes success-glow {
+  0% { 
+    opacity: 0.8; 
+    transform: scale(1);
+  }
+  30% { 
+    opacity: 1; 
+    transform: scale(1.02);
+  }
+  100% { 
+    opacity: 1; 
+    transform: scale(1);
+  }
+}
+
+.success-card-glow {
+  animation: success-card-celebration 1.2s ease-out;
+}
+
+@keyframes success-card-celebration {
+  0% { 
+    box-shadow: 0 0 20px rgba(34, 197, 94, 0.3);
+  }
+  30% { 
+    box-shadow: 0 0 40px rgba(34, 197, 94, 0.6), 0 0 80px rgba(34, 197, 94, 0.3);
+  }
+  100% { 
+    box-shadow: 0 0 25px rgba(34, 197, 94, 0.4);
+  }
+}
+
+.success-celebration-glow {
+  animation: success-celebration-burst 1.5s ease-out;
+}
+
+@keyframes success-celebration-burst {
+  0% { 
+    opacity: 0;
+    transform: scale(0.8);
+  }
+  20% { 
+    opacity: 1;
+    transform: scale(1.1);
+  }
+  100% { 
+    opacity: 0.3;
+    transform: scale(1);
+  }
+}
+
+/* GPU acceleration hints for frequently animated elements */
+.email-queue-card,
+.modal-scrollable-content,
+.toast-enter,
+.toast-exit {
+  will-change: transform, opacity;
+  transform: translate3d(0, 0, 0);
+}
+
+/* Optimize checkbox animations */
+input[type="checkbox"] {
+  will-change: transform, opacity;
+}
+
+/* Optimize button hover states */
+button:hover {
+  will-change: background-color, border-color, color;
+}
+
+/* Reduce motion for users who prefer it */
+@media (prefers-reduced-motion: reduce) {
+  .processing-glow {
+    animation: none;
+    opacity: 0.85;
+  }
+  
+  .success-state {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+  
+  /* Reduce ambient glow intensity for users who prefer less motion */
+  .bg-gradient-radial {
+    opacity: 0.5 !important;
+  }
+  
+  /* Simplify processing animations for reduced motion */
+  .processing-card-glow,
+  .processing-glow-outer,
+  .processing-glow-inner,
+  .processing-glow-pulse {
+    animation: none !important;
+    opacity: 0.7 !important;
+  }
+  
+  .success-card-glow,
+  .success-celebration-glow {
+    animation: none !important;
+    opacity: 0.8 !important;
+  }
+}
+
+/* Force hardware acceleration for performance-critical elements */
+.email-queue-card,
+[class*="transition-"]:not(.glow) {
+  transform: translate3d(0, 0, 0);
+  backface-visibility: hidden;
+  perspective: 1000px;
+}
+
+/* Ensure glow effects render properly */
+.glow {
+  transform: none !important;
+}
+
+/* 60Hz throttling class for heavy animations */
+.throttled-animation {
+  animation-timing-function: steps(2, end);
+}
+
+@media (min-width: 1024px) and (min-resolution: 120dpi) {
+  /* Specific optimizations for high refresh rate displays */
+  .email-queue-card {
+    transition-duration: 200ms;
+  }
+  
+  /* Reduce glow effect complexity on high refresh displays */
+  .glow::after {
+    filter: blur(2px) !important;
+  }
+}

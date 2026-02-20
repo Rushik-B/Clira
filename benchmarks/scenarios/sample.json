@@ -1,0 +1,14 @@
+[
+  {
+    "id": "context-retention-01",
+    "category": "context_retention",
+    "emailThread": [
+      "Email 1: We approved the discount at 12% if contract is signed this week.",
+      "Email 5: Can you confirm the final discount before I send this internally?"
+    ],
+    "expected": {
+      "mustMention": ["12%"],
+      "mustNotInvent": ["new discount terms"]
+    }
+  }
+]

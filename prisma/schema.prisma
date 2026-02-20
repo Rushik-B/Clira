@@ -1,0 +1,637 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model ActionHistory {
+  id             String            @id @default(cuid())
+  userId         String
+  actionType     ActionHistoryType
+  actionSummary  String
+  actionDetails  Json?
+  emailReference String?
+  confidence     Float?
+  undoable       Boolean           @default(false)
+  promptState    String?
+  metadata       Json?
+  createdAt      DateTime          @default(now())
+  user           User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
+
+model PendingCalendarChange {
+  id             String                      @id @default(cuid())
+  userId         String
+  conversationId String
+  plan           Json
+  resolvedTarget Json?
+  userTimezone   String
+  userRequest    String
+  status         PendingCalendarChangeStatus @default(PENDING)
+  expiresAt      DateTime
+  consumedAt     DateTime?
+  cancelledAt    DateTime?
+  createdAt      DateTime                    @default(now())
+  updatedAt      DateTime                    @updatedAt
+  user           User                        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, conversationId, status])
+  @@index([userId, conversationId, createdAt])
+  @@index([expiresAt, status])
+}
+
+model BatchSortJob {
+  id              String      @id @default(cuid())
+  userId          String
+  status          String
+  emailsProcessed Int         @default(0)
+  emailsSorted    Int         @default(0)
+  emailsToReview  Int         @default(0)
+  startedAt       DateTime    @default(now())
+  completedAt     DateTime?
+  errorMessage    String?
+  llmTokensUsed   Int         @default(0)
+  gmailHistoryId  String?
+  user            User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  emailSorts      EmailSort[]
+
+  @@index([startedAt])
+  @@index([userId])
+  @@index([userId, status])
+}
+
+model Email {
+  id               String          @id @default(uuid())
+  threadId         String
+  mailboxId        String? // Optional for backcompat; will be required after migration
+  messageId        String
+  from             String
+  to               String[]
+  cc               String[]        @default([])
+  subject          String
+  body             String
+  snippet          String?
+  isSent           Boolean         @default(false)
+  isDraft          Boolean         @default(false)
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+  gmailThreadId    String?
+  rfc2822MessageId String?
+  inReplyTo        String?
+  references       String?
+  isProcessing     Boolean         @default(false)
+  thread           Thread          @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  mailbox          Mailbox?        @relation(fields: [mailboxId], references: [id], onDelete: SetNull)
+  feedback         Feedback?
+  generatedDraft   GeneratedDraft?
+
+  // Compound uniqueness: same messageId can exist in different mailboxes
+  @@unique([mailboxId, messageId])
+  @@index([mailboxId])
+}
+
+model EmailCategorizationResult {
+  id                   String   @id @default(cuid())
+  userId               String   @unique
+  categorizedEmails    Json
+  folderSuggestions    Json
+  totalEmailsAnalyzed  Int
+  categorizationTimeMs Int
+  llmTokensUsed        Int      @default(0)
+  version              Int      @default(1)
+  isActive             Boolean  @default(true)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+  user                 User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([userId, isActive])
+}
+
+model EmailLearning {
+  id              String   @id @default(cuid())
+  userId          String
+  emailFrom       String
+  originalFolder  String
+  correctedFolder String
+  userReason      String?
+  aiSummary       String
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([emailFrom])
+  @@index([userId])
+  @@index([userId, isActive])
+}
+
+model EmailMapping {
+  id             String           @id @default(cuid())
+  userId         String
+  mailboxId      String? // Optional for backcompat; will be required after migration
+  labelId        String
+  emailAddress   String
+  domain         String?
+  subjectPattern String?
+  isActive       Boolean          @default(true)
+  mappingType    EmailMappingType @default(EMAIL)
+  confidence     Float?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+  label          Label            @relation(fields: [labelId], references: [id], onDelete: Cascade)
+  user           User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  mailbox        Mailbox?         @relation(fields: [mailboxId], references: [id], onDelete: SetNull)
+
+  @@unique([mailboxId, emailAddress], name: "mailboxId_emailAddress")
+  @@index([userId])
+  @@index([mailboxId])
+  @@index([userId, emailAddress])
+  @@index([userId, domain])
+  @@index([userId, subjectPattern])
+  @@index([userId, isActive])
+}
+
+model EmailAlert {
+  id          String   @id @default(cuid())
+  userId      String
+  description String
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([userId, isActive])
+}
+
+model Reminder {
+  id          String         @id @default(cuid())
+  userId      String
+  title       String
+  description String?
+  context     String?
+  scheduledAt DateTime
+  status      ReminderStatus @default(PENDING)
+
+  // Recurrence
+  recurrence Json?
+
+  // Delivery tracking
+  deliveredAt  DateTime?
+  dismissedAt  DateTime?
+  snoozedUntil DateTime?
+  snoozeCount  Int       @default(0)
+
+  // Optional links
+  linkedEmailId String?
+  linkedEventId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([userId, status])
+  @@index([scheduledAt, status])
+}
+
+model EmailSort {
+  id                    String       @id @default(cuid())
+  userId                String
+  mailboxId             String? // Optional for backcompat; will be required after migration
+  batchSortJobId        String
+  labelId               String
+  gmailMessageId        String
+  gmailThreadId         String?
+  confidence            Float?
+  reasoning             String?
+  wasManuallyOverridden Boolean      @default(false)
+  sortedAt              DateTime     @default(now())
+  batchSortJob          BatchSortJob @relation(fields: [batchSortJobId], references: [id], onDelete: Cascade)
+  label                 Label        @relation(fields: [labelId], references: [id], onDelete: Cascade)
+  user                  User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  mailbox               Mailbox?     @relation(fields: [mailboxId], references: [id], onDelete: SetNull)
+
+  @@unique([mailboxId, gmailMessageId, batchSortJobId], name: "mailboxId_gmailMessageId_batchSortJobId")
+  @@index([userId])
+  @@index([mailboxId])
+  @@index([batchSortJobId])
+  @@index([labelId])
+  @@index([gmailMessageId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MULTI-INBOX: Mailbox Model
+// Represents a connected email inbox (Gmail, Outlook, etc.) under a single user.
+// A user can have multiple mailboxes; data is scoped to mailboxId to prevent collisions.
+// ─────────────────────────────────────────────────────────────────────────────
+model Mailbox {
+  id                String  @id @default(cuid())
+  userId            String
+  provider          String // "google" | "microsoft"
+  providerAccountId String // Stable ID from provider (e.g., Google sub claim)
+  emailAddress      String // e.g., "user@gmail.com"
+  displayName       String? // Display name from provider
+
+  isPrimary Boolean @default(false)
+  status    String  @default("CONNECTED") // CONNECTED | NEEDS_RECONNECT | ERROR | DISABLED
+
+  // Gmail sync state
+  gmailHistoryId       String? // Last processed history ID for push notifications
+  gmailWatchExpiration DateTime? // When Gmail watch lease expires
+  gmailWatchResourceId String? // For managing active watches
+
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  oauthAccount  OAuthAccount?
+  emails        Email[]
+  threads       Thread[]
+  labels        Label[]
+  emailMappings EmailMapping[]
+  emailSorts    EmailSort[]
+
+  @@unique([userId, provider, providerAccountId])
+  @@index([userId])
+  @@index([status])
+  @@index([emailAddress])
+}
+
+model Feedback {
+  id        String         @id @default(cuid())
+  userId    String
+  emailId   String         @unique
+  action    FeedbackAction
+  editDelta Json?
+  createdAt DateTime       @default(now())
+  email     Email          @relation(fields: [emailId], references: [id], onDelete: Cascade)
+  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model GeneratedDraft {
+  id              String               @id @default(cuid())
+  emailId         String               @unique
+  gmailDraftId    String
+  confidenceScore Float
+  createdBy       GeneratedDraftSource @default(AI)
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+  email           Email                @relation(fields: [emailId], references: [id], onDelete: Cascade)
+}
+
+model Label {
+  id                    String         @id @default(cuid())
+  userId                String
+  mailboxId             String? // Optional for backcompat; will be required after migration
+  name                  String
+  color                 String?
+  createdAt             DateTime       @default(now())
+  updatedAt             DateTime       @updatedAt
+  emailCount            Int            @default(0)
+  exampleEmails         Json?
+  gmailLabelId          String?
+  isCustom              Boolean        @default(true)
+  isSystemDefault       Boolean        @default(false)
+  isSystemLabel         Boolean        @default(false)
+  labelListVisibility   String?
+  lastBatchSort         DateTime?
+  messageListVisibility String?
+  metaPrompt            String?
+  systemLocked          Boolean        @default(false)
+  emailMappings         EmailMapping[]
+  emailSorts            EmailSort[]
+  user                  User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  mailbox               Mailbox?       @relation(fields: [mailboxId], references: [id], onDelete: SetNull)
+
+  @@unique([mailboxId, gmailLabelId], name: "mailboxId_gmailLabelId")
+  @@index([userId])
+  @@index([mailboxId])
+  @@index([userId, isCustom])
+  @@index([userId, isSystemDefault])
+}
+
+model MasterPrompt {
+  id          String   @id @default(cuid())
+  userId      String
+  prompt      String
+  version     Int      @default(1)
+  isActive    Boolean  @default(true)
+  isGenerated Boolean  @default(false)
+  metadata    Json?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model OAuthAccount {
+  id                String    @id @default(cuid())
+  userId            String
+  mailboxId         String?   @unique // Optional for backcompat; will be required after migration
+  provider          String
+  providerAccountId String
+  // OAuth tokens — encrypted at rest using AES-256-GCM (see src/lib/encryption.ts)
+  accessToken       String?
+  refreshToken      String?
+  scope             String?
+  tokenType         String?
+  expiresAt         Int?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  mailbox           Mailbox?  @relation(fields: [mailboxId], references: [id], onDelete: SetNull)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Thread {
+  id            String    @id @default(uuid())
+  userId        String
+  mailboxId     String? // Optional for backcompat; will be required after migration
+  subject       String
+  snippet       String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  gmailThreadId String?
+  emails        Email[]
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  mailbox       Mailbox?  @relation(fields: [mailboxId], references: [id], onDelete: SetNull)
+
+  // Compound uniqueness: same gmailThreadId can exist in different mailboxes
+  @@unique([mailboxId, gmailThreadId])
+  @@index([mailboxId])
+}
+
+model TokenAccessAudit {
+  id        String         @id @default(cuid())
+  userId    String
+  tokenType CredentialKind @default(BOTH)
+  purpose   String
+  requester String
+  metadata  Json?
+  createdAt DateTime       @default(now())
+  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
+
+model TwilioConversation {
+  id          String                   @id @default(cuid())
+  userId      String
+  /// Phone number in E.164 format (e.g. "+16505551234")
+  phoneNumber String
+  status      TwilioConversationStatus @default(ACTIVE)
+  /// SMS or RCS (detected from Twilio delivery receipts)
+  messageType TwilioMessageType        @default(SMS)
+  createdAt   DateTime                 @default(now())
+  updatedAt   DateTime                 @updatedAt
+  messages    TwilioMessage[]
+
+  @@unique([userId, phoneNumber])
+  @@index([userId])
+  @@index([userId, status])
+}
+
+model TwilioMessage {
+  id             String                 @id @default(cuid())
+  conversationId String
+  /// Twilio MessageSid (e.g. "SM...")
+  twilioSid      String?
+  direction      TwilioMessageDirection
+  content        String
+  role           TwilioMessageRole
+  /// Optional metadata (JSON: tool calls, RCS ContentSid, delivery status, etc.)
+  metadata       Json?
+  createdAt      DateTime               @default(now())
+  conversation   TwilioConversation     @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId])
+  @@index([conversationId, createdAt])
+}
+
+model User {
+  id                                 String                     @id @default(uuid())
+  email                              String                     @unique
+  name                               String?
+  createdAt                          DateTime                   @default(now())
+  updatedAt                          DateTime                   @updatedAt
+  masterPromptGenerated              Boolean                    @default(false)
+  masterPromptQualityGenerated       Boolean                    @default(false)
+  labelingOnboardingGenerated        Boolean                    @default(false)
+  labelingOnboardingQualityGenerated Boolean                    @default(false)
+  actionHistory                      ActionHistory[]
+  batchSortJobs                      BatchSortJob[]
+  emailCategorizationResult          EmailCategorizationResult?
+  emailLearnings                     EmailLearning[]
+  emailMappings                      EmailMapping[]
+  emailSorts                         EmailSort[]
+  feedbacks                          Feedback[]
+  labels                             Label[]
+  mailboxes                          Mailbox[]
+  masterPrompts                      MasterPrompt[]
+  accounts                           OAuthAccount[]
+  emailAlerts                        EmailAlert[]
+  reminders                          Reminder[]
+  pendingCalendarChanges             PendingCalendarChange[]
+  threads                            Thread[]
+  settings                           UserSettings?
+  tokenAccessAudits                  TokenAccessAudit[]
+}
+
+model UserSettings {
+  id                         String             @id @default(cuid())
+  userId                     String             @unique
+  autonomyLevel              Int                @default(0)
+  createdAt                  DateTime           @default(now())
+  updatedAt                  DateTime           @updatedAt
+  gmailHistoryId             String?
+  allowedSenders             String[]           @default([])
+  blockedSenders             String[]           @default([])
+  enablePushNotifications    Boolean            @default(true)
+  replyScope                 ReplyScope         @default(CONTACTS_ONLY)
+  preferencesSaved           Boolean            @default(false)
+  /// IANA timezone identifier (e.g. "America/New_York") used for calendar context
+  calendarTimezone           String?
+  /// Google Calendar IDs to include when building scheduling context
+  calendarContextCalendarIds String[]           @default([])
+  autoFileLowPriority        Int                @default(50)
+  autoSendConfidence         Int                @default(95)
+  newOnboardingCompleted     Boolean            @default(false)
+  autoSortingEnabled         Boolean            @default(false)
+  onboardingStep             String?
+  persona                    OnboardingPersona?
+  /// WhatsApp phone number in E.164 format (e.g. "+16505551234")
+  whatsappPhoneNumber        String?
+  /// Whether the WhatsApp phone number has been verified
+  whatsappVerified           Boolean            @default(false)
+  /// Twilio phone number in E.164 format (e.g. "+16505551234")
+  twilioPhoneNumber          String?
+  /// Whether the Twilio phone number has been verified
+  twilioVerified             Boolean            @default(false)
+  /// Whether the user has seen the WhatsApp feature promotion card
+  whatsappPromoSeen          Boolean            @default(false)
+  user                       User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model WhatsAppConversation {
+  id        String                     @id @default(cuid())
+  userId    String
+  /// WhatsApp ID (phone number) of the conversation partner
+  waId      String
+  status    WhatsAppConversationStatus @default(ACTIVE)
+  createdAt DateTime                   @default(now())
+  updatedAt DateTime                   @updatedAt
+  messages  WhatsAppMessage[]
+
+  @@unique([userId, waId])
+  @@index([userId])
+  @@index([userId, status])
+}
+
+model WhatsAppMessage {
+  id             String                   @id @default(cuid())
+  conversationId String
+  /// WhatsApp message ID from the Cloud API (for outbound tracking)
+  waMessageId    String?
+  direction      WhatsAppMessageDirection
+  content        String
+  role           WhatsAppMessageRole
+  /// Optional metadata (JSON: tool calls, draft versions, etc.)
+  metadata       Json?
+  createdAt      DateTime                 @default(now())
+  conversation   WhatsAppConversation     @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId])
+  @@index([conversationId, createdAt])
+  @@index([waMessageId])
+}
+
+enum ActionHistoryType {
+  EMAIL_SENT
+  EMAIL_REJECTED
+  EMAIL_EDITED
+  EMAIL_SNOOZED
+  EMAIL_ARCHIVED
+  CALENDAR_CHANGE_PROPOSED
+  CALENDAR_EVENT_CREATED
+  CALENDAR_EVENT_UPDATED
+  CALENDAR_EVENT_DELETED
+  ALERT_SKIPPED
+  ALERT_NOTIFIED
+  REMINDER_CREATED
+  REMINDER_DELIVERED
+  REMINDER_SNOOZED
+  REMINDER_DISMISSED
+  REMINDER_MISSED
+  MASTER_PROMPT_UPDATED
+  AUTONOMY_RULE_ADDED
+  SETTINGS_CHANGED
+  TRIAGE_ACTION_NEEDED
+  TRIAGE_READ_LATER
+  TRIAGE_FILE
+  TRIAGE_ARCHIVE
+  TRIAGE_DELETE
+}
+
+enum ReminderStatus {
+  PENDING
+  DELIVERED
+  DISMISSED
+  SNOOZED
+  COMPLETED
+  MISSED
+  CANCELLED
+}
+
+enum PendingCalendarChangeStatus {
+  PENDING
+  IN_PROGRESS
+  CONSUMED
+  CANCELLED
+  EXPIRED
+}
+
+enum CredentialKind {
+  ACCESS_TOKEN
+  REFRESH_TOKEN
+  BOTH
+}
+
+enum EmailMappingType {
+  EMAIL
+  DOMAIN
+  SUBJECT
+  SUBJECT_CONTAINS
+  SUBJECT_STARTS_WITH
+  SUBJECT_ENDS_WITH
+  SUBJECT_REGEX
+}
+
+enum FeedbackAction {
+  ACCEPTED
+  EDITED
+  REJECTED
+}
+
+enum GeneratedDraftSource {
+  AI
+  USER
+}
+
+enum OnboardingPersona {
+  GUARDIAN
+  COPILOT
+  AMPLIFIER
+}
+
+enum ReplyScope {
+  ALL_SENDERS
+  CONTACTS_ONLY
+}
+
+enum TwilioConversationStatus {
+  ACTIVE
+  PENDING_CONFIRMATION
+  COMPLETED
+}
+
+enum TwilioMessageDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum TwilioMessageRole {
+  USER
+  ASSISTANT
+  SYSTEM
+}
+
+enum TwilioMessageType {
+  SMS
+  RCS
+  UNKNOWN
+}
+
+enum WhatsAppConversationStatus {
+  ACTIVE
+  PENDING_CONFIRMATION
+  COMPLETED
+}
+
+enum WhatsAppMessageDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum WhatsAppMessageRole {
+  USER
+  ASSISTANT
+  SYSTEM
+}
