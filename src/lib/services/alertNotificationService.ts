@@ -14,6 +14,10 @@ import {
   getPairingManager,
   isTelegramEnabled,
 } from '@/lib/services/telegram';
+import {
+  allowsMessagingChannel,
+  normalizeNotificationDeliveryChannel,
+} from '@/lib/services/messagingChannelPreferences';
 import type { Prisma } from '@prisma/client';
 
 interface AlertNotificationInput {
@@ -39,15 +43,22 @@ function buildNotificationProgressContext(
 export async function triggerAlertNotification(input: AlertNotificationInput): Promise<void> {
   const settings = await prisma.userSettings.findUnique({
     where: { userId: input.userId },
-    select: { whatsappPhoneNumber: true, whatsappVerified: true },
+    select: {
+      whatsappPhoneNumber: true,
+      whatsappVerified: true,
+      notificationDeliveryChannel: true,
+    },
   });
 
-  const hasWhatsApp =
+  const deliveryChannelPreference = normalizeNotificationDeliveryChannel(
+    settings?.notificationDeliveryChannel,
+  );
+  const hasWhatsAppAvailable =
     Boolean(settings?.whatsappPhoneNumber) &&
     settings?.whatsappVerified === true &&
     isWhatsAppConfigured();
 
-  let telegramTarget:
+  let availableTelegramTarget:
     | {
         chatId: string;
         telegramUserId: string;
@@ -63,7 +74,7 @@ export async function triggerAlertNotification(input: AlertNotificationInput): P
     ]);
 
     if (recentConversation && recentLink) {
-      telegramTarget =
+      availableTelegramTarget =
         recentConversation.updatedAt >= recentLink.updatedAt
           ? {
               chatId: recentConversation.chatId,
@@ -74,17 +85,25 @@ export async function triggerAlertNotification(input: AlertNotificationInput): P
               telegramUserId: recentLink.telegramUserId,
             };
     } else if (recentConversation) {
-      telegramTarget = {
+      availableTelegramTarget = {
         chatId: recentConversation.chatId,
         telegramUserId: recentConversation.telegramUserId,
       };
     } else if (recentLink) {
-      telegramTarget = {
+      availableTelegramTarget = {
         chatId: recentLink.chatId,
         telegramUserId: recentLink.telegramUserId,
       };
     }
   }
+
+  const hasTelegramAvailable = Boolean(availableTelegramTarget);
+  const hasWhatsApp =
+    hasWhatsAppAvailable && allowsMessagingChannel(deliveryChannelPreference, 'whatsapp');
+  const telegramTarget =
+    hasTelegramAvailable && allowsMessagingChannel(deliveryChannelPreference, 'telegram')
+      ? availableTelegramTarget
+      : null;
 
   if (!hasWhatsApp && !telegramTarget) {
     logger.info(`[alertNotification] Skipping - no messaging channels configured for user ${input.userId}`);
@@ -93,8 +112,15 @@ export async function triggerAlertNotification(input: AlertNotificationInput): P
       data: {
         userId: input.userId,
         actionType: 'ALERT_SKIPPED',
-        actionSummary: 'Alert matched but no messaging channel is configured',
-        actionDetails: { alertId: input.alert.id, email: input.email },
+        actionSummary: 'Alert matched but no eligible messaging channel is configured',
+        actionDetails: {
+          alertId: input.alert.id,
+          email: input.email,
+          reason:
+            hasWhatsAppAvailable || hasTelegramAvailable
+              ? 'preferred-channel-unavailable'
+              : 'messaging-not-configured',
+        },
         undoable: false,
       },
     });

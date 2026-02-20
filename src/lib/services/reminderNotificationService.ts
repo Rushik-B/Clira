@@ -14,6 +14,10 @@ import {
   getPairingManager,
   isTelegramEnabled,
 } from '@/lib/services/telegram';
+import {
+  allowsMessagingChannel,
+  normalizeNotificationDeliveryChannel,
+} from '@/lib/services/messagingChannelPreferences';
 import { convertUserLocalTimeToUtc, getZonedTimeComponents } from '@/lib/utils/timezone';
 import type { ProgressUpdateContext } from '@/lib/ai/tools/sendProgressUpdate';
 import type { Prisma, ReminderStatus } from '@prisma/client';
@@ -221,6 +225,7 @@ export async function triggerReminderNotification(input: ReminderNotificationInp
               whatsappPhoneNumber: true,
               whatsappVerified: true,
               calendarTimezone: true,
+              notificationDeliveryChannel: true,
             },
           },
         },
@@ -258,12 +263,15 @@ export async function triggerReminderNotification(input: ReminderNotificationInp
   }
 
   const settings = reminder.user?.settings;
-  const hasWhatsApp =
+  const deliveryChannelPreference = normalizeNotificationDeliveryChannel(
+    settings?.notificationDeliveryChannel,
+  );
+  const hasWhatsAppAvailable =
     Boolean(settings?.whatsappPhoneNumber) &&
     settings?.whatsappVerified === true &&
     isWhatsAppConfigured();
 
-  let telegramTarget:
+  let availableTelegramTarget:
     | {
         chatId: string;
         telegramUserId: string;
@@ -279,7 +287,7 @@ export async function triggerReminderNotification(input: ReminderNotificationInp
     ]);
 
     if (recentConversation && recentLink) {
-      telegramTarget =
+      availableTelegramTarget =
         recentConversation.updatedAt >= recentLink.updatedAt
           ? {
               chatId: recentConversation.chatId,
@@ -290,24 +298,35 @@ export async function triggerReminderNotification(input: ReminderNotificationInp
               telegramUserId: recentLink.telegramUserId,
             };
     } else if (recentConversation) {
-      telegramTarget = {
+      availableTelegramTarget = {
         chatId: recentConversation.chatId,
         telegramUserId: recentConversation.telegramUserId,
       };
     } else if (recentLink) {
-      telegramTarget = {
+      availableTelegramTarget = {
         chatId: recentLink.chatId,
         telegramUserId: recentLink.telegramUserId,
       };
     }
   }
 
+  const hasTelegramAvailable = Boolean(availableTelegramTarget);
+  const hasWhatsApp =
+    hasWhatsAppAvailable && allowsMessagingChannel(deliveryChannelPreference, 'whatsapp');
+  const telegramTarget =
+    hasTelegramAvailable && allowsMessagingChannel(deliveryChannelPreference, 'telegram')
+      ? availableTelegramTarget
+      : null;
+
   if (!hasWhatsApp && !telegramTarget) {
     logger.info(`[reminderNotification] Skipping - no messaging channels configured for user ${reminder.userId}`);
     await markReminderMissed({
       reminderId: reminder.id,
       userId: reminder.userId,
-      reason: 'messaging-not-configured',
+      reason:
+        hasWhatsAppAvailable || hasTelegramAvailable
+          ? 'preferred-channel-unavailable'
+          : 'messaging-not-configured',
     });
     return;
   }

@@ -477,6 +477,9 @@ model UserSettings {
   twilioVerified             Boolean            @default(false)
   /// Whether the user has seen the WhatsApp feature promotion card
   whatsappPromoSeen          Boolean            @default(false)
+  /// Preferred messaging channel for reminder/alert delivery.
+  /// BOTH keeps current behavior and sends to all available channels.
+  notificationDeliveryChannel NotificationDeliveryChannel @default(BOTH)
   user                       User               @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
@@ -748,4 +751,10 @@ enum TelegramPairingStatus {
   APPROVED
   EXPIRED
   REJECTED
+}
+
+enum NotificationDeliveryChannel {
+  WHATSAPP
+  TELEGRAM
+  BOTH
 }
