@@ -65,14 +65,27 @@ logs/
 
 # personal archive docs (exclude from OSS repo)
 /rushiks-docs/
+/rushiks-docs
 
-# local AI/dev agent configs (do not publish)
+# local AI/dev agent configs (do not publish; include without trailing slash so symlinks are ignored)
 /.agents/
+/.agents
 /.claude/
+/.claude
 /.codex/
+/.codex
 /.cursor/
+/.cursor
 /.windsurf/
+/.windsurf
 /.agent/
+/.agent
 /.opencode/
+/.opencode
 /.kiro/
+/.kiro
 /.gemini/
+/.gemini
+
+# agent/IDE docs (often symlinked from parent repo)
+/AGENTS.md
