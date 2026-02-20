@@ -156,53 +156,32 @@ export const TextChannelsIntegrationPage: React.FC = () => {
   useEffect(() => {
     const fetchSettings = async () => {
       try {
-        const [whatsappResponse, smsResponse, telegramResponse, deliveryPreferenceResponse] = await Promise.all([
-          fetch('/api/settings/whatsapp'),
-          fetch('/api/settings/twilio'),
-          fetch('/api/settings/telegram'),
-          fetch('/api/settings/messaging-channels'),
-        ]);
+        const response = await fetch('/api/settings/text-channels');
+        const data = await response.json();
 
-        const whatsappData = await whatsappResponse.json();
-        const smsData = await smsResponse.json();
-        const telegramData = await telegramResponse.json();
-        const deliveryPreferenceData = await deliveryPreferenceResponse.json();
-
-        if (!whatsappResponse.ok || !whatsappData.success) {
-          throw new Error('Failed to load WhatsApp settings');
-        }
-
-        if (!smsResponse.ok || !smsData.success) {
-          throw new Error('Failed to load SMS settings');
-        }
-
-        if (!telegramResponse.ok || !telegramData.success) {
-          throw new Error('Failed to load Telegram settings');
-        }
-
-        if (!deliveryPreferenceResponse.ok || !deliveryPreferenceData.success) {
-          throw new Error('Failed to load messaging channel settings');
+        if (!response.ok || !data.success) {
+          throw new Error('Failed to load text channel settings');
         }
 
         const nextSettings: TextingSettings = {
-          whatsappPhoneNumber: whatsappData.settings.whatsappPhoneNumber || null,
-          whatsappVerified: !!whatsappData.settings.whatsappVerified,
-          twilioPhoneNumber: smsData.settings.twilioPhoneNumber || null,
-          twilioVerified: !!smsData.settings.twilioVerified,
+          whatsappPhoneNumber: data.settings.whatsappPhoneNumber || null,
+          whatsappVerified: !!data.settings.whatsappVerified,
+          twilioPhoneNumber: data.settings.twilioPhoneNumber || null,
+          twilioVerified: !!data.settings.twilioVerified,
         };
 
         setSettings(nextSettings);
         setTelegramSettings({
-          telegramConfigured: !!telegramData.settings.telegramConfigured,
-          telegramEnabled: !!telegramData.settings.telegramEnabled,
-          botUsername: telegramData.settings.botUsername ?? null,
-          links: Array.isArray(telegramData.settings.links) ? telegramData.settings.links : [],
+          telegramConfigured: !!data.settings.telegramConfigured,
+          telegramEnabled: !!data.settings.telegramEnabled,
+          botUsername: data.settings.botUsername ?? null,
+          links: Array.isArray(data.settings.links) ? data.settings.links : [],
         });
 
         const selectedDeliveryChannel: NotificationDeliveryChannel =
-          deliveryPreferenceData.settings.notificationDeliveryChannel === 'WHATSAPP' ||
-          deliveryPreferenceData.settings.notificationDeliveryChannel === 'TELEGRAM'
-            ? deliveryPreferenceData.settings.notificationDeliveryChannel
+          data.settings.notificationDeliveryChannel === 'WHATSAPP' ||
+          data.settings.notificationDeliveryChannel === 'TELEGRAM'
+            ? data.settings.notificationDeliveryChannel
             : 'BOTH';
         setNotificationDeliveryChannel(selectedDeliveryChannel);
         setSavedNotificationDeliveryChannel(selectedDeliveryChannel);
