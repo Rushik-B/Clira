@@ -8,13 +8,15 @@ import { DEFAULT_CALENDAR_TIMEZONE } from '@/constants/time'
 import { checkUserScopes } from '@/lib/auth/scope-utils'
 
 const isProduction = process.env.NODE_ENV === 'production'
+// Secure cookies require HTTPS. Disable for local Docker (plain HTTP on localhost).
+const useSecure = isProduction && process.env.NEXTAUTH_URL?.startsWith('https')
 
 export const authOptions: NextAuthOptions = {
   // Explicitly set these so cookie/crypto behavior is stable across proxies/dynos.
   // In production, OAuth requires consistent secure-cookie behavior; otherwise the
   // state cookie can be written under one name and read under another (→ "missing").
   secret: process.env.NEXTAUTH_SECRET,
-  useSecureCookies: isProduction,
+  useSecureCookies: useSecure,
   providers: [
     GoogleProvider({
       clientId: process.env.GOOGLE_CLIENT_ID!,
