@@ -197,8 +197,8 @@ export default async function middleware(request: NextRequest) {
     response.headers.set("Vary", "Cookie");
   }
 
-  // Add HSTS header in production (request is already HTTPS at this point)
-  if (isProd) {
+  // Add HSTS header in production (skip localhost — no TLS termination locally)
+  if (isProd && !isLocalhost) {
     response.headers.set(
       "Strict-Transport-Security",
       "max-age=31536000; includeSubDomains; preload",

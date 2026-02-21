@@ -10,6 +10,7 @@ services:
       DATABASE_URL: postgresql://postgres:postgres@db:5432/clira
       REDIS_URL: redis://redis:6379
       NEXTAUTH_URL: http://localhost:13000
+      NEXT_PUBLIC_LANDING_PAGE_URL: ""
     depends_on:
       - db
       - redis
