@@ -3,9 +3,8 @@
 // Placeholder Redis utility - to be revisited
 import IORedis from 'ioredis';
 
-// This automatically uses the REDIS_URL from Heroku's environment variables.
-// For local development, you can set REDIS_URL=redis://localhost:6379
-const redisConnection = new IORedis(process.env.REDIS_URL || 'redis://localhost:6379', {
+// For local development with Docker Redis, set REDIS_URL=redis://localhost:16379
+const redisConnection = new IORedis(process.env.REDIS_URL || 'redis://localhost:16379', {
   // This is important to prevent jobs from failing during a brief Redis disconnect.
   maxRetriesPerRequest: null,
   // Connection pool settings for better performance

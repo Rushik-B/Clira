@@ -6,6 +6,7 @@ services:
     env_file:
       - .env
     environment:
+      NODE_ENV: production
       DATABASE_URL: postgresql://postgres:postgres@db:5432/clira
       REDIS_URL: redis://redis:6379
     depends_on:
@@ -18,6 +19,7 @@ services:
     env_file:
       - .env
     environment:
+      NODE_ENV: production
       DATABASE_URL: postgresql://postgres:postgres@db:5432/clira
       REDIS_URL: redis://redis:6379
     depends_on:
