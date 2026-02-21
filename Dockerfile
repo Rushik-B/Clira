@@ -12,7 +12,9 @@ RUN npx prisma generate
 # These are never used at runtime — real values come from docker-compose / .env.
 ARG DATABASE_URL=postgresql://dummy:dummy@dummy:5432/dummy
 ARG REDIS_URL=redis://dummy:6379
-RUN DATABASE_URL="${DATABASE_URL}" REDIS_URL="${REDIS_URL}" NODE_OPTIONS="--max-old-space-size=4096" npm run build
+# Empty NEXT_PUBLIC_LANDING_PAGE_URL at build time so client code falls back to /signin
+ARG NEXT_PUBLIC_LANDING_PAGE_URL=""
+RUN DATABASE_URL="${DATABASE_URL}" REDIS_URL="${REDIS_URL}" NEXT_PUBLIC_LANDING_PAGE_URL="${NEXT_PUBLIC_LANDING_PAGE_URL}" NODE_OPTIONS="--max-old-space-size=4096" npm run build
 RUN npm prune --omit=dev
 
 FROM node:22-alpine AS runner

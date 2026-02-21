@@ -10,12 +10,11 @@ export const dynamic = "force-dynamic";
 export default function Home() {
   const { data: session, status } = useSession();
 
-  const landingPageUrl =
-    process.env.NEXT_PUBLIC_LANDING_PAGE_URL || "http://localhost:8080";
+  const landingPageUrl = process.env.NEXT_PUBLIC_LANDING_PAGE_URL;
 
   useEffect(() => {
     if (status === "unauthenticated") {
-      window.location.href = landingPageUrl;
+      window.location.href = landingPageUrl || "/signin";
     }
   }, [status, landingPageUrl]);
 

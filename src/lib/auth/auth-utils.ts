@@ -1,7 +1,7 @@
 import { signOut as nextAuthSignOut } from "next-auth/react"
 
 // URL of the landing page (defaults to localhost for development)
-const LANDING_PAGE_URL = process.env.NEXT_PUBLIC_LANDING_PAGE_URL || 'http://localhost:8080'
+const LANDING_PAGE_URL = process.env.NEXT_PUBLIC_LANDING_PAGE_URL || '/signin'
 
 export async function signOutAndRedirect() {
   console.log('🔄 Signing out and redirecting to:', LANDING_PAGE_URL)
