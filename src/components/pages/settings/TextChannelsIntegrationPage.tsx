@@ -27,6 +27,7 @@ import {
 } from './text-channels/phone-utils';
 import type {
   NotificationDeliveryChannel,
+  TelegramHealthState,
   TelegramLinkSettings,
   TelegramSettingsState,
   TextingSettings,
@@ -78,6 +79,7 @@ export const TextChannelsIntegrationPage: React.FC = () => {
     telegramEnabled: false,
     botUsername: null,
     links: [],
+    health: null,
   });
   const [notificationDeliveryChannel, setNotificationDeliveryChannel] =
     useState<NotificationDeliveryChannel>('BOTH');
@@ -122,6 +124,7 @@ export const TextChannelsIntegrationPage: React.FC = () => {
           telegramEnabled: !!data.settings.telegramEnabled,
           botUsername: data.settings.botUsername ?? null,
           links: Array.isArray(data.settings.links) ? data.settings.links : [],
+          health: (data.settings.telegramHealth ?? null) as TelegramHealthState | null,
         });
 
         const selectedDeliveryChannel: NotificationDeliveryChannel =
@@ -163,6 +166,11 @@ export const TextChannelsIntegrationPage: React.FC = () => {
     notificationDeliveryChannel !== savedNotificationDeliveryChannel;
   const activeTelegramLink = telegramSettings.links[0] ?? null;
   const hasTelegramLink = Boolean(activeTelegramLink);
+  const telegramHealth = telegramSettings.health;
+  const isTelegramWorkerConnected = !!telegramHealth?.workerConnected;
+  const telegramLastUpdateLabel = telegramHealth?.lastUpdateAt
+    ? new Date(telegramHealth.lastUpdateAt).toLocaleString()
+    : 'No updates seen yet';
   const normalizedPairingCodeInput = pairingCodeInput
     .trim()
     .toUpperCase()
@@ -857,6 +865,17 @@ export const TextChannelsIntegrationPage: React.FC = () => {
                         ? `Bot username: @${telegramSettings.botUsername}`
                         : 'Bot username unavailable'}
                     </p>
+                    <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-gray-400">
+                      <span className="inline-flex items-center gap-2">
+                        <span
+                          className={`h-2 w-2 rounded-full ${
+                            isTelegramWorkerConnected ? 'bg-emerald-400' : 'bg-red-400'
+                          }`}
+                        />
+                        Worker {isTelegramWorkerConnected ? 'connected' : 'disconnected'}
+                      </span>
+                      <span>Last update: {telegramLastUpdateLabel}</span>
+                    </div>
                   </div>
                 )}
 

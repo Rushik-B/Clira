@@ -18,11 +18,22 @@ export interface TelegramLinkSettings {
   updatedAt?: string;
 }
 
+export interface TelegramHealthState {
+  configured: boolean;
+  enabled: boolean;
+  workerConnected: boolean;
+  lastHeartbeatAt: string | null;
+  heartbeatAgeMs: number | null;
+  lastUpdateId: number | null;
+  lastUpdateAt: string | null;
+}
+
 export interface TelegramSettingsState {
   telegramConfigured: boolean;
   telegramEnabled: boolean;
   botUsername: string | null;
   links: TelegramLinkSettings[];
+  health: TelegramHealthState | null;
 }
 
 export interface CountryOption {

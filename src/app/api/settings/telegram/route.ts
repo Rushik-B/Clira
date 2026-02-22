@@ -7,6 +7,7 @@ import {
   isTelegramConfigured,
   isTelegramEnabled,
   getTelegramClient,
+  getTelegramHealthSnapshot,
 } from '@/lib/services/telegram';
 
 /**
@@ -21,7 +22,10 @@ export async function GET() {
     }
 
     const pairingManager = getPairingManager();
-    const links = await pairingManager.getActiveLinksForUser(session.userId);
+    const [links, health] = await Promise.all([
+      pairingManager.getActiveLinksForUser(session.userId),
+      getTelegramHealthSnapshot(),
+    ]);
 
     let botUsername: string | null = null;
     if (isTelegramConfigured()) {
@@ -36,6 +40,7 @@ export async function GET() {
         telegramEnabled: isTelegramEnabled(),
         botUsername,
         links,
+        health,
       },
     });
   } catch (error) {

@@ -9,6 +9,7 @@ export {
   getTelegramClient,
   isTelegramConfigured,
   isTelegramEnabled,
+  TELEGRAM_POLLER_WORKER_KEY,
   createTelegramConfig,
   startTelegramMonitor,
   stopTelegramMonitor,
@@ -17,6 +18,18 @@ export {
   type TelegramInboundMessage,
   type TelegramPollerStateSnapshot,
 } from './telegramClient';
+
+export {
+  TELEGRAM_WORKER_HEARTBEAT_KEY,
+  TELEGRAM_WORKER_HEARTBEAT_TTL_SECONDS,
+  writeTelegramWorkerHeartbeat,
+  readTelegramWorkerHeartbeat,
+} from './workerHeartbeat';
+
+export {
+  getTelegramHealthSnapshot,
+  type TelegramHealthSnapshot,
+} from './health';
 
 export {
   ConversationManager,

@@ -13,7 +13,7 @@ import { logger } from '@/lib/logger';
 
 const DEFAULT_POLL_TIMEOUT_SECONDS = 30;
 const DEFAULT_POLL_RETRY_MAX_MS = 15_000;
-const POLLER_WORKER_KEY = 'telegram-worker-main';
+export const TELEGRAM_POLLER_WORKER_KEY = 'telegram-worker-main';
 
 export interface TelegramClientConfig {
   botToken: string;
@@ -318,7 +318,7 @@ export class TelegramClient {
 
   async getPollerState(): Promise<TelegramPollerStateSnapshot | null> {
     const state = await prisma.telegramPollerState.findUnique({
-      where: { workerKey: POLLER_WORKER_KEY },
+      where: { workerKey: TELEGRAM_POLLER_WORKER_KEY },
       select: {
         workerKey: true,
         lastUpdateId: true,
@@ -336,10 +336,10 @@ export class TelegramClient {
 
   private async persistPollOffset(lastUpdateId: number): Promise<void> {
     await prisma.telegramPollerState.upsert({
-      where: { workerKey: POLLER_WORKER_KEY },
+      where: { workerKey: TELEGRAM_POLLER_WORKER_KEY },
       update: { lastUpdateId },
       create: {
-        workerKey: POLLER_WORKER_KEY,
+        workerKey: TELEGRAM_POLLER_WORKER_KEY,
         lastUpdateId,
       },
     });

@@ -5,6 +5,7 @@ import { prisma } from '@/lib/prisma';
 import {
   getPairingManager,
   getTelegramClient,
+  getTelegramHealthSnapshot,
   isTelegramConfigured,
   isTelegramEnabled,
 } from '@/lib/services/telegram';
@@ -24,7 +25,7 @@ export async function GET() {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const [settings, links] = await Promise.all([
+    const [settings, links, telegramHealth] = await Promise.all([
       prisma.userSettings.findUnique({
         where: { userId: session.userId },
         select: {
@@ -36,6 +37,7 @@ export async function GET() {
         },
       }),
       getPairingManager().getActiveLinksForUser(session.userId),
+      getTelegramHealthSnapshot(),
     ]);
 
     let botUsername: string | null = null;
@@ -57,6 +59,7 @@ export async function GET() {
         telegramEnabled: isTelegramEnabled(),
         botUsername,
         links,
+        telegramHealth,
       },
     });
   } catch (error) {

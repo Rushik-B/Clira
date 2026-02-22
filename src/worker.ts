@@ -47,7 +47,13 @@ import { encryptEmailContent, decryptEmailContent } from '@/lib/security/emailCr
 // AI queue label removed: no longer creating/applying a dedicated Gmail label
 import { normalizeGmailLabelColor } from '@/lib/gmail/labelColors';
 import { triggerReminderNotification, markReminderMissed } from '@/lib/services/reminderNotificationService';
-import { isTelegramEnabled, startTelegramMonitor, stopTelegramMonitor, processTelegramMessage } from '@/lib/services/telegram';
+import {
+  isTelegramEnabled,
+  startTelegramMonitor,
+  stopTelegramMonitor,
+  processTelegramMessage,
+  writeTelegramWorkerHeartbeat,
+} from '@/lib/services/telegram';
 
 console.log('🚀 Background Worker process started...');
 console.log('🔧 Environment variables loaded:');
@@ -1179,6 +1185,9 @@ workers.forEach((worker, index) => {
 void writeSupermemoryWorkerHeartbeat();
 heartbeatInterval = setInterval(() => {
   void writeSupermemoryWorkerHeartbeat();
+  if (telegramMonitorStarted) {
+    void writeTelegramWorkerHeartbeat();
+  }
 }, 30_000);
 
 if (isTelegramEnabled()) {
@@ -1189,6 +1198,7 @@ if (isTelegramEnabled()) {
   })
     .then(() => {
       telegramMonitorStarted = true;
+      void writeTelegramWorkerHeartbeat();
       console.log('📨 Telegram long-polling monitor started in worker process');
     })
     .catch((error) => {
