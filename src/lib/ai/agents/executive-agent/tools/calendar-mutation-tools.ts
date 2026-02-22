@@ -60,6 +60,20 @@ export function buildCalendarMutationTools({
     toolAbort,
     toolAbortSignal,
   } = context;
+  const staleToolResult = () => ({
+    ok: false,
+    status: 'deferred',
+    error: 'superseded_by_newer_message',
+    message: 'A newer user message arrived, so this action was deferred.',
+  });
+  const ensureCurrentRun = async (toolName: string) => {
+    if (await context.isRunCurrent()) {
+      return null;
+    }
+
+    logger.info(`[executiveAgent] ${toolName} deferred due to stale run`);
+    return staleToolResult();
+  };
 
   return {
       // Tool 5: Plan Calendar Change
@@ -108,6 +122,9 @@ export function buildCalendarMutationTools({
           forceNewPlan?: boolean;
           resolvedEvents?: Array<{ eventId: string; calendarId: string; name: string; start: string; end: string }>;
         }) => {
+          const stale = await ensureCurrentRun('plan_calendar_change');
+          if (stale) return stale;
+
           const request = args.request?.trim() || input.userRequest;
           logger.info(`[executiveAgent] plan_calendar_change: "${truncate(request, 80)}"`);
 
@@ -764,6 +781,9 @@ export function buildCalendarMutationTools({
           decision: z.enum(['confirm', 'cancel']),
         }),
         execute: async (args: { decision: 'confirm' | 'cancel' }) => {
+          const stale = await ensureCurrentRun('commit_calendar_change');
+          if (stale) return stale;
+
           const latestPending = await prisma.pendingCalendarChange.findFirst({
             where: {
               userId: input.userId,
@@ -936,6 +956,12 @@ export function buildCalendarMutationTools({
               const failures: Array<{ index: number; summary: string; message: string }> = [];
 
               for (const [index, draft] of drafts.entries()) {
+                const staleInLoop = await ensureCurrentRun('commit_calendar_change');
+                if (staleInLoop) {
+                  await releasePending();
+                  return staleInLoop;
+                }
+
                 const timeValidation = validateEventDraftTimes(draft, 'create');
                 if (!timeValidation.ok) {
                   failures.push({
@@ -1069,6 +1095,12 @@ export function buildCalendarMutationTools({
                 const failures: Array<{ index: number; summary: string; message: string }> = [];
 
                 for (const [index, target] of pendingPayload.resolvedTargets.entries()) {
+                  const staleInLoop = await ensureCurrentRun('commit_calendar_change');
+                  if (staleInLoop) {
+                    await releasePending();
+                    return staleInLoop;
+                  }
+
                   const draft = plan.eventDrafts[index];
                   if (!draft) {
                     failures.push({
@@ -1243,6 +1275,12 @@ export function buildCalendarMutationTools({
                 return { ok: false, error: 'invalid_plan', message: 'No update fields were provided.' };
               }
 
+              const staleSingleUpdate = await ensureCurrentRun('commit_calendar_change');
+              if (staleSingleUpdate) {
+                await releasePending();
+                return staleSingleUpdate;
+              }
+
               const currentEventResponse = await calendarService.getEvent({
                 calendarId: pendingPayload.resolvedTarget.calendarId,
                 eventId: pendingPayload.resolvedTarget.eventId,
@@ -1345,6 +1383,12 @@ export function buildCalendarMutationTools({
                 const failures: Array<{ index: number; summary: string; message: string }> = [];
 
                 for (const [index, target] of pendingPayload.resolvedTargets.entries()) {
+                  const staleInLoop = await ensureCurrentRun('commit_calendar_change');
+                  if (staleInLoop) {
+                    await releasePending();
+                    return staleInLoop;
+                  }
+
                   try {
                     const currentEventResponse = await calendarService.getEvent({
                       calendarId: target.calendarId,
@@ -1431,6 +1475,12 @@ export function buildCalendarMutationTools({
                   error: 'missing_target',
                   message: 'No event target found for this deletion.',
                 };
+              }
+
+              const staleSingleDelete = await ensureCurrentRun('commit_calendar_change');
+              if (staleSingleDelete) {
+                await releasePending();
+                return staleSingleDelete;
               }
 
               const currentEventResponse = await calendarService.getEvent({
