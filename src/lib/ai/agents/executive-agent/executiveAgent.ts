@@ -36,76 +36,76 @@ import type {
 } from './types';
 
 export class ExecutiveAgent {
-  private memoryStored = false;
-
   async process(input: ExecutiveAgentInput): Promise<ExecutiveAgentOutput> {
-    this.memoryStored = false;
+    let memoryStored = false;
     const resolvedChannel = resolveProgressChannel(input);
     const retrievalProfile = resolveRetrievalProfile(resolvedChannel);
 
-    const promptContext = await buildExecutiveAgentPrompt(input, resolvedChannel);
-    const { prompt, userTimezone, currentTimeUtc, currentTimeUserTz, dayOfWeek } = promptContext;
-    const pendingRecordForPrompt = await prisma.pendingCalendarChange.findFirst({
-      where: {
-        userId: input.userId,
-        conversationId: input.conversationId,
-        status: PendingCalendarChangeStatus.PENDING,
-        expiresAt: { gt: new Date() },
-      },
-      orderBy: { createdAt: 'desc' },
-      select: {
-        id: true,
-        plan: true,
-        resolvedTarget: true,
-        userTimezone: true,
-        userRequest: true,
-        expiresAt: true,
-        status: true,
-        createdAt: true,
-      },
-    });
-    const pendingPayloadForPrompt = pendingRecordForPrompt
-      ? parsePendingCalendarChangeRecord(pendingRecordForPrompt as PendingCalendarChangeRecord)
-      : null;
-    const pendingCalendarInstruction = pendingRecordForPrompt && pendingPayloadForPrompt
-      ? `Active pending calendar change exists (pendingId=${pendingRecordForPrompt.id}, action=${pendingPayloadForPrompt.plan.action}, expiresAt=${pendingRecordForPrompt.expiresAt.toISOString()}).`
-      : 'No active pending calendar change exists.';
-
-    const toolAbort = createDeadlineController({
-      abortSignal: input.abortSignal,
-      deadlineMs: MESSAGING_DEADLINE_MS,
-    });
-    const toolAbortSignal = toolAbort.signal ?? input.abortSignal;
-
-    const tools = buildExecutiveAgentTools({
-      input,
-      channel: resolvedChannel,
-      retrievalProfile,
-      userTimezone,
-      currentTimeUtc,
-      currentTimeUserTz,
-      dayOfWeek,
-      toolAbort,
-      toolAbortSignal,
-      onMemoryStored: () => {
-        this.memoryStored = true;
-      },
-    });
-
-    const startTime = Date.now();
-    let lastProgressSentAt = 0;
-
-    const timedTools = wrapToolsWithTimingMetadata({
-      tools,
-      agentStartedAt: startTime,
-      timeLeftMs: () => toolAbort.timeLeftMs(),
-      getLastProgressSentAt: () => lastProgressSentAt,
-      setLastProgressSentAt: (sentAt: number) => {
-        lastProgressSentAt = sentAt;
-      },
-    });
+    let toolAbort: ReturnType<typeof createDeadlineController> | undefined;
 
     try {
+      const promptContext = await buildExecutiveAgentPrompt(input, resolvedChannel);
+      const { prompt, userTimezone, currentTimeUtc, currentTimeUserTz, dayOfWeek } = promptContext;
+      const pendingRecordForPrompt = await prisma.pendingCalendarChange.findFirst({
+        where: {
+          userId: input.userId,
+          conversationId: input.conversationId,
+          status: PendingCalendarChangeStatus.PENDING,
+          expiresAt: { gt: new Date() },
+        },
+        orderBy: { createdAt: 'desc' },
+        select: {
+          id: true,
+          plan: true,
+          resolvedTarget: true,
+          userTimezone: true,
+          userRequest: true,
+          expiresAt: true,
+          status: true,
+          createdAt: true,
+        },
+      });
+      const pendingPayloadForPrompt = pendingRecordForPrompt
+        ? parsePendingCalendarChangeRecord(pendingRecordForPrompt as PendingCalendarChangeRecord)
+        : null;
+      const pendingCalendarInstruction = pendingRecordForPrompt && pendingPayloadForPrompt
+        ? `Active pending calendar change exists (pendingId=${pendingRecordForPrompt.id}, action=${pendingPayloadForPrompt.plan.action}, expiresAt=${pendingRecordForPrompt.expiresAt.toISOString()}).`
+        : 'No active pending calendar change exists.';
+
+      toolAbort = createDeadlineController({
+        abortSignal: input.abortSignal,
+        deadlineMs: MESSAGING_DEADLINE_MS,
+      });
+      const toolAbortSignal = toolAbort.signal ?? input.abortSignal;
+
+      const tools = buildExecutiveAgentTools({
+        input,
+        channel: resolvedChannel,
+        retrievalProfile,
+        userTimezone,
+        currentTimeUtc,
+        currentTimeUserTz,
+        dayOfWeek,
+        toolAbort,
+        toolAbortSignal,
+        onMemoryStored: () => {
+          memoryStored = true;
+        },
+      });
+
+      const startTime = Date.now();
+      let lastProgressSentAt = 0;
+
+      const timedTools = wrapToolsWithTimingMetadata({
+        tools,
+        agentStartedAt: startTime,
+        timeLeftMs: () => toolAbort!.timeLeftMs(),
+        getLastProgressSentAt: () => lastProgressSentAt,
+        setLastProgressSentAt: (sentAt: number) => {
+          lastProgressSentAt = sentAt;
+        },
+      });
+
       const systemPrompt =
         'You are Clira, an Executive AI Agent helping the user over messaging. ' +
         'You are warm, casual, confident, and high-agency (like a top-tier human EA). ' +
@@ -203,7 +203,7 @@ export class ExecutiveAgent {
 
       return {
         response,
-        memoryStored: this.memoryStored,
+        memoryStored,
         status: 'ok',
         metadata: Object.keys(metadata).length > 0 ? (metadata as Prisma.InputJsonObject) : undefined,
       };
@@ -231,7 +231,7 @@ export class ExecutiveAgent {
         error: message,
       };
     } finally {
-      toolAbort.cleanup();
+      toolAbort?.cleanup();
     }
   }
 }

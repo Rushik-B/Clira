@@ -132,6 +132,21 @@ export function buildCalendarMutationTools({
           });
 
           if (existingPending && !args.forceNewPlan) {
+            if (existingPending.status === PendingCalendarChangeStatus.IN_PROGRESS) {
+              const pendingPayload = parsePendingCalendarChangeRecord(existingPending as PendingCalendarChangeRecord);
+              return {
+                ok: false,
+                message: 'A calendar change is currently being processed. Please wait a moment.',
+                pendingChange: {
+                  pendingId: existingPending.id,
+                  createdAt: existingPending.createdAt.toISOString(),
+                  expiresAt: existingPending.expiresAt.toISOString(),
+                  status: existingPending.status,
+                  action: pendingPayload?.plan.action,
+                },
+              };
+            }
+
             const pendingPayload = parsePendingCalendarChangeRecord(existingPending as PendingCalendarChangeRecord);
             if (!pendingPayload) {
               return {

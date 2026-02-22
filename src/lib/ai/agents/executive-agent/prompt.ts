@@ -22,12 +22,16 @@ export async function buildExecutiveAgentPrompt(
   const template = readPromptFile('whatsapp/executiveAgentPrompt.md');
 
   // Fetch user settings for timezone
-  const userSettings = await prisma.userSettings.findUnique({
-    where: { userId: input.userId },
-    select: { calendarTimezone: true },
-  });
-
-  const userTimezone = userSettings?.calendarTimezone || DEFAULT_CALENDAR_TIMEZONE;
+  let userTimezone = DEFAULT_CALENDAR_TIMEZONE;
+  try {
+    const userSettings = await prisma.userSettings.findUnique({
+      where: { userId: input.userId },
+      select: { calendarTimezone: true },
+    });
+    userTimezone = userSettings?.calendarTimezone || DEFAULT_CALENDAR_TIMEZONE;
+  } catch (error) {
+    logger.debug('[executiveAgent] Failed to fetch user settings for timezone:', error);
+  }
   const now = new Date();
   const currentTimeUtc = now.toISOString();
   let currentDateUserTzDateOnly = currentTimeUtc.split('T')[0]!;

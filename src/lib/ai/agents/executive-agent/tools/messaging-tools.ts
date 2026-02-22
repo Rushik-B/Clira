@@ -504,6 +504,7 @@ export function buildMessagingTools({
           inReplyTo: z.string().optional().describe('RFC 2822 In-Reply-To header for threading'),
           references: z.string().optional().describe('RFC 2822 References header for threading'),
           threadId: z.string().optional().describe('Gmail thread ID to attach email to'),
+          confirmed: z.boolean().describe('Must be true — set only after the user has explicitly approved sending this email (e.g. "yes", "send it", "go ahead"). Never set to true speculatively.'),
         }),
         execute: async (args: {
           to: string;
@@ -513,7 +514,15 @@ export function buildMessagingTools({
           inReplyTo?: string;
           references?: string;
           threadId?: string;
+          confirmed: boolean;
         }) => {
+          if (!args.confirmed) {
+            return {
+              success: false,
+              message: 'Email not sent. Explicit user approval is required before sending. Show the draft to the user and wait for them to confirm.',
+            };
+          }
+
           logger.info(`[executiveAgent] send_email: to=${args.to} subject="${truncate(args.subject, 30)}"`);
 
           try {
