@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import {
   Copy,
   Loader2,
@@ -17,6 +17,7 @@ import {
 import { Button } from '@/components/ui/sidebar/button';
 import { Input } from '@/components/ui/sidebar/input';
 import { CLIRA_TEXT_NUMBER, WHATSAPP_CTA_URL } from '@/lib/publicConfig';
+import type { TextChannelsSettingsSnapshot } from '@/lib/services/textChannelsSettings';
 import { SettingsShell, SettingsSectionCard } from './SettingsShell';
 import {
   COUNTRY_OPTIONS,
@@ -68,95 +69,103 @@ const TelegramOfficialIcon: React.FC<{ className?: string }> = ({ className }) =
  * Text Channel Integration Settings Page
  * Configures SMS, WhatsApp, and Telegram messaging channels.
  */
-export const TextChannelsIntegrationPage: React.FC = () => {
-  const [settings, setSettings] = useState<TextingSettings>({
-    whatsappPhoneNumber: null,
-    whatsappVerified: false,
-    twilioPhoneNumber: null,
-    twilioVerified: false,
-  });
-  const [telegramSettings, setTelegramSettings] = useState<TelegramSettingsState>({
-    telegramConfigured: false,
-    telegramEnabled: false,
-    botUsername: null,
-    links: [],
-    pendingPairingRequests: [],
-    health: null,
-  });
+interface TextChannelsIntegrationPageProps {
+  initialSettings?: TextChannelsSettingsSnapshot | null;
+}
+
+function getInitialTextChannelsState(initialSettings: TextChannelsSettingsSnapshot | null) {
+  if (!initialSettings) {
+    return {
+      settings: {
+        whatsappPhoneNumber: null,
+        whatsappVerified: false,
+        twilioPhoneNumber: null,
+        twilioVerified: false,
+      } satisfies TextingSettings,
+      telegramSettings: {
+        telegramConfigured: false,
+        telegramEnabled: false,
+        botUsername: null,
+        links: [],
+        pendingPairingRequests: [],
+        health: null,
+      } satisfies TelegramSettingsState,
+      notificationDeliveryChannel: 'BOTH' as NotificationDeliveryChannel,
+      smsCountryCode: DEFAULT_COUNTRY_CODE,
+      smsNumberInput: '',
+      whatsappCountryCode: DEFAULT_COUNTRY_CODE,
+      whatsappNumberInput: '',
+      initialErrorMessage: 'Failed to load texting settings.',
+    };
+  }
+
+  const settings: TextingSettings = {
+    whatsappPhoneNumber: initialSettings.whatsappPhoneNumber || null,
+    whatsappVerified: !!initialSettings.whatsappVerified,
+    twilioPhoneNumber: initialSettings.twilioPhoneNumber || null,
+    twilioVerified: !!initialSettings.twilioVerified,
+  };
+
+  const selectedDeliveryChannel: NotificationDeliveryChannel =
+    initialSettings.notificationDeliveryChannel === 'WHATSAPP' ||
+    initialSettings.notificationDeliveryChannel === 'TELEGRAM'
+      ? initialSettings.notificationDeliveryChannel
+      : 'BOTH';
+
+  const parsedWhatsApp = parseE164Number(settings.whatsappPhoneNumber);
+  const parsedSms = parseE164Number(settings.twilioPhoneNumber);
+
+  return {
+    settings,
+    telegramSettings: {
+      telegramConfigured: !!initialSettings.telegramConfigured,
+      telegramEnabled: !!initialSettings.telegramEnabled,
+      botUsername: initialSettings.botUsername ?? null,
+      links: Array.isArray(initialSettings.links) ? initialSettings.links : [],
+      pendingPairingRequests: Array.isArray(initialSettings.pendingPairingRequests)
+        ? initialSettings.pendingPairingRequests
+        : [],
+      health: (initialSettings.telegramHealth ?? null) as TelegramHealthState | null,
+    } satisfies TelegramSettingsState,
+    notificationDeliveryChannel: selectedDeliveryChannel,
+    smsCountryCode: parsedSms.countryCode,
+    smsNumberInput: parsedSms.nationalNumber,
+    whatsappCountryCode: parsedWhatsApp.countryCode,
+    whatsappNumberInput: parsedWhatsApp.nationalNumber,
+    initialErrorMessage: '',
+  };
+}
+
+export const TextChannelsIntegrationPage: React.FC<TextChannelsIntegrationPageProps> = ({
+  initialSettings = null,
+}) => {
+  const initialState = getInitialTextChannelsState(initialSettings);
+  const [settings, setSettings] = useState<TextingSettings>(initialState.settings);
+  const [telegramSettings, setTelegramSettings] = useState<TelegramSettingsState>(
+    initialState.telegramSettings,
+  );
   const [notificationDeliveryChannel, setNotificationDeliveryChannel] =
-    useState<NotificationDeliveryChannel>('BOTH');
+    useState<NotificationDeliveryChannel>(initialState.notificationDeliveryChannel);
   const [savedNotificationDeliveryChannel, setSavedNotificationDeliveryChannel] =
-    useState<NotificationDeliveryChannel>('BOTH');
+    useState<NotificationDeliveryChannel>(initialState.notificationDeliveryChannel);
   const [pairingCodeInput, setPairingCodeInput] = useState('');
-  const [smsCountryCode, setSmsCountryCode] = useState(DEFAULT_COUNTRY_CODE);
-  const [smsNumberInput, setSmsNumberInput] = useState('');
-  const [whatsappCountryCode, setWhatsappCountryCode] = useState(DEFAULT_COUNTRY_CODE);
-  const [whatsappNumberInput, setWhatsappNumberInput] = useState('');
-  const [loading, setLoading] = useState(true);
+  const [smsCountryCode, setSmsCountryCode] = useState(initialState.smsCountryCode);
+  const [smsNumberInput, setSmsNumberInput] = useState(initialState.smsNumberInput);
+  const [whatsappCountryCode, setWhatsappCountryCode] = useState(
+    initialState.whatsappCountryCode,
+  );
+  const [whatsappNumberInput, setWhatsappNumberInput] = useState(
+    initialState.whatsappNumberInput,
+  );
   const [smsSaving, setSmsSaving] = useState(false);
   const [whatsappSaving, setWhatsappSaving] = useState(false);
   const [deliveryChannelSaving, setDeliveryChannelSaving] = useState(false);
   const [telegramPairingSaving, setTelegramPairingSaving] = useState(false);
   const [telegramUnlinking, setTelegramUnlinking] = useState(false);
   const [successMessage, setSuccessMessage] = useState('');
-  const [errorMessage, setErrorMessage] = useState('');
+  const [errorMessage, setErrorMessage] = useState(initialState.initialErrorMessage);
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle');
-
-  // Fetch current settings on mount
-  useEffect(() => {
-    const fetchSettings = async () => {
-      try {
-        const response = await fetch('/api/settings/text-channels');
-        const data = await response.json();
-
-        if (!response.ok || !data.success) {
-          throw new Error('Failed to load text channel settings');
-        }
-
-        const nextSettings: TextingSettings = {
-          whatsappPhoneNumber: data.settings.whatsappPhoneNumber || null,
-          whatsappVerified: !!data.settings.whatsappVerified,
-          twilioPhoneNumber: data.settings.twilioPhoneNumber || null,
-          twilioVerified: !!data.settings.twilioVerified,
-        };
-
-        setSettings(nextSettings);
-        setTelegramSettings({
-          telegramConfigured: !!data.settings.telegramConfigured,
-          telegramEnabled: !!data.settings.telegramEnabled,
-          botUsername: data.settings.botUsername ?? null,
-          links: Array.isArray(data.settings.links) ? data.settings.links : [],
-          pendingPairingRequests: Array.isArray(data.settings.pendingPairingRequests)
-            ? data.settings.pendingPairingRequests
-            : [],
-          health: (data.settings.telegramHealth ?? null) as TelegramHealthState | null,
-        });
-
-        const selectedDeliveryChannel: NotificationDeliveryChannel =
-          data.settings.notificationDeliveryChannel === 'WHATSAPP' ||
-          data.settings.notificationDeliveryChannel === 'TELEGRAM'
-            ? data.settings.notificationDeliveryChannel
-            : 'BOTH';
-        setNotificationDeliveryChannel(selectedDeliveryChannel);
-        setSavedNotificationDeliveryChannel(selectedDeliveryChannel);
-
-        const parsedWhatsApp = parseE164Number(nextSettings.whatsappPhoneNumber);
-        setWhatsappCountryCode(parsedWhatsApp.countryCode);
-        setWhatsappNumberInput(parsedWhatsApp.nationalNumber);
-
-        const parsedSms = parseE164Number(nextSettings.twilioPhoneNumber);
-        setSmsCountryCode(parsedSms.countryCode);
-        setSmsNumberInput(parsedSms.nationalNumber);
-      } catch (error) {
-        console.error('Error fetching texting settings:', error);
-        setErrorMessage('Failed to load texting settings');
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchSettings();
-  }, []);
+  const loading = false;
 
   const smsE164 = formatE164Number(smsCountryCode, smsNumberInput);
   const whatsappE164 = formatE164Number(whatsappCountryCode, whatsappNumberInput);

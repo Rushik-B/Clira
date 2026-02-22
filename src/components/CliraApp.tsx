@@ -20,10 +20,15 @@ import { PageDataProvider } from '@/contexts/PageDataContext';
 import { LoaderFive } from '@/components/ui/loader';
 import { OnboardingStatusBanner } from '@/components/ui/OnboardingStatusBanner';
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary';
+import type { TextChannelsSettingsSnapshot } from '@/lib/services/textChannelsSettings';
 
 type SettingsSection = 'account-privacy' | 'assistant-replies' | 'folders-labels' | 'text-channels' | 'inboxes';
 
-const CliraAppContent: React.FC = () => {
+interface CliraAppProps {
+  initialTextChannelsSettings?: TextChannelsSettingsSnapshot | null;
+}
+
+const CliraAppContent: React.FC<CliraAppProps> = ({ initialTextChannelsSettings = null }) => {
   const { data: session } = useSession();
   const [activePage, setActivePage] = useState<PageType>('queue');
   const [activeLabelId, setActiveLabelId] = useState<string | null>(null);    
@@ -172,7 +177,12 @@ const CliraAppContent: React.FC = () => {
       case 'voice':
         return <VoiceRulesPage />;
       case 'settings':
-        return <SettingsPage activeSection={activeSettingsSection} />;
+        return (
+          <SettingsPage
+            activeSection={activeSettingsSection}
+            initialTextChannelsSettings={initialTextChannelsSettings}
+          />
+        );
       case 'feedback':
         return <FeedbackPage />;
       case 'folders':
@@ -309,11 +319,13 @@ const SidebarLayout: React.FC<{
 };
 
 // Main component wrapped with providers
-export const CliraApp: React.FC = () => {
+export const CliraApp: React.FC<CliraAppProps> = ({
+  initialTextChannelsSettings = null,
+}) => {
   return (
     <ErrorBoundary>
       <PageDataProvider>
-          <CliraAppContent />
+          <CliraAppContent initialTextChannelsSettings={initialTextChannelsSettings} />
       </PageDataProvider>
     </ErrorBoundary>
   );

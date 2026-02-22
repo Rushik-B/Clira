@@ -1,14 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth/auth';
-import { prisma } from '@/lib/prisma';
-import {
-  getPairingManager,
-  getTelegramClient,
-  getTelegramHealthSnapshot,
-  isTelegramConfigured,
-  isTelegramEnabled,
-} from '@/lib/services/telegram';
+import { getTextChannelsSettingsSnapshot } from '@/lib/services/textChannelsSettings';
 
 /**
  * GET /api/settings/text-channels
@@ -25,45 +18,11 @@ export async function GET() {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const pairingManager = getPairingManager();
-    const [settings, links, pendingPairingRequests, telegramHealth] = await Promise.all([
-      prisma.userSettings.findUnique({
-        where: { userId: session.userId },
-        select: {
-          whatsappPhoneNumber: true,
-          whatsappVerified: true,
-          twilioPhoneNumber: true,
-          twilioVerified: true,
-          notificationDeliveryChannel: true,
-        },
-      }),
-      pairingManager.getActiveLinksForUser(session.userId),
-      pairingManager.getPendingPairingRequests(),
-      getTelegramHealthSnapshot(),
-    ]);
-
-    let botUsername: string | null = null;
-    if (isTelegramConfigured()) {
-      const identity = await getTelegramClient().getBotIdentity();
-      botUsername = identity?.username ?? null;
-    }
+    const settings = await getTextChannelsSettingsSnapshot(session.userId);
 
     return NextResponse.json({
       success: true,
-      settings: {
-        whatsappPhoneNumber: settings?.whatsappPhoneNumber ?? null,
-        whatsappVerified: settings?.whatsappVerified ?? false,
-        twilioPhoneNumber: settings?.twilioPhoneNumber ?? null,
-        twilioVerified: settings?.twilioVerified ?? false,
-        notificationDeliveryChannel:
-          settings?.notificationDeliveryChannel ?? 'BOTH',
-        telegramConfigured: isTelegramConfigured(),
-        telegramEnabled: isTelegramEnabled(),
-        botUsername,
-        links,
-        pendingPairingRequests,
-        telegramHealth,
-      },
+      settings,
     });
   } catch (error) {
     console.error('[TextChannelSettings] Error fetching settings:', error);
