@@ -11,7 +11,6 @@ import {
   CircleCheck,
   ClearIcon,
   ExclamationCircle,
-  MessageSquare,
   Phone,
   Sparkles,
 } from '@/components/icons/icons';
@@ -32,6 +31,36 @@ import type {
   TelegramSettingsState,
   TextingSettings,
 } from './text-channels/types';
+
+const WhatsAppOfficialIcon: React.FC<{ className?: string }> = ({ className }) => (
+  <svg
+    viewBox="0 0 24 24"
+    fill="none"
+    xmlns="http://www.w3.org/2000/svg"
+    className={className}
+    aria-hidden="true"
+  >
+    <path
+      fill="currentColor"
+      d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.272-.099-.47-.148-.669.149-.197.297-.767.967-.94 1.166-.173.198-.347.223-.644.074-.297-.149-1.255-.462-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.297-.497.099-.198.05-.372-.025-.52-.074-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51l-.57-.01a1.093 1.093 0 0 0-.793.372c-.272.298-1.04 1.016-1.04 2.48 0 1.463 1.065 2.877 1.213 3.075.149.198 2.095 3.2 5.076 4.487.709.306 1.261.489 1.692.626.71.226 1.357.194 1.868.117.569-.085 1.758-.719 2.006-1.413.248-.694.248-1.29.173-1.414-.074-.124-.272-.198-.57-.347M12.067 2.004c-5.514 0-9.996 4.482-9.996 9.996a9.95 9.95 0 0 0 1.349 4.998L2 22l5.144-1.35a9.955 9.955 0 0 0 4.922 1.267h.004c5.512 0 9.995-4.483 9.995-9.996 0-2.671-1.04-5.182-2.927-7.069a9.93 9.93 0 0 0-7.07-2.848m0 18.23h-.003a8.28 8.28 0 0 1-4.218-1.154l-.302-.179-3.052.8.815-2.976-.196-.306a8.26 8.26 0 0 1-1.272-4.417c.002-4.56 3.713-8.27 8.273-8.27 2.21 0 4.287.86 5.849 2.421a8.226 8.226 0 0 1 2.418 5.85c-.002 4.56-3.714 8.27-8.272 8.27"
+    />
+  </svg>
+);
+
+const TelegramOfficialIcon: React.FC<{ className?: string }> = ({ className }) => (
+  <svg
+    viewBox="0 0 24 24"
+    fill="none"
+    xmlns="http://www.w3.org/2000/svg"
+    className={className}
+    aria-hidden="true"
+  >
+    <path
+      fill="currentColor"
+      d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0m5.885 8.184-1.97 9.285c-.149.658-.538.818-1.087.51l-3.01-2.22-1.452 1.397c-.16.16-.295.295-.604.295l.213-3.054 5.562-5.024c.242-.213-.053-.333-.373-.12l-6.871 4.327-2.959-.924c-.644-.203-.657-.644.135-.953l11.57-4.458c.538-.196 1.006.128.83.939"
+    />
+  </svg>
+);
 
 /**
  * Text Channel Integration Settings Page
@@ -144,6 +173,16 @@ export const TextChannelsIntegrationPage: React.FC = () => {
   const hasTextNumber = CLIRA_TEXT_NUMBER.trim().length > 0;
   const copyLabel =
     copyState === 'copied' ? 'Copied' : copyState === 'error' ? 'Copy failed' : 'Copy';
+  const connectedChannelsCount =
+    Number(isSmsConnected) + Number(isWhatsAppConnected) + Number(hasTelegramLink);
+  const deliveryChannelLabel =
+    notificationDeliveryChannel === 'WHATSAPP'
+      ? 'WhatsApp only'
+      : notificationDeliveryChannel === 'TELEGRAM'
+        ? 'Telegram only'
+        : 'WhatsApp + Telegram';
+  const hasAnyUnsavedChange =
+    hasSmsChanges || hasWhatsAppChanges || hasDeliveryChannelChanges || pairingCodeInput.length > 0;
 
   const handleCopyNumber = async () => {
     if (!hasTextNumber) {
@@ -399,24 +438,23 @@ export const TextChannelsIntegrationPage: React.FC = () => {
   return (
     <SettingsShell
       title="Text Clira"
-      subtitle="Send SMS, WhatsApp, or Telegram messages to your assistant for fast drafts and quick actions."
-      icon={MessageSquare}
+      subtitle="Set up the channels you text from and choose where alerts are delivered."
+      icon={WhatsAppOfficialIcon}
       iconColor="text-emerald-400"
     >
-      {/* Success Message */}
       {successMessage && (
         <div className="mb-6">
-          <div className="bg-emerald-500/15 border border-emerald-500/30 rounded-xl p-4 flex items-start justify-between gap-4">
-            <div className="flex items-start space-x-3">
-              <CircleCheck className="w-5 h-5 text-emerald-400" />
-              <span className="text-emerald-200 font-medium">{successMessage}</span>
+          <div className="flex items-start justify-between gap-4 rounded-xl border border-emerald-500/30 bg-emerald-500/15 p-4">
+            <div className="flex items-start gap-3">
+              <CircleCheck className="h-5 w-5 text-emerald-400" />
+              <span className="font-medium text-emerald-200">{successMessage}</span>
             </div>
             <Button
               type="button"
               variant="ghost"
               size="sm"
               onClick={() => setSuccessMessage('')}
-              className="cursor-pointer text-emerald-200/80 hover:text-emerald-100"
+              className="cursor-pointer text-emerald-200/80 hover:text-emerald-100 active:scale-[0.98]"
             >
               Dismiss
             </Button>
@@ -424,20 +462,19 @@ export const TextChannelsIntegrationPage: React.FC = () => {
         </div>
       )}
 
-      {/* Error Message */}
       {errorMessage && (
         <div className="mb-6">
-          <div className="bg-red-500/15 border border-red-500/30 rounded-xl p-4 flex items-start justify-between gap-4">
-            <div className="flex items-start space-x-3">
-              <ExclamationCircle className="w-5 h-5 text-red-400" />
-              <span className="text-red-200 font-medium">{errorMessage}</span>
+          <div className="flex items-start justify-between gap-4 rounded-xl border border-red-500/30 bg-red-500/15 p-4">
+            <div className="flex items-start gap-3">
+              <ExclamationCircle className="h-5 w-5 text-red-400" />
+              <span className="font-medium text-red-200">{errorMessage}</span>
             </div>
             <Button
               type="button"
               variant="ghost"
               size="sm"
               onClick={() => setErrorMessage('')}
-              className="cursor-pointer text-red-200/80 hover:text-red-100"
+              className="cursor-pointer text-red-200/80 hover:text-red-100 active:scale-[0.98]"
             >
               Dismiss
             </Button>
@@ -445,62 +482,54 @@ export const TextChannelsIntegrationPage: React.FC = () => {
         </div>
       )}
 
-      <div className="space-y-8">
+      <div className="space-y-6">
         <SettingsSectionCard
-          title="Message Clira"
-          description="Fastest way to start: open WhatsApp and send a message."
-          icon={<Sparkles className="w-5 h-5 text-emerald-300" />}
+          title="Quick start"
+          description="Message Clira in one tap, and quickly verify which channels are ready."
+          icon={<Sparkles className="h-5 w-5 text-emerald-300" />}
           className="relative overflow-hidden"
         >
-          <div className="absolute -top-24 -right-16 h-56 w-56 rounded-full bg-emerald-500/10 blur-3xl pointer-events-none" />
-          <div className="absolute -bottom-28 -left-20 h-56 w-56 rounded-full bg-cyan-500/10 blur-3xl pointer-events-none" />
-          <div className="relative space-y-5">
-            <div className="rounded-2xl border border-emerald-500/20 bg-gradient-to-br from-emerald-500/10 via-gray-950/80 to-black px-5 py-5">
-              <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-                <div className="space-y-1">
-                  <p className="text-base font-semibold text-white">
-                    Open WhatsApp and message Clira
-                  </p>
-                  <p className="text-sm text-gray-300">
-                    This opens a chat and prompts you to send your first message.
-                  </p>
-                </div>
-                {hasWhatsAppCtaLink ? (
-                  <Button
-                    asChild
-                    size="lg"
-                    className="cursor-pointer h-12 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white px-6"
-                  >
-                    <a href={WHATSAPP_CTA_URL} target="_blank" rel="noreferrer">
-                      <MessageSquare className="w-4 h-4" />
-                      Message on WhatsApp
-                    </a>
-                  </Button>
-                ) : (
-                  <Button
-                    size="lg"
-                    disabled
-                    className="h-12 rounded-xl bg-gray-700 text-gray-300 px-6 cursor-not-allowed"
-                  >
-                    <MessageSquare className="w-4 h-4" />
-                    WhatsApp link not configured
-                  </Button>
-                )}
-              </div>
+          <div className="pointer-events-none absolute -right-20 -top-24 h-56 w-56 rounded-full bg-emerald-500/10 blur-3xl" />
+          <div className="pointer-events-none absolute -bottom-24 -left-24 h-56 w-56 rounded-full bg-cyan-500/10 blur-3xl" />
 
-              <div className="mt-4 rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-xs text-gray-300">
-                <p className="font-semibold text-white">Try this opener:</p>
-                <p className="mt-1 text-gray-400">
-                  "Draft a reply to the client about the updated timeline."
+          <div className="relative space-y-4">
+            <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1.35fr_1fr]">
+              <div className="rounded-2xl border border-emerald-500/25 bg-gradient-to-br from-emerald-500/10 via-gray-950/80 to-black px-5 py-5">
+                <p className="text-sm font-medium text-emerald-200">Primary path</p>
+                <h4 className="mt-1 text-base font-semibold text-white">Open WhatsApp to message Clira</h4>
+                <p className="mt-1 text-sm text-gray-300">
+                  Fastest way to send requests, drafts, or quick command messages.
                 </p>
+                <div className="mt-4">
+                  {hasWhatsAppCtaLink ? (
+                    <Button
+                      asChild
+                      size="lg"
+                      className="h-11 cursor-pointer rounded-xl bg-emerald-600 px-5 text-white hover:bg-emerald-500 active:scale-[0.98]"
+                    >
+                      <a href={WHATSAPP_CTA_URL} target="_blank" rel="noreferrer">
+                        <WhatsAppOfficialIcon className="h-4 w-4" />
+                        Message on WhatsApp
+                      </a>
+                    </Button>
+                  ) : (
+                    <Button
+                      size="lg"
+                      disabled
+                      className="h-11 cursor-not-allowed rounded-xl bg-gray-700 px-5 text-gray-300"
+                    >
+                      <WhatsAppOfficialIcon className="h-4 w-4" />
+                      WhatsApp link unavailable
+                    </Button>
+                  )}
+                </div>
               </div>
-            </div>
 
-            <div className="flex flex-col gap-4 rounded-2xl border border-white/10 bg-black/30 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <p className="text-sm text-gray-300">Prefer SMS?</p>
-                <div className="mt-2 flex flex-wrap items-center gap-3">
-                    <span className="text-lg sm:text-xl font-semibold text-white font-mono tracking-tight">
+              <div className="rounded-2xl border border-white/10 bg-black/30 px-5 py-5">
+                <p className="text-sm font-medium text-gray-200">SMS fallback</p>
+                <p className="mt-1 text-xs text-gray-400">Text this number from your saved phone line.</p>
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <span className="font-mono text-lg font-semibold tracking-tight text-white sm:text-xl">
                     {hasTextNumber ? CLIRA_TEXT_NUMBER : 'Text number not configured'}
                   </span>
                   <Button
@@ -510,46 +539,86 @@ export const TextChannelsIntegrationPage: React.FC = () => {
                     onClick={handleCopyNumber}
                     onBlur={() => setCopyState('idle')}
                     onMouseLeave={() => setCopyState('idle')}
-                    className="cursor-pointer border-white/15 text-gray-200 hover:bg-white/10"
+                    className="cursor-pointer border-white/15 text-gray-200 hover:bg-white/10 active:scale-[0.98]"
                   >
-                    {copyState === 'copied' ? (
-                      <Check className="w-4 h-4" />
-                    ) : (
-                      <Copy className="w-4 h-4" />
-                    )}
+                    {copyState === 'copied' ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
                     <span>{copyLabel}</span>
                   </Button>
                 </div>
-                <p className="mt-2 text-xs text-gray-500">
-                  SMS works after you add your number below.
-                </p>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-white/10 bg-black/25 px-5 py-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs uppercase tracking-wide text-gray-400">Connection health</p>
+                  <p className="mt-1 text-sm text-gray-200">
+                    {loading
+                      ? 'Checking your channels...'
+                      : `${connectedChannelsCount}/3 channels currently connected`}
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2 text-xs">
+                  <span
+                    className={`rounded-full border px-3 py-1 ${
+                      isSmsConnected
+                        ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-200'
+                        : 'border-gray-700 bg-gray-900/60 text-gray-400'
+                    }`}
+                  >
+                    SMS
+                  </span>
+                  <span
+                    className={`rounded-full border px-3 py-1 ${
+                      isWhatsAppConnected
+                        ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-200'
+                        : 'border-gray-700 bg-gray-900/60 text-gray-400'
+                    }`}
+                  >
+                    WhatsApp
+                  </span>
+                  <span
+                    className={`rounded-full border px-3 py-1 ${
+                      hasTelegramLink
+                        ? 'border-cyan-500/40 bg-cyan-500/15 text-cyan-200'
+                        : 'border-gray-700 bg-gray-900/60 text-gray-400'
+                    }`}
+                  >
+                    Telegram
+                  </span>
+                </div>
               </div>
             </div>
           </div>
         </SettingsSectionCard>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
           <SettingsSectionCard
-            title="SMS Number"
-            description="This is the number you text from on SMS or iMessage."
-            icon={<Phone className="w-5 h-5 text-emerald-300" />}
+            title="SMS sender number"
+            description="Use the mobile number you text from on SMS or iMessage."
+            icon={<Phone className="h-5 w-5 text-emerald-300" />}
           >
             {loading ? (
-              <div className="flex items-center space-x-2 text-gray-400 text-sm py-4">
-                <Loader2 className="w-4 h-4 animate-spin" />
-                <span>Loading settings…</span>
+              <div className="space-y-3 py-1">
+                <div className="h-10 w-full animate-pulse rounded-md bg-white/5" />
+                <div className="h-10 w-full animate-pulse rounded-md bg-white/5" />
+                <div className="ml-auto h-9 w-24 animate-pulse rounded-xl bg-white/5" />
               </div>
             ) : (
               <div className="space-y-4">
-                <div className="grid grid-cols-1 sm:grid-cols-[160px_1fr] gap-4">
-                  <div>
-                    <label className="text-sm font-medium text-gray-300 mb-2 block">
-                      Country
-                    </label>
+                <div className="rounded-xl border border-white/10 bg-black/25 px-3 py-2 text-xs text-gray-300">
+                  Status:{' '}
+                  <span className={isSmsConnected ? 'text-emerald-300' : 'text-gray-400'}>
+                    {isSmsConnected ? 'Connected' : 'Not connected'}
+                  </span>
+                </div>
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-[160px_1fr]">
+                  <div className="space-y-2">
+                    <label className="block text-sm font-medium text-gray-300">Country</label>
                     <select
                       value={smsCountryCode}
                       onChange={(event) => setSmsCountryCode(event.target.value)}
-                      className="w-full h-10 rounded-md border border-gray-800 bg-black/40 px-3 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/40 focus:border-emerald-500/50"
+                      className="h-10 w-full rounded-md border border-gray-800 bg-black/40 px-3 text-sm text-gray-200 focus:border-emerald-500/50 focus:outline-none focus:ring-2 focus:ring-emerald-500/40"
                     >
                       {COUNTRY_OPTIONS.map((option) => (
                         <option key={option.code} value={option.code}>
@@ -558,17 +627,15 @@ export const TextChannelsIntegrationPage: React.FC = () => {
                       ))}
                     </select>
                   </div>
-                  <div>
-                    <label className="text-sm font-medium text-gray-300 mb-2 block">
-                      Phone number
-                    </label>
+                  <div className="space-y-2">
+                    <label className="block text-sm font-medium text-gray-300">Phone number</label>
                     <div className="flex flex-wrap items-center gap-2">
                       <Input
                         type="tel"
                         placeholder="(555) 123-4567"
                         value={smsNumberInput}
                         onChange={(e) => setSmsNumberInput(e.target.value)}
-                        className={`flex-1 bg-black/40 border-gray-800 focus:ring-emerald-500/40 focus:border-emerald-500/50 placeholder:text-gray-500 ${
+                        className={`flex-1 border-gray-800 bg-black/40 placeholder:text-gray-500 focus:border-emerald-500/50 focus:ring-emerald-500/40 ${
                           smsInputHasError ? 'border-red-500 focus:ring-red-500' : ''
                         }`}
                       />
@@ -577,39 +644,34 @@ export const TextChannelsIntegrationPage: React.FC = () => {
                           onClick={handleClearSms}
                           variant="outline"
                           size="sm"
-                          className="cursor-pointer px-3 text-red-400 border-red-500/30 hover:bg-red-500/10"
+                          className="cursor-pointer border-red-500/30 px-3 text-red-400 hover:bg-red-500/10 active:scale-[0.98]"
                           disabled={smsSaving}
                         >
-                          <ClearIcon className="w-4 h-4" />
+                          <ClearIcon className="h-4 w-4" />
                         </Button>
                       )}
                     </div>
                     {smsInputHasError && (
-                      <p className="mt-2 text-xs text-red-400">
-                        Invalid number. Check the digits and country.
-                      </p>
+                      <p className="text-xs text-red-400">Invalid number. Check digits and country.</p>
                     )}
-                    <p className="mt-2 text-xs text-gray-500">
-                      Add the mobile number you use to text. Country code is handled for you.
-                    </p>
+                    <p className="text-xs text-gray-500">Country code is automatically normalized.</p>
                   </div>
                 </div>
-
                 <div className="flex justify-end">
                   <Button
                     onClick={handleSaveSms}
                     disabled={smsSaving || !hasSmsChanges || smsInputHasError}
                     size="sm"
-                    className="cursor-pointer inline-flex items-center space-x-2 bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded-xl text-sm font-medium disabled:opacity-60 disabled:cursor-not-allowed"
+                    className="cursor-pointer rounded-xl bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     {smsSaving ? (
                       <>
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                        <span>Saving…</span>
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        <span>Saving...</span>
                       </>
                     ) : (
                       <>
-                        <Save className="w-4 h-4" />
+                        <Save className="h-4 w-4" />
                         <span>Save</span>
                       </>
                     )}
@@ -620,26 +682,31 @@ export const TextChannelsIntegrationPage: React.FC = () => {
           </SettingsSectionCard>
 
           <SettingsSectionCard
-            title="WhatsApp Number"
-            description="Optional: save the number you use on WhatsApp so we can match incoming messages."
-            icon={<MessageSquare className="w-5 h-5 text-emerald-300" />}
+            title="WhatsApp sender number"
+            description="Optional, but recommended to match incoming WhatsApp requests."
+            icon={<WhatsAppOfficialIcon className="h-5 w-5 text-[#25D366]" />}
           >
             {loading ? (
-              <div className="flex items-center space-x-2 text-gray-400 text-sm py-4">
-                <Loader2 className="w-4 h-4 animate-spin" />
-                <span>Loading settings…</span>
+              <div className="space-y-3 py-1">
+                <div className="h-10 w-full animate-pulse rounded-md bg-white/5" />
+                <div className="h-10 w-full animate-pulse rounded-md bg-white/5" />
+                <div className="ml-auto h-9 w-24 animate-pulse rounded-xl bg-white/5" />
               </div>
             ) : (
               <div className="space-y-4">
-                <div className="grid grid-cols-1 sm:grid-cols-[160px_1fr] gap-4">
-                  <div>
-                    <label className="text-sm font-medium text-gray-300 mb-2 block">
-                      Country
-                    </label>
+                <div className="rounded-xl border border-white/10 bg-black/25 px-3 py-2 text-xs text-gray-300">
+                  Status:{' '}
+                  <span className={isWhatsAppConnected ? 'text-emerald-300' : 'text-gray-400'}>
+                    {isWhatsAppConnected ? 'Connected' : 'Not connected'}
+                  </span>
+                </div>
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-[160px_1fr]">
+                  <div className="space-y-2">
+                    <label className="block text-sm font-medium text-gray-300">Country</label>
                     <select
                       value={whatsappCountryCode}
                       onChange={(event) => setWhatsappCountryCode(event.target.value)}
-                      className="w-full h-10 rounded-md border border-gray-800 bg-black/40 px-3 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/40 focus:border-emerald-500/50"
+                      className="h-10 w-full rounded-md border border-gray-800 bg-black/40 px-3 text-sm text-gray-200 focus:border-emerald-500/50 focus:outline-none focus:ring-2 focus:ring-emerald-500/40"
                     >
                       {COUNTRY_OPTIONS.map((option) => (
                         <option key={option.code} value={option.code}>
@@ -648,17 +715,15 @@ export const TextChannelsIntegrationPage: React.FC = () => {
                       ))}
                     </select>
                   </div>
-                  <div>
-                    <label className="text-sm font-medium text-gray-300 mb-2 block">
-                      Phone number
-                    </label>
+                  <div className="space-y-2">
+                    <label className="block text-sm font-medium text-gray-300">Phone number</label>
                     <div className="flex flex-wrap items-center gap-2">
                       <Input
                         type="tel"
                         placeholder="(555) 123-4567"
                         value={whatsappNumberInput}
                         onChange={(e) => setWhatsappNumberInput(e.target.value)}
-                        className={`flex-1 bg-black/40 border-gray-800 focus:ring-emerald-500/40 focus:border-emerald-500/50 placeholder:text-gray-500 ${
+                        className={`flex-1 border-gray-800 bg-black/40 placeholder:text-gray-500 focus:border-emerald-500/50 focus:ring-emerald-500/40 ${
                           whatsappInputHasError ? 'border-red-500 focus:ring-red-500' : ''
                         }`}
                       />
@@ -667,39 +732,34 @@ export const TextChannelsIntegrationPage: React.FC = () => {
                           onClick={handleClearWhatsApp}
                           variant="outline"
                           size="sm"
-                          className="cursor-pointer px-3 text-red-400 border-red-500/30 hover:bg-red-500/10"
+                          className="cursor-pointer border-red-500/30 px-3 text-red-400 hover:bg-red-500/10 active:scale-[0.98]"
                           disabled={whatsappSaving}
                         >
-                          <ClearIcon className="w-4 h-4" />
+                          <ClearIcon className="h-4 w-4" />
                         </Button>
                       )}
                     </div>
                     {whatsappInputHasError && (
-                      <p className="mt-2 text-xs text-red-400">
-                        Invalid number. Check the digits and country.
-                      </p>
+                      <p className="text-xs text-red-400">Invalid number. Check digits and country.</p>
                     )}
-                    <p className="mt-2 text-xs text-gray-500">
-                      Add the number you use on WhatsApp. Country code is handled for you.
-                    </p>
+                    <p className="text-xs text-gray-500">Country code is automatically normalized.</p>
                   </div>
                 </div>
-
                 <div className="flex justify-end">
                   <Button
                     onClick={handleSaveWhatsApp}
                     disabled={whatsappSaving || !hasWhatsAppChanges || whatsappInputHasError}
                     size="sm"
-                    className="cursor-pointer inline-flex items-center space-x-2 bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded-xl text-sm font-medium disabled:opacity-60 disabled:cursor-not-allowed"
+                    className="cursor-pointer rounded-xl bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     {whatsappSaving ? (
                       <>
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                        <span>Saving…</span>
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        <span>Saving...</span>
                       </>
                     ) : (
                       <>
-                        <Save className="w-4 h-4" />
+                        <Save className="h-4 w-4" />
                         <span>Save</span>
                       </>
                     )}
@@ -710,56 +770,54 @@ export const TextChannelsIntegrationPage: React.FC = () => {
           </SettingsSectionCard>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1.1fr_1fr]">
           <SettingsSectionCard
-            title="Reminder Delivery Channel"
-            description="Choose where reminders and alert notifications are sent."
-            icon={<Sparkles className="w-5 h-5 text-emerald-300" />}
+            title="Alerts delivery"
+            description="Choose where reminders and alert notifications are delivered."
+            icon={<Sparkles className="h-5 w-5 text-emerald-300" />}
           >
             {loading ? (
-              <div className="flex items-center space-x-2 text-gray-400 text-sm py-4">
-                <Loader2 className="w-4 h-4 animate-spin" />
-                <span>Loading settings…</span>
+              <div className="space-y-3 py-1">
+                <div className="h-10 w-full animate-pulse rounded-md bg-white/5" />
+                <div className="h-9 w-24 animate-pulse rounded-xl bg-white/5" />
               </div>
             ) : (
               <div className="space-y-4">
-                <div>
-                  <label className="text-sm font-medium text-gray-300 mb-2 block">
-                    Delivery channel
-                  </label>
+                <div className="rounded-xl border border-white/10 bg-black/25 px-3 py-2 text-xs text-gray-300">
+                  Active channel: <span className="text-emerald-200">{deliveryChannelLabel}</span>
+                </div>
+                <div className="space-y-2">
+                  <label className="block text-sm font-medium text-gray-300">Delivery channel</label>
                   <select
                     value={notificationDeliveryChannel}
                     onChange={(event) =>
-                      setNotificationDeliveryChannel(
-                        event.target.value as NotificationDeliveryChannel,
-                      )
+                      setNotificationDeliveryChannel(event.target.value as NotificationDeliveryChannel)
                     }
-                    className="w-full h-10 rounded-md border border-gray-800 bg-black/40 px-3 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/40 focus:border-emerald-500/50"
+                    className="h-10 w-full rounded-md border border-gray-800 bg-black/40 px-3 text-sm text-gray-200 focus:border-emerald-500/50 focus:outline-none focus:ring-2 focus:ring-emerald-500/40"
                   >
                     <option value="BOTH">WhatsApp + Telegram (Default)</option>
                     <option value="WHATSAPP">WhatsApp only</option>
                     <option value="TELEGRAM">Telegram only</option>
                   </select>
-                  <p className="mt-2 text-xs text-gray-500">
-                    If your selected channel is unavailable, delivery is skipped and tracked in action history.
+                  <p className="text-xs text-gray-500">
+                    If the selected channel is unavailable, delivery is skipped and logged in action history.
                   </p>
                 </div>
-
                 <div className="flex justify-end">
                   <Button
                     onClick={handleSaveDeliveryChannelPreference}
                     disabled={deliveryChannelSaving || !hasDeliveryChannelChanges}
                     size="sm"
-                    className="cursor-pointer inline-flex items-center space-x-2 bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded-xl text-sm font-medium disabled:opacity-60 disabled:cursor-not-allowed"
+                    className="cursor-pointer rounded-xl bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     {deliveryChannelSaving ? (
                       <>
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                        <span>Saving…</span>
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        <span>Saving...</span>
                       </>
                     ) : (
                       <>
-                        <Save className="w-4 h-4" />
+                        <Save className="h-4 w-4" />
                         <span>Save</span>
                       </>
                     )}
@@ -770,20 +828,21 @@ export const TextChannelsIntegrationPage: React.FC = () => {
           </SettingsSectionCard>
 
           <SettingsSectionCard
-            title="Telegram Integration"
-            description="Link your Telegram account using the pairing code from the bot DM."
-            icon={<MessageSquare className="w-5 h-5 text-cyan-300" />}
+            title="Telegram link"
+            description="Paste the 8-character pairing code sent by the Telegram bot."
+            icon={<TelegramOfficialIcon className="h-5 w-5 text-[#229ED9]" />}
           >
             {loading ? (
-              <div className="flex items-center space-x-2 text-gray-400 text-sm py-4">
-                <Loader2 className="w-4 h-4 animate-spin" />
-                <span>Loading settings…</span>
+              <div className="space-y-3 py-1">
+                <div className="h-10 w-full animate-pulse rounded-md bg-white/5" />
+                <div className="h-10 w-full animate-pulse rounded-md bg-white/5" />
+                <div className="h-9 w-40 animate-pulse rounded-xl bg-white/5" />
               </div>
             ) : (
               <div className="space-y-4">
                 {!telegramSettings.telegramConfigured ? (
                   <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
-                    Telegram bot token is not configured on this environment.
+                    Telegram bot token is not configured in this environment.
                   </div>
                 ) : (
                   <div className="rounded-xl border border-white/10 bg-black/30 px-4 py-3">
@@ -801,11 +860,11 @@ export const TextChannelsIntegrationPage: React.FC = () => {
                   </div>
                 )}
 
-                <div className="rounded-xl border border-white/10 bg-black/30 px-4 py-3 space-y-2">
+                <div className="rounded-xl border border-white/10 bg-black/25 px-4 py-3">
                   <p className="text-sm font-medium text-white">Linked account</p>
                   {hasTelegramLink ? (
                     <>
-                      <p className="text-sm text-gray-300">
+                      <p className="mt-1 text-sm text-gray-300">
                         {activeTelegramLink?.telegramUsername
                           ? `@${activeTelegramLink.telegramUsername}`
                           : activeTelegramLink?.telegramFirstName || 'Telegram account'}
@@ -813,28 +872,26 @@ export const TextChannelsIntegrationPage: React.FC = () => {
                       <p className="text-xs text-gray-500">Chat ID: {activeTelegramLink?.chatId}</p>
                     </>
                   ) : (
-                    <p className="text-sm text-gray-400">No linked Telegram account yet.</p>
+                    <p className="mt-1 text-sm text-gray-400">No linked Telegram account yet.</p>
                   )}
                 </div>
 
                 <div className="space-y-2">
-                  <label className="text-sm font-medium text-gray-300 block">
-                    Pairing code
-                  </label>
+                  <label className="block text-sm font-medium text-gray-300">Pairing code</label>
                   <Input
                     type="text"
                     placeholder="ABCD1234"
                     value={pairingCodeInput}
                     maxLength={16}
                     onChange={(event) => setPairingCodeInput(event.target.value.toUpperCase())}
-                    className="bg-black/40 border-gray-800 focus:ring-emerald-500/40 focus:border-emerald-500/50 placeholder:text-gray-500 font-mono tracking-[0.2em]"
+                    className="border-gray-800 bg-black/40 font-mono tracking-[0.2em] placeholder:text-gray-500 focus:border-cyan-500/50 focus:ring-cyan-500/40"
                   />
                   <p className="text-xs text-gray-500">
-                    Send any message to the Telegram bot, then paste the 8-character code shown in DM.
+                    DM the bot first, then paste the code exactly as shown.
                   </p>
                 </div>
 
-                <div className="flex flex-wrap gap-2 justify-end">
+                <div className="flex flex-wrap justify-end gap-2">
                   <Button
                     onClick={handleApproveTelegramPairingCode}
                     disabled={
@@ -843,12 +900,12 @@ export const TextChannelsIntegrationPage: React.FC = () => {
                       !telegramSettings.telegramConfigured
                     }
                     size="sm"
-                    className="cursor-pointer inline-flex items-center space-x-2 bg-cyan-600 hover:bg-cyan-500 text-white px-4 py-2 rounded-xl text-sm font-medium disabled:opacity-60 disabled:cursor-not-allowed"
+                    className="cursor-pointer rounded-xl bg-cyan-600 px-4 py-2 text-sm font-medium text-white hover:bg-cyan-500 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     {telegramPairingSaving ? (
                       <>
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                        <span>Linking…</span>
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        <span>Linking...</span>
                       </>
                     ) : (
                       <span>Link Telegram</span>
@@ -859,14 +916,20 @@ export const TextChannelsIntegrationPage: React.FC = () => {
                     disabled={telegramUnlinking || !hasTelegramLink}
                     variant="outline"
                     size="sm"
-                    className="cursor-pointer border-red-500/30 text-red-300 hover:bg-red-500/10 disabled:opacity-60 disabled:cursor-not-allowed"
+                    className="cursor-pointer border-red-500/30 text-red-300 hover:bg-red-500/10 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
                   >
-                    {telegramUnlinking ? 'Unlinking…' : 'Unlink'}
+                    {telegramUnlinking ? 'Unlinking...' : 'Unlink'}
                   </Button>
                 </div>
               </div>
             )}
           </SettingsSectionCard>
+        </div>
+
+        <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-xs text-gray-400">
+          {hasAnyUnsavedChange
+            ? 'You have pending edits. Save each section to apply changes.'
+            : 'All channel settings are up to date.'}
         </div>
       </div>
     </SettingsShell>
