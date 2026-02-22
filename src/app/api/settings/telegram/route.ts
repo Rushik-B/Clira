@@ -89,6 +89,17 @@ export async function POST(request: NextRequest) {
     const pairingManager = getPairingManager();
     const link = await pairingManager.approvePairingCode(session.userId, pairingCode);
 
+    if (isTelegramConfigured()) {
+      try {
+        await getTelegramClient().sendMessage(
+          link.chatId,
+          "Connected to Telegram! You're all set.",
+        );
+      } catch (sendError) {
+        console.warn('[Telegram Settings] Pairing succeeded but confirmation DM failed:', sendError);
+      }
+    }
+
     return NextResponse.json({
       success: true,
       message: 'Telegram account linked successfully',
