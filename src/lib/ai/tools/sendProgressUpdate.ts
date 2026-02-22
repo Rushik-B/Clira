@@ -19,6 +19,7 @@ export type ProgressUpdateContext = {
   channel: ProgressUpdateChannel;
   requestId: string;
   conversationId: string;
+  canEmitProgress?: () => boolean;
   sendMessage?: (text: string) => Promise<{ externalId?: string }>;
   persistMessage: (params: {
     content: string;
@@ -31,7 +32,14 @@ export type ProgressUpdateContext = {
 export type SendProgressUpdateResult = {
   sent: boolean;
   persisted: boolean;
-  droppedReason?: 'quota' | 'rate_limit' | 'duplicate' | 'invalid' | 'no_channel' | 'error';
+  droppedReason?:
+    | 'quota'
+    | 'rate_limit'
+    | 'duplicate'
+    | 'invalid'
+    | 'no_channel'
+    | 'unstable_burst'
+    | 'error';
   error?: string;
   sequence?: number;
   requestId: string;
@@ -108,6 +116,10 @@ export function createSendProgressUpdateTool(
 
       if (!context.sendMessage && !context.emitWebProgress) {
         return buildResult({ droppedReason: 'no_channel' });
+      }
+
+      if (context.canEmitProgress && !context.canEmitProgress()) {
+        return buildResult({ droppedReason: 'unstable_burst' });
       }
 
       const sequence = sentCount + 1;
