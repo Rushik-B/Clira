@@ -1,6 +1,7 @@
 services:
   app:
     build: .
+    command: sh -c "npx prisma migrate deploy && npm run start"
     ports:
       - "13000:3000"
     env_file:
@@ -13,12 +14,14 @@ services:
       NEXTAUTH_URL: http://localhost:13000
       NEXT_PUBLIC_LANDING_PAGE_URL: ""
     depends_on:
-      - db
-      - redis
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
 
   worker:
     build: .
-    command: npm run start:worker
+    command: sh -c "npx prisma migrate deploy && npm run start:worker"
     env_file:
       - .env
     environment:
@@ -27,8 +30,10 @@ services:
       DIRECT_URL: postgresql://postgres:postgres@db:5432/clira
       REDIS_URL: redis://redis:6379
     depends_on:
-      - db
-      - redis
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
 
   db:
     image: postgres:16-alpine
@@ -41,6 +46,11 @@ services:
       - "15432:5432"
     volumes:
       - clira-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d clira"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
 
   redis:
     image: redis:7-alpine
