@@ -57,7 +57,18 @@ export async function buildExecutiveAgentPrompt(
       timeZone: userTimezone,
     }).format(now);
   } catch {
+    // Fallback: use system default timezone for all three values so they stay consistent
     dayOfWeek = new Intl.DateTimeFormat('en-US', { weekday: 'long' }).format(now);
+    currentTimeUserTz = new Intl.DateTimeFormat('en-US', {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true,
+    }).format(now);
+    currentDateUserTzDateOnly = getDateOnlyInTimezone(now, DEFAULT_CALENDAR_TIMEZONE);
   }
 
   // Fetch memory context: include user request so recall questions get relevant memories (e.g. "stat prof name")
