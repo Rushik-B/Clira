@@ -55,6 +55,44 @@ npm run start:worker
 
 Use `docs/gmail-pubsub.md` to configure Pub/Sub and webhook delivery.
 
+## 7) Optional: Telegram setup (first-time, beginner path)
+
+### Admin setup (one-time)
+
+1. Create a bot with `@BotFather` in Telegram.
+2. Run `/newbot` and finish bot creation.
+3. Copy the bot token.
+4. Set in `.env`:
+
+```env
+TELEGRAM_BOT_TOKEN=your_botfather_token
+TELEGRAM_ENABLED=true
+```
+
+5. Restart app + worker so both processes load new env values.
+
+If running full Docker stack:
+
+```bash
+docker compose up -d --force-recreate app worker
+```
+
+If running local `npm run dev` + `npm run start:worker`, restart both terminals.
+
+### User pairing flow (per user)
+
+1. Open **Settings -> Text Clira -> Telegram Integration**.
+2. Send any DM to the Telegram bot.
+3. Copy the 8-character pairing code returned by the bot.
+4. Paste code in Settings and click **Link Telegram**.
+5. Confirm linked account appears under **Linked account**.
+
+### Quick checks
+
+- If UI shows `Telegram bot token is not configured on this environment`, token was not loaded in runtime env.
+- If pairing fails, generate a fresh code from bot DM and retry.
+- If wrong account is linked, click **Unlink** and link again.
+
 ## Local Development Tips
 
 - Use `npm run lint` and `npm test` before PRs

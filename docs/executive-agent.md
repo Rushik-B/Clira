@@ -52,27 +52,41 @@ Security behavior:
 
 ## Telegram Configuration
 
-Required vars:
+### Required
 
 - `TELEGRAM_BOT_TOKEN`
 
-Optional:
+### Optional
 
 - `TELEGRAM_ENABLED` (defaults to enabled when token exists)
 - `TELEGRAM_POLL_TIMEOUT_SECONDS`
 - `TELEGRAM_POLL_RETRY_MAX_MS`
 
-Security and lifecycle behavior:
+### Quick setup (beginner)
+
+1. Create a bot in Telegram with `@BotFather` (`/newbot`).
+2. Add token to runtime env (`TELEGRAM_BOT_TOKEN`).
+3. Restart app + worker runtime.
+4. User sends DM to bot and receives 8-character pairing code.
+5. User approves pairing in **Settings -> Text Clira**.
+
+### Token source behavior
+
+- Clira reads Telegram token from runtime env (`TELEGRAM_BOT_TOKEN`).
+- Settings UI is used for account linking/unlinking only.
+- Without token in runtime env, Telegram monitor remains disabled.
+
+### Security and lifecycle behavior
 
 - DM-first linking with short-lived pairing codes
 - Pairing approval through authenticated settings API (`/api/settings/telegram`)
 - Worker-hosted poller with persisted update offset (`TelegramPollerState`)
 
-Pairing flow summary:
+### Pairing flow summary
 
 1. User sends DM to bot.
 2. Unknown sender receives an 8-char pairing code.
-3. Authenticated user approves code in Settings -> Text Clira.
+3. Authenticated user approves code in **Settings -> Text Clira**.
 4. Link is activated in `TelegramLink`; future messages are routed to Executive Agent.
 
 ## Operational Notes
