@@ -169,6 +169,8 @@ export class TelegramClient {
   private readonly config: TelegramClientConfig;
   private readonly bot: Bot;
   private botIdentity: UserFromGetMe | null = null;
+  private botInitialized = false;
+  private botInitPromise: Promise<void> | null = null;
   private monitorRunning = false;
   private monitorLoop: Promise<void> | null = null;
   private onMessageHandler: ((message: TelegramInboundMessage) => Promise<void>) | null = null;
@@ -215,10 +217,27 @@ export class TelegramClient {
     });
   }
 
+  private async ensureBotInitialized(): Promise<void> {
+    if (this.botInitialized) return;
+    if (!this.botInitPromise) {
+      this.botInitPromise = (async () => {
+        await this.bot.init();
+        this.botIdentity = this.bot.botInfo;
+        this.botInitialized = true;
+      })()
+        .catch((error) => {
+          this.botInitPromise = null;
+          throw error;
+        });
+    }
+    await this.botInitPromise;
+  }
+
   async getBotIdentity(): Promise<UserFromGetMe | null> {
     if (this.botIdentity) return this.botIdentity;
     try {
-      this.botIdentity = await this.bot.api.getMe();
+      await this.ensureBotInitialized();
+      this.botIdentity = this.bot.botInfo;
       return this.botIdentity;
     } catch (error) {
       logger.warn('[Telegram] Failed to fetch bot identity', {
@@ -264,6 +283,7 @@ export class TelegramClient {
       return;
     }
 
+    await this.ensureBotInitialized();
     this.onMessageHandler = options.onMessage;
     const state = await this.getPollerState();
     this.currentOffset = state?.lastUpdateId ?? 0;
