@@ -410,7 +410,7 @@ export function buildMessagingTools({
           if (!reminder) {
             return { success: false, message: 'Reminder not found.' };
           }
-          if (reminder.status === 'CANCELLED' || reminder.status === 'MISSED') {
+          if (['CANCELLED', 'MISSED', 'COMPLETED', 'DISMISSED'].includes(reminder.status)) {
             return { success: false, message: 'That reminder is already closed.' };
           }
 
