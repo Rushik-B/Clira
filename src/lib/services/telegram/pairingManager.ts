@@ -311,16 +311,6 @@ export class PairingManager {
   async getPendingPairingRequests(limit = 10) {
     const now = new Date();
 
-    await prisma.telegramPairingRequest.updateMany({
-      where: {
-        status: 'PENDING',
-        expiresAt: { lte: now },
-      },
-      data: {
-        status: 'EXPIRED',
-      },
-    });
-
     return prisma.telegramPairingRequest.findMany({
       where: {
         status: 'PENDING',

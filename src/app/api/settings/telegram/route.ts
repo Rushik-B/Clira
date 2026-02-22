@@ -14,12 +14,14 @@ import {
  * GET /api/settings/telegram
  * Returns Telegram integration status and active links for the authenticated user.
  */
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
     if (!session?.userId) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
+
+    const liveView = request.nextUrl.searchParams.get('view') === 'live';
 
     const pairingManager = getPairingManager();
     const [links, pendingPairingRequests, health] = await Promise.all([
@@ -29,7 +31,7 @@ export async function GET() {
     ]);
 
     let botUsername: string | null = null;
-    if (isTelegramConfigured()) {
+    if (!liveView && isTelegramConfigured()) {
       const identity = await getTelegramClient().getBotIdentity();
       botUsername = identity?.username ?? null;
     }
@@ -43,6 +45,10 @@ export async function GET() {
         links,
         pendingPairingRequests,
         health,
+      },
+    }, {
+      headers: {
+        'Cache-Control': 'no-store, max-age=0',
       },
     });
   } catch (error) {

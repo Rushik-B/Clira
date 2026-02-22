@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Copy,
   Loader2,
@@ -71,6 +71,19 @@ const TelegramOfficialIcon: React.FC<{ className?: string }> = ({ className }) =
  */
 interface TextChannelsIntegrationPageProps {
   initialSettings?: TextChannelsSettingsSnapshot | null;
+}
+
+interface TelegramLiveSettingsResponse {
+  success: boolean;
+  settings?: {
+    telegramConfigured: boolean;
+    telegramEnabled: boolean;
+    botUsername: string | null;
+    links: TelegramLinkSettings[];
+    pendingPairingRequests: TelegramPendingPairingRequest[];
+    health: TelegramHealthState | null;
+  };
+  error?: string;
 }
 
 function getInitialTextChannelsState(initialSettings: TextChannelsSettingsSnapshot | null) {
@@ -165,6 +178,7 @@ export const TextChannelsIntegrationPage: React.FC<TextChannelsIntegrationPagePr
   const [successMessage, setSuccessMessage] = useState('');
   const [errorMessage, setErrorMessage] = useState(initialState.initialErrorMessage);
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle');
+  const telegramLiveSyncInFlightRef = useRef(false);
   const loading = false;
 
   const smsE164 = formatE164Number(smsCountryCode, smsNumberInput);
@@ -206,6 +220,97 @@ export const TextChannelsIntegrationPage: React.FC<TextChannelsIntegrationPagePr
         : 'WhatsApp + Telegram';
   const hasAnyUnsavedChange =
     hasSmsChanges || hasWhatsAppChanges || hasDeliveryChannelChanges || pairingCodeInput.length > 0;
+  const shouldPollTelegramLiveState =
+    telegramSettings.telegramConfigured ||
+    telegramSettings.pendingPairingRequests.length > 0 ||
+    telegramSettings.links.length > 0;
+
+  const applyTelegramLiveSettings = useCallback(
+    (nextSettings: NonNullable<TelegramLiveSettingsResponse['settings']>) => {
+      setTelegramSettings((prev) => ({
+        ...prev,
+        telegramConfigured: nextSettings.telegramConfigured,
+        telegramEnabled: nextSettings.telegramEnabled,
+        // Keep existing username if live payload omits it for fast polling.
+        botUsername: nextSettings.botUsername ?? prev.botUsername,
+        links: Array.isArray(nextSettings.links) ? nextSettings.links : prev.links,
+        pendingPairingRequests: Array.isArray(nextSettings.pendingPairingRequests)
+          ? nextSettings.pendingPairingRequests
+          : prev.pendingPairingRequests,
+        health: nextSettings.health ?? prev.health,
+      }));
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (!shouldPollTelegramLiveState) return;
+
+    let active = true;
+    let intervalId: ReturnType<typeof setInterval> | null = null;
+    let abortController: AbortController | null = null;
+
+    const syncTelegramLiveSettings = async () => {
+      if (!active || telegramLiveSyncInFlightRef.current) return;
+      telegramLiveSyncInFlightRef.current = true;
+
+      abortController?.abort();
+      abortController = new AbortController();
+
+      try {
+        const response = await fetch('/api/settings/telegram?view=live', {
+          method: 'GET',
+          cache: 'no-store',
+          signal: abortController.signal,
+        });
+
+        const data = (await response.json()) as TelegramLiveSettingsResponse;
+        if (!active || !response.ok || !data.success || !data.settings) return;
+
+        applyTelegramLiveSettings(data.settings);
+      } catch (error) {
+        if (error instanceof Error && error.name === 'AbortError') return;
+        console.error('Failed to sync Telegram live settings:', error);
+      } finally {
+        telegramLiveSyncInFlightRef.current = false;
+      }
+    };
+
+    const stopPolling = () => {
+      if (intervalId) {
+        clearInterval(intervalId);
+        intervalId = null;
+      }
+      abortController?.abort();
+      abortController = null;
+      telegramLiveSyncInFlightRef.current = false;
+    };
+
+    const startPolling = () => {
+      if (intervalId || document.hidden) return;
+      void syncTelegramLiveSettings();
+      intervalId = setInterval(() => {
+        void syncTelegramLiveSettings();
+      }, 1500);
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        stopPolling();
+        return;
+      }
+      startPolling();
+    };
+
+    startPolling();
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      active = false;
+      stopPolling();
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [applyTelegramLiveSettings, shouldPollTelegramLiveState]);
 
   const handleCopyNumber = async () => {
     if (!hasTextNumber) {
