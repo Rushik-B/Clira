@@ -414,13 +414,20 @@ export async function processTwilioMessage(
     if (result.response && await runContext.isRunCurrent()) {
       try {
         const { messageSid: twilioResponseSid } = await twilioClient.sendMessage(from, result.response);
+        const outboundMetadata =
+          result.metadata != null && typeof result.metadata === 'object' && !Array.isArray(result.metadata)
+            ? { ...(result.metadata as Record<string, unknown>) }
+            : {};
+        outboundMetadata.burstId = runContext.burstId;
+        outboundMetadata.runId = runContext.runId;
+        outboundMetadata.superseded = false;
 
         await conversationManager.addMessage(conversation.id, {
           content: result.response,
           role: 'ASSISTANT',
           direction: 'OUTBOUND',
           twilioSid: twilioResponseSid,
-          metadata: result.metadata,
+          metadata: outboundMetadata as Prisma.InputJsonObject,
         });
 
         logger.info(
@@ -453,7 +460,12 @@ async function runExecutiveAgent(
   userEmail: string,
   conversationId: string,
   userRequest: string,
-  options?: { progressContext?: ProgressUpdateContext },
+  options?: {
+    progressContext?: ProgressUpdateContext;
+    abortSignal?: AbortSignal;
+    runContext?: RunContext;
+    channel?: 'twilio' | 'web';
+  },
 ): Promise<ProcessMessageResult> {
   const conversationManager = getConversationManager();
   const agent = getExecutiveAgent();
@@ -481,8 +493,18 @@ async function runExecutiveAgent(
       userEmail,
       userRequest,
       conversationId,
+      channel: options?.channel ?? 'twilio',
       conversationHistory,
       progressContext: options?.progressContext,
+      abortSignal: options?.abortSignal,
+      runContext: options?.runContext
+        ? {
+            runId: options.runContext.runId,
+            burstId: options.runContext.burstId,
+            isRunCurrent: options.runContext.isRunCurrent,
+            isBurstStable: options.runContext.isBurstStable,
+          }
+        : undefined,
     });
 
     return {
@@ -492,6 +514,10 @@ async function runExecutiveAgent(
       metadata: agentResult.metadata,
     };
   } catch (error) {
+    if (isAbortError(error)) {
+      throw error;
+    }
+
     const message = error instanceof Error ? error.message : 'Unknown error';
     logger.error(`[messageProcessor] Executive Agent error: ${message}`);
 
@@ -508,16 +534,19 @@ function buildProgressContext({
   phoneNumber,
   conversationManager,
   twilioClient,
+  canEmitProgress,
 }: {
   conversationId: string;
   phoneNumber: string;
   conversationManager: ReturnType<typeof getConversationManager>;
   twilioClient: ReturnType<typeof getTwilioClient>;
+  canEmitProgress?: () => boolean;
 }): ProgressUpdateContext {
   return {
     channel: 'twilio',
     requestId: crypto.randomUUID(),
     conversationId,
+    canEmitProgress,
     sendMessage: async (text) => {
       const { messageSid } = await twilioClient.sendMessage(phoneNumber, text);
       return { externalId: messageSid };
@@ -539,16 +568,19 @@ function buildWebProgressContext({
   conversationManager,
   emitWebProgress,
   requestId,
+  canEmitProgress,
 }: {
   conversationId: string;
   conversationManager: ReturnType<typeof getConversationManager>;
   emitWebProgress: (event: ProgressUpdateEvent) => Promise<void> | void;
   requestId?: string;
+  canEmitProgress?: () => boolean;
 }): ProgressUpdateContext {
   return {
     channel: 'web',
     requestId: requestId ?? crypto.randomUUID(),
     conversationId,
+    canEmitProgress,
     emitWebProgress,
     persistMessage: async ({ content, metadata }) => {
       await conversationManager.addMessage(conversationId, {
@@ -597,54 +629,100 @@ export async function processWebChatMessage(
     direction: 'INBOUND',
   });
 
-  // Detect and handle commands
-  const command = detectCommand(message);
-  let result: ProcessMessageResult;
-  const progressContext = options?.onProgress
-    ? buildWebProgressContext({
-        conversationId: conversation.id,
-        conversationManager,
-        emitWebProgress: options.onProgress,
-        requestId: options.requestId,
-      })
-    : undefined;
-
-  if (command) {
-    logger.info(`[messageProcessor] Detected command: ${command}`);
-
-    switch (command) {
-      case 'send':
-        result = await handleSendCommand(userId, userEmail, conversation.id, progressContext);
-        break;
-      case 'save':
-        result = await handleSaveCommand(userId, userEmail, conversation.id, progressContext);
-        break;
-      case 'clear':
-        result = await handleClearCommand(conversation.id);
-        break;
-      case 'cancel':
-        result = await handleCancelCommand(conversation.id);
-        break;
-      case 'help':
-        result = handleHelpCommand();
-        break;
-      default:
-        result = { success: false, response: 'Unknown command' };
-    }
-  } else {
-    // Run Executive Agent
-    result = await runExecutiveAgent(userId, userEmail, conversation.id, message, {
-      progressContext,
-    });
+  let activeCommand: Command = detectCommand(message);
+  if (activeCommand) {
+    logger.info(`[messageProcessor] Detected command: ${activeCommand}`);
   }
 
-  // Add assistant message to the conversation with tool call metadata
-  await conversationManager.addMessage(conversation.id, {
-    content: result.response,
-    role: 'ASSISTANT',
-    direction: 'OUTBOUND',
-    metadata: result.metadata,
+  const orchestrator = getMessagingOrchestrator();
+  const orchestrationDecision = await orchestrator.prepareRun({
+    channel: 'web',
+    conversationId: conversation.id,
+    userRequest: message,
+    isCommand: Boolean(activeCommand),
   });
+
+  if (orchestrationDecision.kind === 'skip') {
+    return { success: true, response: '' };
+  }
+
+  let runContext = orchestrationDecision.runContext;
+  let activeRequest = orchestrationDecision.userRequest;
+  let result: ProcessMessageResult = { success: true, response: '' };
+
+  while (runContext) {
+    const progressContext = options?.onProgress
+      ? buildWebProgressContext({
+          conversationId: conversation.id,
+          conversationManager,
+          emitWebProgress: options.onProgress,
+          requestId: options.requestId,
+          canEmitProgress: runContext.canEmitProgress,
+        })
+      : undefined;
+
+    try {
+      if (activeCommand === 'send') {
+        result = await handleSendCommand(userId, userEmail, conversation.id, {
+          progressContext,
+          runContext,
+          abortSignal: runContext.abortSignal,
+          channel: 'web',
+        });
+      } else if (activeCommand === 'save') {
+        result = await handleSaveCommand(userId, userEmail, conversation.id, {
+          progressContext,
+          runContext,
+          abortSignal: runContext.abortSignal,
+          channel: 'web',
+        });
+      } else if (activeCommand === 'clear') {
+        result = await handleClearCommand(conversation.id);
+      } else if (activeCommand === 'cancel') {
+        result = await handleCancelCommand(conversation.id);
+      } else if (activeCommand === 'help') {
+        result = handleHelpCommand();
+      } else {
+        result = await runExecutiveAgent(userId, userEmail, conversation.id, activeRequest, {
+          progressContext,
+          runContext,
+          abortSignal: runContext.abortSignal,
+          channel: 'web',
+        });
+      }
+    } catch (error) {
+      if (isAbortError(error)) {
+        return { success: true, response: '' };
+      }
+      throw error;
+    }
+
+    if (result.response && await runContext.isRunCurrent()) {
+      const outboundMetadata =
+        result.metadata != null && typeof result.metadata === 'object' && !Array.isArray(result.metadata)
+          ? { ...(result.metadata as Record<string, unknown>) }
+          : {};
+      outboundMetadata.burstId = runContext.burstId;
+      outboundMetadata.runId = runContext.runId;
+      outboundMetadata.superseded = false;
+
+      await conversationManager.addMessage(conversation.id, {
+        content: result.response,
+        role: 'ASSISTANT',
+        direction: 'OUTBOUND',
+        metadata: outboundMetadata as Prisma.InputJsonObject,
+      });
+    }
+
+    const finalized = await orchestrator.finalizeRun({ runContext });
+    if (!finalized.nextRun) {
+      break;
+    }
+
+    runContext = finalized.nextRun.runContext;
+    activeRequest = finalized.nextRun.userRequest;
+    activeCommand = null;
+  }
 
   return result;
 }
