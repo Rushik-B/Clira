@@ -234,6 +234,22 @@ export class ConversationManager {
   }
 
   /**
+   * Checks if an inbound message with the given Twilio SID already exists.
+   * Used for idempotency to skip duplicate webhook deliveries.
+   */
+  async hasInboundMessageWithTwilioSid(twilioSid: string): Promise<boolean> {
+    const existing = await prisma.twilioMessage.findFirst({
+      where: {
+        twilioSid,
+        direction: 'INBOUND',
+      },
+      select: { id: true },
+    });
+
+    return !!existing;
+  }
+
+  /**
    * Gets recent messages from a conversation for context window.
    * Returns messages in chronological order (oldest first).
    *

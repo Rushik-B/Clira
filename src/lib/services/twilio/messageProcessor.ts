@@ -25,6 +25,10 @@ import {
 import { getExecutiveAgent, type ExecutiveAgentOutput } from '@/lib/ai/agents/executiveAgent';
 import type { ProgressUpdateContext } from '@/lib/ai/tools/sendProgressUpdate';
 import type { ProgressUpdateEvent } from '@/lib/ai/progressTypes';
+import {
+  getMessagingOrchestrator,
+  type RunContext,
+} from '@/lib/services/messaging-orchestration';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -40,6 +44,19 @@ export interface ProcessMessageResult {
 
 /** Commands that trigger special handling instead of agent invocation */
 type Command = 'send' | 'save' | 'clear' | 'cancel' | 'help' | null;
+
+function isAbortError(e: unknown): boolean {
+  if (e && typeof e === 'object') {
+    if ((e as { code?: unknown }).code === 'abort') return true;
+  }
+  if (e instanceof Error) {
+    return (
+      e.name === 'AbortError' ||
+      /abort|aborted|cancel|superseded/i.test(e.message ?? '')
+    );
+  }
+  return false;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Command Detection
@@ -126,11 +143,16 @@ async function handleSendCommand(
   userId: string,
   userEmail: string,
   conversationId: string,
-  progressContext?: ProgressUpdateContext,
+  options?: {
+    progressContext?: ProgressUpdateContext;
+    runContext?: RunContext;
+    abortSignal?: AbortSignal;
+    channel?: 'twilio' | 'web';
+  },
 ): Promise<ProcessMessageResult> {
   // Delegate to the agent - it will check conversation history for draft details
   // and use the send_email tool if appropriate
-  return runExecutiveAgent(userId, userEmail, conversationId, 'send', { progressContext });
+  return runExecutiveAgent(userId, userEmail, conversationId, 'send', options);
 }
 
 /**
@@ -141,10 +163,15 @@ async function handleSaveCommand(
   userId: string,
   userEmail: string,
   conversationId: string,
-  progressContext?: ProgressUpdateContext,
+  options?: {
+    progressContext?: ProgressUpdateContext;
+    runContext?: RunContext;
+    abortSignal?: AbortSignal;
+    channel?: 'twilio' | 'web';
+  },
 ): Promise<ProcessMessageResult> {
   // Delegate to the agent - it will check conversation history for draft details
-  return runExecutiveAgent(userId, userEmail, conversationId, 'save to drafts', { progressContext });
+  return runExecutiveAgent(userId, userEmail, conversationId, 'save to drafts', options);
 }
 
 /**
@@ -241,6 +268,17 @@ export async function processTwilioMessage(
     `[messageProcessor] Processing message: from=${from.slice(0, 4)}**** text="${body.slice(0, 50)}..."`,
   );
 
+  if (messageSid) {
+    const isDuplicate = await conversationManager.hasInboundMessageWithTwilioSid(messageSid);
+    if (isDuplicate) {
+      logger.info('[messageProcessor] Duplicate inbound Twilio message detected, skipping', {
+        from: `${from.slice(0, 4)}****`,
+        messageSid,
+      });
+      return { success: true, response: '' };
+    }
+  }
+
   // Step 1: Look up user by Twilio phone number
   let userId = await conversationManager.findUserByTwilioNumber(from);
 
@@ -307,82 +345,101 @@ export async function processTwilioMessage(
   });
 
   // Step 5: Detect and handle commands
-  const command = detectCommand(body);
-  let result: ProcessMessageResult;
-
-  if (command) {
-    logger.info(`[messageProcessor] Detected command: ${command}`);
-
-    switch (command) {
-      case 'send':
-        result = await handleSendCommand(
-          userId,
-          user.email,
-          conversation.id,
-          buildProgressContext({
-            conversationId: conversation.id,
-            phoneNumber: from,
-            conversationManager,
-            twilioClient,
-          }),
-        );
-        break;
-      case 'save':
-        result = await handleSaveCommand(
-          userId,
-          user.email,
-          conversation.id,
-          buildProgressContext({
-            conversationId: conversation.id,
-            phoneNumber: from,
-            conversationManager,
-            twilioClient,
-          }),
-        );
-        break;
-      case 'clear':
-        result = await handleClearCommand(conversation.id);
-        break;
-      case 'cancel':
-        result = await handleCancelCommand(conversation.id);
-        break;
-      case 'help':
-        result = handleHelpCommand();
-        break;
-      default:
-        result = { success: false, response: 'Unknown command' };
-    }
-  } else {
-    // Step 6: Run Executive Agent for natural language requests
-    result = await runExecutiveAgent(userId, user.email, conversation.id, body, {
-      progressContext: buildProgressContext({
-        conversationId: conversation.id,
-        phoneNumber: from,
-        conversationManager,
-        twilioClient,
-      }),
-    });
+  let activeCommand: Command = detectCommand(body);
+  if (activeCommand) {
+    logger.info(`[messageProcessor] Detected command: ${activeCommand}`);
   }
 
-  // Step 7: Send response via Twilio SMS/RCS
-  try {
-    const { messageSid: twilioResponseSid } = await twilioClient.sendMessage(from, result.response);
+  const orchestrator = getMessagingOrchestrator();
+  const orchestrationDecision = await orchestrator.prepareRun({
+    channel: 'twilio',
+    conversationId: conversation.id,
+    userRequest: body,
+    isCommand: Boolean(activeCommand),
+  });
 
-    // Step 8: Add assistant message to the conversation with tool call metadata
-    await conversationManager.addMessage(conversation.id, {
-      content: result.response,
-      role: 'ASSISTANT',
-      direction: 'OUTBOUND',
-      twilioSid: twilioResponseSid,
-      metadata: result.metadata,
+  if (orchestrationDecision.kind === 'skip') {
+    return { success: true, response: '' };
+  }
+
+  let runContext = orchestrationDecision.runContext;
+  let activeRequest = orchestrationDecision.userRequest;
+  let result: ProcessMessageResult = { success: true, response: '' };
+
+  while (runContext) {
+    const progressContext = buildProgressContext({
+      conversationId: conversation.id,
+      phoneNumber: from,
+      conversationManager,
+      twilioClient,
+      canEmitProgress: runContext.canEmitProgress,
     });
 
-    logger.info(
-      `[messageProcessor] Response sent: from=${from.slice(0, 4)}**** responseId=${twilioResponseSid}`,
-    );
-  } catch (error) {
-    logger.error(`[messageProcessor] Failed to send Twilio response: ${error}`);
-    result.error = 'Failed to send Twilio response';
+    try {
+      if (activeCommand === 'send') {
+        result = await handleSendCommand(userId, user.email, conversation.id, {
+          progressContext,
+          runContext,
+          abortSignal: runContext.abortSignal,
+          channel: 'twilio',
+        });
+      } else if (activeCommand === 'save') {
+        result = await handleSaveCommand(userId, user.email, conversation.id, {
+          progressContext,
+          runContext,
+          abortSignal: runContext.abortSignal,
+          channel: 'twilio',
+        });
+      } else if (activeCommand === 'clear') {
+        result = await handleClearCommand(conversation.id);
+      } else if (activeCommand === 'cancel') {
+        result = await handleCancelCommand(conversation.id);
+      } else if (activeCommand === 'help') {
+        result = handleHelpCommand();
+      } else {
+        result = await runExecutiveAgent(userId, user.email, conversation.id, activeRequest, {
+          progressContext,
+          runContext,
+          abortSignal: runContext.abortSignal,
+          channel: 'twilio',
+        });
+      }
+    } catch (error) {
+      if (isAbortError(error)) {
+        return { success: true, response: '' };
+      }
+      throw error;
+    }
+
+    if (result.response && await runContext.isRunCurrent()) {
+      try {
+        const { messageSid: twilioResponseSid } = await twilioClient.sendMessage(from, result.response);
+
+        await conversationManager.addMessage(conversation.id, {
+          content: result.response,
+          role: 'ASSISTANT',
+          direction: 'OUTBOUND',
+          twilioSid: twilioResponseSid,
+          metadata: result.metadata,
+        });
+
+        logger.info(
+          `[messageProcessor] Response sent: from=${from.slice(0, 4)}**** responseId=${twilioResponseSid}`,
+        );
+      } catch (error) {
+        logger.error(`[messageProcessor] Failed to send Twilio response: ${error}`);
+        result.error = 'Failed to send Twilio response';
+      }
+    }
+
+    const finalized = await orchestrator.finalizeRun({ runContext });
+    if (!finalized.nextRun) {
+      break;
+    }
+
+    runContext = finalized.nextRun.runContext;
+    activeRequest = finalized.nextRun.userRequest;
+    activeCommand = null;
   }
 
   return result;
