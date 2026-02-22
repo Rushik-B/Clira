@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 import { logger } from '@/lib/logger';
-import redisConnection from '@/lib/services/utils/redis';
+import redisConnection, { isRedisConnected } from '@/lib/services/utils/redis';
 import type {
   BurstState,
   OrchestrationChannel,
@@ -75,7 +75,7 @@ function parseState(raw: string | null): BurstState {
 }
 
 async function ensureRedisReady(): Promise<void> {
-  if (redisConnection.status === 'ready') return;
+  if (isRedisConnected()) return;
 
   if (redisConnection.status === 'end' || redisConnection.status === 'close') {
     try {
@@ -87,7 +87,7 @@ async function ensureRedisReady(): Promise<void> {
     }
   }
 
-  if (redisConnection.status !== 'ready') {
+  if (!isRedisConnected()) {
     throw new OrchestrationStateError(
       `Redis unavailable for orchestration: status=${redisConnection.status}`,
     );

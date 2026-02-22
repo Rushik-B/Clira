@@ -80,6 +80,14 @@ function shouldSupersede(decision: RelevanceClassification): boolean {
   return false;
 }
 
+function isBenignStartConflict(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return (
+    error.message === 'orchestration_revision_mismatch' ||
+    error.message === 'orchestration_active_run_exists'
+  );
+}
+
 function applyInboundToState(
   state: BurstState,
   userRequest: string,
@@ -260,7 +268,19 @@ export class MessagingOrchestrator {
         userRequest,
         expectedRevision: stateAfterInbound.revision,
         forceReplace: true,
+      }).catch((error) => {
+        if (isBenignStartConflict(error)) {
+          return null;
+        }
+        throw error;
       });
+
+      if (!start) {
+        return {
+          kind: 'skip',
+          reason: 'superseded_by_newer_message',
+        };
+      }
 
       return {
         kind: 'start',
@@ -296,7 +316,20 @@ export class MessagingOrchestrator {
           expectedRevision: stateAfterInbound.revision,
           forceReplace: true,
           classifierDecision,
+        }).catch((error) => {
+          if (isBenignStartConflict(error)) {
+            return null;
+          }
+          throw error;
         });
+
+        if (!start) {
+          return {
+            kind: 'skip',
+            reason: 'superseded_by_newer_message',
+            classifierDecision,
+          };
+        }
 
         return {
           kind: 'start',
@@ -343,7 +376,19 @@ export class MessagingOrchestrator {
       userRequest,
       expectedRevision: stateAfterInbound.revision,
       forceReplace: false,
+    }).catch((error) => {
+      if (isBenignStartConflict(error)) {
+        return null;
+      }
+      throw error;
     });
+
+    if (!start) {
+      return {
+        kind: 'skip',
+        reason: 'superseded_by_newer_message',
+      };
+    }
 
     return {
       kind: 'start',
@@ -379,9 +424,17 @@ export class MessagingOrchestrator {
         expectedRevision: state.revision,
         forceReplace: true,
         nextBurstId: crypto.randomUUID(),
+      }).catch((error) => {
+        if (isBenignStartConflict(error)) {
+          return null;
+        }
+        throw error;
       });
 
       clearLocalRun(conversationKey, runContext.runId);
+      if (!start) {
+        return {};
+      }
 
       return {
         nextRun: {
