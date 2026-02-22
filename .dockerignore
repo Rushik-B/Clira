@@ -1,0 +1,39 @@
+# Dependencies and build artifacts (rebuilt in image)
+node_modules
+.next
+out
+dist
+build
+*.tsbuildinfo
+next-env.d.ts
+
+# Git and env (env loaded via env_file, not copied)
+.git
+.gitignore
+.env*
+!.env.example
+
+# Docs and local config (not needed in image)
+rushiks-docs
+.vercel
+.vscode
+.idea
+*.md
+!README.md
+
+# Debug and logs
+*.log
+logs
+npm-debug.log*
+.DS_Store
+
+# Agent/IDE configs
+.agents
+.cursor
+.claude
+.codex
+.windsurf
+.agent
+.opencode
+.kiro
+.gemini

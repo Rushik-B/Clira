@@ -7,7 +7,7 @@ This guide gets Clira running locally with the same app/worker topology used in 
 - Node.js 22.x
 - npm 10.x
 - Docker + Docker Compose
-- Postgres and Redis ports available (`5432`, `6379`)
+- Postgres and Redis ports available (`15432`, `16379`)
 - Google Cloud project (Gmail API + Pub/Sub) for push ingestion
 
 ## 1) Install and configure

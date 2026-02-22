@@ -119,18 +119,20 @@ export default async function middleware(request: NextRequest) {
   }
 
   // In production, enforce HTTPS by redirecting HTTP requests
-  if (isProd) {
+  // Skip for localhost (local Docker without a TLS-terminating proxy)
+  const host = request.headers.get("x-forwarded-host") ?? request.headers.get("host") ?? "";
+  const isLocalhost = host.startsWith("localhost") || host.startsWith("127.0.0.1");
+
+  if (isProd && !isLocalhost) {
     const forwardedProto = request.headers.get("x-forwarded-proto");
     const protocol =
       forwardedProto ?? request.nextUrl.protocol.replace(":", "");
 
     // Redirect HTTP to HTTPS
     if (protocol === "http") {
-      const host = request.headers.get("x-forwarded-host") ?? request.headers.get("host");
       const newUrl = new URL(request.url);
       newUrl.protocol = "https:";
       if (host) {
-        // Extract hostname without port (host header may include port)
         const hostname = host.split(":")[0];
         newUrl.hostname = hostname;
         newUrl.port = ""; // Use default HTTPS port (443)
@@ -162,7 +164,7 @@ export default async function middleware(request: NextRequest) {
       
       // For page routes, redirect to landing page (or signin as fallback)
       if (landingPageUrl) {
-        return NextResponse.redirect(landingPageUrl);
+        return NextResponse.redirect(new URL(landingPageUrl, request.url));
       }
       return NextResponse.redirect(new URL("/signin", request.url));
     }
@@ -195,8 +197,8 @@ export default async function middleware(request: NextRequest) {
     response.headers.set("Vary", "Cookie");
   }
 
-  // Add HSTS header in production (request is already HTTPS at this point)
-  if (isProd) {
+  // Add HSTS header in production (skip localhost — no TLS termination locally)
+  if (isProd && !isLocalhost) {
     response.headers.set(
       "Strict-Transport-Security",
       "max-age=31536000; includeSubDomains; preload",

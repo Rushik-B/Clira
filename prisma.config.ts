@@ -3,6 +3,10 @@
 import 'dotenv/config'
 import { defineConfig } from 'prisma/config'
 
+if (!process.env['DIRECT_URL'] && !process.env['DATABASE_URL']) {
+  throw new Error('Missing DIRECT_URL or DATABASE_URL environment variable for Prisma')
+}
+
 export default defineConfig({
   schema: './prisma/schema.prisma',
   migrations: {
@@ -11,7 +15,7 @@ export default defineConfig({
   datasource: {
     // Use a direct connection for migration/introspection tooling.
     // If this is undefined, Prisma CLI commands that need a database connection will fail loudly.
-    url: process.env['DIRECT_URL'],
+    url: process.env['DIRECT_URL'] || process.env['DATABASE_URL'],
     // Optional shadow database for commands that need it (e.g. `prisma migrate diff --from-migrations ...`).
     // MUST NOT point at your production schema.
     shadowDatabaseUrl: process.env['SHADOW_DATABASE_URL'],
