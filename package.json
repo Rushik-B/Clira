@@ -15,7 +15,7 @@
     "postinstall": "prisma generate",
     "migrate:deploy": "prisma migrate deploy",
     "migrate:status": "prisma migrate status",
-    "test": "jest",
+    "test": "node tests/integration/email-sending.test.js",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
     "test:ci": "jest --coverage --runInBand",

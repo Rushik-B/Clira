@@ -1183,7 +1183,9 @@ heartbeatInterval = setInterval(() => {
 
 if (isTelegramEnabled()) {
   startTelegramMonitor({
-    onMessage: processTelegramMessage,
+    onMessage: async (message) => {
+      await processTelegramMessage(message);
+    },
   })
     .then(() => {
       telegramMonitorStarted = true;

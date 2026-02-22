@@ -443,6 +443,7 @@ model User {
   threads                            Thread[]
   settings                           UserSettings?
   tokenAccessAudits                  TokenAccessAudit[]
+  telegramLink                       TelegramLink?
 }
 
 model UserSettings {
@@ -556,7 +557,7 @@ model TelegramMessage {
 
 model TelegramLink {
   id                String   @id @default(cuid())
-  userId            String
+  userId            String   @unique
   /// Telegram user ID linked to this Clira user
   telegramUserId    String   @unique
   /// Telegram private chat ID for outbound delivery

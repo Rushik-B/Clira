@@ -230,7 +230,7 @@ export class TelegramClient {
 
   async sendMessage(chatId: string, text: string): Promise<TelegramSendMessageResponse> {
     const sent = await this.bot.api.sendMessage(toTelegramChatId(chatId), text, {
-      disable_web_page_preview: true,
+      link_preview_options: { is_disabled: true },
     });
     return { messageId: String(sent.message_id) };
   }
