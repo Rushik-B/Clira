@@ -8,6 +8,7 @@ services:
     environment:
       NODE_ENV: production
       DATABASE_URL: postgresql://postgres:postgres@db:5432/clira
+      DIRECT_URL: postgresql://postgres:postgres@db:5432/clira
       REDIS_URL: redis://redis:6379
       NEXTAUTH_URL: http://localhost:13000
       NEXT_PUBLIC_LANDING_PAGE_URL: ""
@@ -23,6 +24,7 @@ services:
     environment:
       NODE_ENV: production
       DATABASE_URL: postgresql://postgres:postgres@db:5432/clira
+      DIRECT_URL: postgresql://postgres:postgres@db:5432/clira
       REDIS_URL: redis://redis:6379
     depends_on:
       - db
