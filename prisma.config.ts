@@ -3,6 +3,10 @@
 import 'dotenv/config'
 import { defineConfig } from 'prisma/config'
 
+if (!process.env['DIRECT_URL'] && !process.env['DATABASE_URL']) {
+  throw new Error('Missing DIRECT_URL or DATABASE_URL environment variable for Prisma')
+}
+
 export default defineConfig({
   schema: './prisma/schema.prisma',
   migrations: {

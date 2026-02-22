@@ -164,7 +164,7 @@ export default async function middleware(request: NextRequest) {
       
       // For page routes, redirect to landing page (or signin as fallback)
       if (landingPageUrl) {
-        return NextResponse.redirect(landingPageUrl);
+        return NextResponse.redirect(new URL(landingPageUrl, request.url));
       }
       return NextResponse.redirect(new URL("/signin", request.url));
     }
