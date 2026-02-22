@@ -27,6 +27,10 @@ import { transcribeVoiceMemo } from '@/lib/ai/transcribeVoiceMemo';
 import { describeIncomingImage } from '@/lib/ai/describeIncomingImage';
 import type { ProgressUpdateContext } from '@/lib/ai/tools/sendProgressUpdate';
 import type { ProgressUpdateEvent } from '@/lib/ai/progressTypes';
+import {
+  getMessagingOrchestrator,
+  type RunContext,
+} from '@/lib/services/messaging-orchestration';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -173,11 +177,16 @@ async function handleSendCommand(
   userId: string,
   userEmail: string,
   conversationId: string,
-  progressContext?: ProgressUpdateContext,
+  options?: {
+    progressContext?: ProgressUpdateContext;
+    runContext?: RunContext;
+    abortSignal?: AbortSignal;
+    channel?: 'whatsapp' | 'web';
+  },
 ): Promise<ProcessMessageResult> {
   // Delegate to the agent - it will check conversation history for draft details
   // and use the send_email tool if appropriate
-  return runExecutiveAgent(userId, userEmail, conversationId, 'send', { progressContext });
+  return runExecutiveAgent(userId, userEmail, conversationId, 'send', options);
 }
 
 /**
@@ -188,10 +197,15 @@ async function handleSaveCommand(
   userId: string,
   userEmail: string,
   conversationId: string,
-  progressContext?: ProgressUpdateContext,
+  options?: {
+    progressContext?: ProgressUpdateContext;
+    runContext?: RunContext;
+    abortSignal?: AbortSignal;
+    channel?: 'whatsapp' | 'web';
+  },
 ): Promise<ProcessMessageResult> {
   // Delegate to the agent - it will check conversation history for draft details
-  return runExecutiveAgent(userId, userEmail, conversationId, 'save to drafts', { progressContext });
+  return runExecutiveAgent(userId, userEmail, conversationId, 'save to drafts', options);
 }
 
 /**
@@ -496,114 +510,112 @@ export async function processWhatsAppMessage(
   });
 
   // Step 5: Detect and handle commands
-  const command = detectCommand(effectiveText);
-  let result: ProcessMessageResult;
+  let activeCommand: Command = detectCommand(effectiveText);
+  if (activeCommand) {
+    logger.info(`[messageProcessor] Detected command: ${activeCommand}`);
+  }
+  if (myRunId !== null && inFlightRuns.get(conversation.id)?.runId === myRunId) {
+    inFlightRuns.delete(conversation.id);
+  }
 
-  if (command) {
-    if (myRunId !== null && inFlightRuns.get(conversation.id)?.runId === myRunId) {
-      inFlightRuns.delete(conversation.id);
-    }
-    logger.info(`[messageProcessor] Detected command: ${command}`);
+  const orchestrator = getMessagingOrchestrator();
+  const orchestrationDecision = await orchestrator.prepareRun({
+    channel: 'whatsapp',
+    conversationId: conversation.id,
+    userRequest: effectiveText,
+    isCommand: Boolean(activeCommand),
+  });
 
-    switch (command) {
-      case 'send':
-        result = await handleSendCommand(
-          userId,
-          user.email,
-          conversation.id,
-          buildProgressContext({
-            conversationId: conversation.id,
-            waId,
-            conversationManager,
-            whatsappClient,
-          }),
-        );
-        break;
-      case 'save':
-        result = await handleSaveCommand(
-          userId,
-          user.email,
-          conversation.id,
-          buildProgressContext({
-            conversationId: conversation.id,
-            waId,
-            conversationManager,
-            whatsappClient,
-          }),
-        );
-        break;
-      case 'clear':
-        result = await handleClearCommand(conversation.id);
-        break;
-      case 'cancel':
-        result = await handleCancelCommand(conversation.id);
-        break;
-      case 'help':
-        result = handleHelpCommand();
-        break;
-      default:
-        result = { success: false, response: 'Unknown command' };
-    }
-  } else {
-    // Step 6: Run Executive Agent for natural language requests
-    // Abort any in-flight run for this conversation so only the latest message gets a response (avoids double texting).
-    if (!abortController) {
-      const prev = inFlightRuns.get(conversation.id);
-      if (prev) {
-        prev.abortController.abort('superseded_by_new_message');
-        logger.debug('[messageProcessor] Aborted previous run for conversation', {
-          conversationId: conversation.id.slice(0, 8),
-        });
-      }
-      abortController = new AbortController();
-      myRunId = ++runIdCounter;
-      inFlightRuns.set(conversation.id, { abortController, runId: myRunId });
-    }
+  if (orchestrationDecision.kind === 'skip') {
+    return { success: true, response: '' };
+  }
+
+  let runContext = orchestrationDecision.runContext;
+  let activeRequest = orchestrationDecision.userRequest;
+  let result: ProcessMessageResult = { success: true, response: '' };
+
+  while (runContext) {
+    const progressContext = buildProgressContext({
+      conversationId: conversation.id,
+      waId,
+      conversationManager,
+      whatsappClient,
+      canEmitProgress: runContext.canEmitProgress,
+    });
 
     try {
-      result = await runExecutiveAgent(userId, user.email, conversation.id, effectiveText, {
-        progressContext: buildProgressContext({
-          conversationId: conversation.id,
-          waId,
-          conversationManager,
-          whatsappClient,
-        }),
-        abortSignal: abortController.signal,
-      });
-    } catch (e) {
-      if (isAbortError(e)) {
+      if (activeCommand === 'send') {
+        result = await handleSendCommand(userId, user.email, conversation.id, {
+          progressContext,
+          runContext,
+          abortSignal: runContext.abortSignal,
+          channel: 'whatsapp',
+        });
+      } else if (activeCommand === 'save') {
+        result = await handleSaveCommand(userId, user.email, conversation.id, {
+          progressContext,
+          runContext,
+          abortSignal: runContext.abortSignal,
+          channel: 'whatsapp',
+        });
+      } else if (activeCommand === 'clear') {
+        result = await handleClearCommand(conversation.id);
+      } else if (activeCommand === 'cancel') {
+        result = await handleCancelCommand(conversation.id);
+      } else if (activeCommand === 'help') {
+        result = handleHelpCommand();
+      } else {
+        result = await runExecutiveAgent(userId, user.email, conversation.id, activeRequest, {
+          progressContext,
+          runContext,
+          abortSignal: runContext.abortSignal,
+          channel: 'whatsapp',
+        });
+      }
+    } catch (error) {
+      if (isAbortError(error)) {
         logger.debug('[messageProcessor] Run superseded by new message, not sending');
         return { success: true, response: '' };
       }
-      throw e;
-    } finally {
-      if (myRunId !== null && inFlightRuns.get(conversation.id)?.runId === myRunId) {
-        inFlightRuns.delete(conversation.id);
+      throw error;
+    }
+
+    if (result.response && await runContext.isRunCurrent()) {
+      try {
+        const { messageId: waResponseId } = await whatsappClient.sendMessage(waId, result.response);
+        const outboundMetadata =
+          result.metadata != null && typeof result.metadata === 'object' && !Array.isArray(result.metadata)
+            ? { ...(result.metadata as Record<string, unknown>) }
+            : {};
+        outboundMetadata.burstId = runContext.burstId;
+        outboundMetadata.runId = runContext.runId;
+        outboundMetadata.superseded = false;
+
+        await conversationManager.addMessage(conversation.id, {
+          content: result.response,
+          role: 'ASSISTANT',
+          direction: 'OUTBOUND',
+          waMessageId: waResponseId,
+          metadata: outboundMetadata as Prisma.InputJsonObject,
+        });
+
+        logger.info(
+          `[messageProcessor] Response sent: waId=${waId.slice(0, 4)}**** responseId=${waResponseId}`,
+        );
+      } catch (error) {
+        logger.error(`[messageProcessor] Failed to send WhatsApp response: ${error}`);
+        result.error = 'Failed to send WhatsApp response';
       }
     }
-  }
 
-  // Step 7: Send response via WhatsApp (skip if no response, e.g. superseded)
-  if (result.response) {
-    try {
-      const { messageId: waResponseId } = await whatsappClient.sendMessage(waId, result.response);
-
-      // Step 8: Add assistant message to the conversation with tool call metadata
-      await conversationManager.addMessage(conversation.id, {
-        content: result.response,
-        role: 'ASSISTANT',
-        direction: 'OUTBOUND',
-        waMessageId: waResponseId,
-        metadata: result.metadata,
-      });
-
-      logger.info(
-        `[messageProcessor] Response sent: waId=${waId.slice(0, 4)}**** responseId=${waResponseId}`,
-      );
-    } catch (error) {
-      logger.error(`[messageProcessor] Failed to send WhatsApp response: ${error}`);
-      result.error = 'Failed to send WhatsApp response';
+    const finalized = await orchestrator.finalizeRun({ runContext });
+    if (!finalized.nextRun) {
+      break;
     }
+
+    runContext = finalized.nextRun.runContext;
+    activeRequest = finalized.nextRun.userRequest;
+    activeCommand = null;
   }
 
   return result;
@@ -620,6 +632,8 @@ async function runExecutiveAgent(
   options?: {
     progressContext?: ProgressUpdateContext;
     abortSignal?: AbortSignal;
+    runContext?: RunContext;
+    channel?: 'whatsapp' | 'web';
   },
 ): Promise<ProcessMessageResult> {
   const conversationManager = getConversationManager();
@@ -648,9 +662,18 @@ async function runExecutiveAgent(
       userEmail,
       userRequest,
       conversationId,
+      channel: options?.channel ?? 'whatsapp',
       conversationHistory,
       progressContext: options?.progressContext,
       abortSignal: options?.abortSignal,
+      runContext: options?.runContext
+        ? {
+            runId: options.runContext.runId,
+            burstId: options.runContext.burstId,
+            isRunCurrent: options.runContext.isRunCurrent,
+            isBurstStable: options.runContext.isBurstStable,
+          }
+        : undefined,
     });
 
     return {
@@ -681,16 +704,19 @@ function buildProgressContext({
   waId,
   conversationManager,
   whatsappClient,
+  canEmitProgress,
 }: {
   conversationId: string;
   waId: string;
   conversationManager: ReturnType<typeof getConversationManager>;
   whatsappClient: ReturnType<typeof getWhatsAppClient>;
+  canEmitProgress?: () => boolean;
 }): ProgressUpdateContext {
   return {
     channel: 'whatsapp',
     requestId: crypto.randomUUID(),
     conversationId,
+    canEmitProgress,
     sendMessage: async (text) => {
       const { messageId } = await whatsappClient.sendMessage(waId, text);
       return { externalId: messageId };
@@ -712,16 +738,19 @@ function buildWebProgressContext({
   conversationManager,
   emitWebProgress,
   requestId,
+  canEmitProgress,
 }: {
   conversationId: string;
   conversationManager: ReturnType<typeof getConversationManager>;
   emitWebProgress: (event: ProgressUpdateEvent) => Promise<void> | void;
   requestId?: string;
+  canEmitProgress?: () => boolean;
 }): ProgressUpdateContext {
   return {
     channel: 'web',
     requestId: requestId ?? crypto.randomUUID(),
     conversationId,
+    canEmitProgress,
     emitWebProgress,
     persistMessage: async ({ content, metadata }) => {
       await conversationManager.addMessage(conversationId, {
@@ -770,54 +799,100 @@ export async function processWebChatMessage(
     direction: 'INBOUND',
   });
 
-  // Detect and handle commands
-  const command = detectCommand(message);
-  let result: ProcessMessageResult;
-  const progressContext = options?.onProgress
-    ? buildWebProgressContext({
-        conversationId: conversation.id,
-        conversationManager,
-        emitWebProgress: options.onProgress,
-        requestId: options.requestId,
-      })
-    : undefined;
-
-  if (command) {
-    logger.info(`[messageProcessor] Detected command: ${command}`);
-
-    switch (command) {
-      case 'send':
-        result = await handleSendCommand(userId, userEmail, conversation.id, progressContext);
-        break;
-      case 'save':
-        result = await handleSaveCommand(userId, userEmail, conversation.id, progressContext);
-        break;
-      case 'clear':
-        result = await handleClearCommand(conversation.id);
-        break;
-      case 'cancel':
-        result = await handleCancelCommand(conversation.id);
-        break;
-      case 'help':
-        result = handleHelpCommand();
-        break;
-      default:
-        result = { success: false, response: 'Unknown command' };
-    }
-  } else {
-    // Run Executive Agent
-    result = await runExecutiveAgent(userId, userEmail, conversation.id, message, {
-      progressContext,
-    });
+  let activeCommand: Command = detectCommand(message);
+  if (activeCommand) {
+    logger.info(`[messageProcessor] Detected command: ${activeCommand}`);
   }
 
-  // Add assistant message to the conversation with tool call metadata
-  await conversationManager.addMessage(conversation.id, {
-    content: result.response,
-    role: 'ASSISTANT',
-    direction: 'OUTBOUND',
-    metadata: result.metadata,
+  const orchestrator = getMessagingOrchestrator();
+  const orchestrationDecision = await orchestrator.prepareRun({
+    channel: 'web',
+    conversationId: conversation.id,
+    userRequest: message,
+    isCommand: Boolean(activeCommand),
   });
+
+  if (orchestrationDecision.kind === 'skip') {
+    return { success: true, response: '' };
+  }
+
+  let runContext = orchestrationDecision.runContext;
+  let activeRequest = orchestrationDecision.userRequest;
+  let result: ProcessMessageResult = { success: true, response: '' };
+
+  while (runContext) {
+    const progressContext = options?.onProgress
+      ? buildWebProgressContext({
+          conversationId: conversation.id,
+          conversationManager,
+          emitWebProgress: options.onProgress,
+          requestId: options.requestId,
+          canEmitProgress: runContext.canEmitProgress,
+        })
+      : undefined;
+
+    try {
+      if (activeCommand === 'send') {
+        result = await handleSendCommand(userId, userEmail, conversation.id, {
+          progressContext,
+          runContext,
+          abortSignal: runContext.abortSignal,
+          channel: 'web',
+        });
+      } else if (activeCommand === 'save') {
+        result = await handleSaveCommand(userId, userEmail, conversation.id, {
+          progressContext,
+          runContext,
+          abortSignal: runContext.abortSignal,
+          channel: 'web',
+        });
+      } else if (activeCommand === 'clear') {
+        result = await handleClearCommand(conversation.id);
+      } else if (activeCommand === 'cancel') {
+        result = await handleCancelCommand(conversation.id);
+      } else if (activeCommand === 'help') {
+        result = handleHelpCommand();
+      } else {
+        result = await runExecutiveAgent(userId, userEmail, conversation.id, activeRequest, {
+          progressContext,
+          runContext,
+          abortSignal: runContext.abortSignal,
+          channel: 'web',
+        });
+      }
+    } catch (error) {
+      if (isAbortError(error)) {
+        return { success: true, response: '' };
+      }
+      throw error;
+    }
+
+    if (result.response && await runContext.isRunCurrent()) {
+      const outboundMetadata =
+        result.metadata != null && typeof result.metadata === 'object' && !Array.isArray(result.metadata)
+          ? { ...(result.metadata as Record<string, unknown>) }
+          : {};
+      outboundMetadata.burstId = runContext.burstId;
+      outboundMetadata.runId = runContext.runId;
+      outboundMetadata.superseded = false;
+
+      await conversationManager.addMessage(conversation.id, {
+        content: result.response,
+        role: 'ASSISTANT',
+        direction: 'OUTBOUND',
+        metadata: outboundMetadata as Prisma.InputJsonObject,
+      });
+    }
+
+    const finalized = await orchestrator.finalizeRun({ runContext });
+    if (!finalized.nextRun) {
+      break;
+    }
+
+    runContext = finalized.nextRun.runContext;
+    activeRequest = finalized.nextRun.userRequest;
+    activeCommand = null;
+  }
 
   return result;
 }

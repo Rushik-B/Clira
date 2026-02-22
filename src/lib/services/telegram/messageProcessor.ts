@@ -24,6 +24,10 @@ import {
   getTelegramClient,
   type TelegramInboundMessage,
 } from '@/lib/services/telegram';
+import {
+  getMessagingOrchestrator,
+  type RunContext,
+} from '@/lib/services/messaging-orchestration';
 
 export interface ProcessMessageResult {
   success: boolean;
@@ -221,18 +225,26 @@ async function handleSendCommand(
   userId: string,
   userEmail: string,
   conversationId: string,
-  progressContext?: ProgressUpdateContext,
+  options?: {
+    progressContext?: ProgressUpdateContext;
+    runContext?: RunContext;
+    abortSignal?: AbortSignal;
+  },
 ): Promise<ProcessMessageResult> {
-  return runExecutiveAgent(userId, userEmail, conversationId, 'send', { progressContext });
+  return runExecutiveAgent(userId, userEmail, conversationId, 'send', options);
 }
 
 async function handleSaveCommand(
   userId: string,
   userEmail: string,
   conversationId: string,
-  progressContext?: ProgressUpdateContext,
+  options?: {
+    progressContext?: ProgressUpdateContext;
+    runContext?: RunContext;
+    abortSignal?: AbortSignal;
+  },
 ): Promise<ProcessMessageResult> {
-  return runExecutiveAgent(userId, userEmail, conversationId, 'save to drafts', { progressContext });
+  return runExecutiveAgent(userId, userEmail, conversationId, 'save to drafts', options);
 }
 
 async function clearConversationAndCancelPending(conversationId: string): Promise<void> {
@@ -462,98 +474,104 @@ export async function processTelegramMessage(
         : { senderName },
   });
 
-  const command = detectCommand(effectiveText);
-  let result: ProcessMessageResult;
+  let activeCommand: Command = detectCommand(effectiveText);
+  if (myRunId !== null) {
+    clearInFlightRun(conversation.id, myRunId);
+  }
 
-  if (command) {
-    if (myRunId !== null) {
-      clearInFlightRun(conversation.id, myRunId);
-    }
+  const orchestrator = getMessagingOrchestrator();
+  const orchestrationDecision = await orchestrator.prepareRun({
+    channel: 'telegram',
+    conversationId: conversation.id,
+    userRequest: effectiveText,
+    isCommand: Boolean(activeCommand),
+  });
 
-    switch (command) {
-      case 'send':
-        result = await handleSendCommand(
-          link.userId,
-          user.email,
-          conversation.id,
-          buildProgressContext({
-            conversationId: conversation.id,
-            chatId,
-            conversationManager,
-            telegramClient,
-          }),
-        );
-        break;
-      case 'save':
-        result = await handleSaveCommand(
-          link.userId,
-          user.email,
-          conversation.id,
-          buildProgressContext({
-            conversationId: conversation.id,
-            chatId,
-            conversationManager,
-            telegramClient,
-          }),
-        );
-        break;
-      case 'clear':
-        result = await handleClearCommand(conversation.id);
-        break;
-      case 'cancel':
-        result = await handleCancelCommand(conversation.id);
-        break;
-      case 'help':
-        result = handleHelpCommand();
-        break;
-      default:
-        result = { success: false, response: 'Unknown command' };
-    }
-  } else {
-    if (!abortController) {
-      abortAndClearInFlightRun(conversation.id, 'superseded_by_new_message');
-      abortController = new AbortController();
-      myRunId = ++runIdCounter;
-      registerInFlightRun(conversation.id, abortController, myRunId);
-    }
+  if (orchestrationDecision.kind === 'skip') {
+    return { success: true, response: '' };
+  }
+
+  let runContext = orchestrationDecision.runContext;
+  let activeRequest = orchestrationDecision.userRequest;
+  let result: ProcessMessageResult = { success: true, response: '' };
+
+  while (runContext) {
+    const progressContext = buildProgressContext({
+      conversationId: conversation.id,
+      chatId,
+      conversationManager,
+      telegramClient,
+      canEmitProgress: runContext.canEmitProgress,
+    });
 
     try {
-      result = await runExecutiveAgent(link.userId, user.email, conversation.id, effectiveText, {
-        progressContext: buildProgressContext({
-          conversationId: conversation.id,
-          chatId,
-          conversationManager,
-          telegramClient,
-        }),
-        abortSignal: abortController.signal,
-      });
+      if (activeCommand === 'send') {
+        result = await handleSendCommand(link.userId, user.email, conversation.id, {
+          progressContext,
+          runContext,
+          abortSignal: runContext.abortSignal,
+        });
+      } else if (activeCommand === 'save') {
+        result = await handleSaveCommand(link.userId, user.email, conversation.id, {
+          progressContext,
+          runContext,
+          abortSignal: runContext.abortSignal,
+        });
+      } else if (activeCommand === 'clear') {
+        result = await handleClearCommand(conversation.id);
+      } else if (activeCommand === 'cancel') {
+        result = await handleCancelCommand(conversation.id);
+      } else if (activeCommand === 'help') {
+        result = handleHelpCommand();
+      } else {
+        result = await runExecutiveAgent(link.userId, user.email, conversation.id, activeRequest, {
+          progressContext,
+          runContext,
+          abortSignal: runContext.abortSignal,
+        });
+      }
     } catch (error) {
       if (isAbortError(error)) {
         return { success: true, response: '' };
       }
       throw error;
-    } finally {
-      clearInFlightRun(conversation.id, myRunId ?? undefined);
     }
-  }
 
-  if (result.response) {
-    try {
-      const { messageId: telegramResponseId } = await telegramClient.sendMessage(chatId, result.response);
-      await conversationManager.addMessage(conversation.id, {
-        content: result.response,
-        role: 'ASSISTANT',
-        direction: 'OUTBOUND',
-        telegramMessageId: telegramResponseId,
-        metadata: result.metadata,
-      });
-    } catch (error) {
-      logger.error('[telegramProcessor] Failed sending Telegram response', {
-        chatId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      result.error = 'Failed to send Telegram response';
+    if (result.response && await runContext.isRunCurrent()) {
+      try {
+        const { messageId: telegramResponseId } = await telegramClient.sendMessage(chatId, result.response);
+        const outboundMetadata =
+          result.metadata != null && typeof result.metadata === 'object' && !Array.isArray(result.metadata)
+            ? { ...(result.metadata as Record<string, unknown>) }
+            : {};
+        outboundMetadata.burstId = runContext.burstId;
+        outboundMetadata.runId = runContext.runId;
+        outboundMetadata.superseded = false;
+
+        await conversationManager.addMessage(conversation.id, {
+          content: result.response,
+          role: 'ASSISTANT',
+          direction: 'OUTBOUND',
+          telegramMessageId: telegramResponseId,
+          metadata: outboundMetadata as Prisma.InputJsonObject,
+        });
+      } catch (error) {
+        logger.error('[telegramProcessor] Failed sending Telegram response', {
+          chatId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        result.error = 'Failed to send Telegram response';
+      }
     }
+
+    const finalized = await orchestrator.finalizeRun({ runContext });
+    if (!finalized.nextRun) {
+      break;
+    }
+
+    runContext = finalized.nextRun.runContext;
+    activeRequest = finalized.nextRun.userRequest;
+    activeCommand = null;
   }
 
   return result;
@@ -567,6 +585,7 @@ async function runExecutiveAgent(
   options?: {
     progressContext?: ProgressUpdateContext;
     abortSignal?: AbortSignal;
+    runContext?: RunContext;
   },
 ): Promise<ProcessMessageResult> {
   const conversationManager = getConversationManager();
@@ -590,9 +609,18 @@ async function runExecutiveAgent(
       userEmail,
       userRequest,
       conversationId,
+      channel: 'telegram',
       conversationHistory,
       progressContext: options?.progressContext,
       abortSignal: options?.abortSignal,
+      runContext: options?.runContext
+        ? {
+            runId: options.runContext.runId,
+            burstId: options.runContext.burstId,
+            isRunCurrent: options.runContext.isRunCurrent,
+            isBurstStable: options.runContext.isBurstStable,
+          }
+        : undefined,
     });
 
     return {
@@ -622,16 +650,19 @@ function buildProgressContext({
   chatId,
   conversationManager,
   telegramClient,
+  canEmitProgress,
 }: {
   conversationId: string;
   chatId: string;
   conversationManager: ReturnType<typeof getConversationManager>;
   telegramClient: ReturnType<typeof getTelegramClient>;
+  canEmitProgress?: () => boolean;
 }): ProgressUpdateContext {
   return {
     channel: 'telegram',
     requestId: crypto.randomUUID(),
     conversationId,
+    canEmitProgress,
     sendMessage: async (text) => {
       const { messageId } = await telegramClient.sendMessage(chatId, text);
       return { externalId: messageId };
