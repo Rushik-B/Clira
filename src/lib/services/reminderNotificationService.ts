@@ -326,6 +326,7 @@ export async function triggerReminderNotification(input: ReminderNotificationInp
     userEmail: reminder.user?.email ?? input.userEmail,
     userRequest: systemMessage,
     conversationId: primaryConversationId,
+    channel: primaryChannel,
     conversationHistory,
     progressContext: buildNotificationProgressContext(primaryChannel, primaryConversationId),
   });

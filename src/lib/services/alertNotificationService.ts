@@ -300,6 +300,7 @@ export async function triggerAlertNotification(input: AlertNotificationInput): P
       userEmail: input.userEmail,
       userRequest: systemMessage,
       conversationId: primaryConversationId,
+      channel: primaryChannel,
       conversationHistory,
       progressContext: buildNotificationProgressContext(primaryChannel, primaryConversationId),
     });
