@@ -38,8 +38,16 @@ import type {
 export class ExecutiveAgent {
   async process(input: ExecutiveAgentInput): Promise<ExecutiveAgentOutput> {
     let memoryStored = false;
-    const resolvedChannel = resolveProgressChannel(input);
+    const resolvedChannel = input.channel ?? resolveProgressChannel(input);
     const retrievalProfile = resolveRetrievalProfile(resolvedChannel);
+    const isRunCurrent = async () => {
+      if (!input.runContext?.isRunCurrent) return true;
+      return input.runContext.isRunCurrent();
+    };
+    const isBurstStable = () => {
+      if (!input.runContext?.isBurstStable) return true;
+      return input.runContext.isBurstStable();
+    };
 
     let toolAbort: ReturnType<typeof createDeadlineController> | undefined;
 
@@ -88,6 +96,8 @@ export class ExecutiveAgent {
         dayOfWeek,
         toolAbort,
         toolAbortSignal,
+        isRunCurrent,
+        isBurstStable,
         onMemoryStored: () => {
           memoryStored = true;
         },
@@ -104,6 +114,7 @@ export class ExecutiveAgent {
         setLastProgressSentAt: (sentAt: number) => {
           lastProgressSentAt = sentAt;
         },
+        isRunCurrent,
       });
 
       const systemPrompt =
@@ -123,7 +134,6 @@ export class ExecutiveAgent {
         'when you need to dig deeper after a weak first result, ' +
         'when you\'re adding another tool (e.g., checking calendar after inbox), ' +
         'or when the request clearly needs multiple steps. ' +
-        'MANDATORY: On the first call of search_calendar or plan_calendar_change in this turn, call send_progress_update first with one short natural sentence (e.g. "Checking your calendar…"); only once per tool per turn. ' +
         'Tool results include _timing (elapsed_ms, ms_since_last_progress_update, time_left_ms). If ms_since_last_progress_update > 15000 and you plan another tool call, send a quick progress update first. ' +
         'Avoid robotic "starting search" updates and never mention tool names. ' +
         'When drafting emails: gather context first (search_inbox_context, calendar, memory), then propose the draft to the user. ' +
@@ -185,6 +195,10 @@ export class ExecutiveAgent {
       if (!response) {
         response = buildTerminalFallbackResponse(toolResults);
         logger.info(`[executiveAgent] Empty model text, using fallback: ${response}`);
+      }
+
+      if (!(await isRunCurrent())) {
+        throw new Error('superseded_by_newer_message');
       }
 
       const metadata: Record<string, Prisma.InputJsonValue> = {};

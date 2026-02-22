@@ -12,9 +12,16 @@ export interface ExecutiveAgentInput {
   userEmail: string;
   userRequest: string;
   conversationId: string;
+  channel: ProgressUpdateChannel;
   conversationHistory: ConversationMessageDTO[];
   abortSignal?: AbortSignal;
   progressContext?: ProgressUpdateContext;
+  runContext?: {
+    runId: string;
+    burstId: string;
+    isRunCurrent: () => Promise<boolean>;
+    isBurstStable: () => boolean;
+  };
 }
 
 export interface ExecutiveAgentOutput {
@@ -76,5 +83,7 @@ export type ExecutiveRuntimeContext = {
     timeLeftMs: () => number | null;
   };
   toolAbortSignal?: AbortSignal;
+  isRunCurrent: () => Promise<boolean>;
+  isBurstStable: () => boolean;
   onMemoryStored: () => void;
 };

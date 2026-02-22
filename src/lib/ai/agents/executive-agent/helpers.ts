@@ -450,7 +450,7 @@ export function generateMemoryCustomId(
 }
 
 export function resolveProgressChannel(input: ExecutiveAgentInput): ProgressUpdateChannel {
-  return input.progressContext?.channel ?? 'whatsapp';
+  return input.channel ?? input.progressContext?.channel ?? 'whatsapp';
 }
 
 export function resolveRetrievalProfile(
@@ -542,6 +542,36 @@ type ToolTimingMetadata = {
   time_left_ms: number | null;
 };
 
+const DEFER_ON_STALE_TOOLS = new Set([
+  'send_email',
+  'plan_calendar_change',
+  'commit_calendar_change',
+  'add_reminder',
+  'snooze_reminder',
+  'dismiss_reminder',
+  'cancel_reminder',
+  'add_email_alert',
+  'remove_email_alert',
+]);
+
+function buildStaleRunDeferredResult(toolName: string): Record<string, unknown> {
+  if (toolName === 'plan_calendar_change' || toolName === 'commit_calendar_change') {
+    return {
+      ok: false,
+      status: 'deferred',
+      error: 'superseded_by_newer_message',
+      message: 'A newer user message arrived, so this action was deferred.',
+    };
+  }
+
+  return {
+    success: false,
+    status: 'deferred',
+    error: 'superseded_by_newer_message',
+    message: 'A newer user message arrived, so this action was deferred.',
+  };
+}
+
 export function didSendProgressUpdate(result: unknown): boolean {
   if (!result || typeof result !== 'object') return false;
   return (result as Record<string, unknown>).sent === true;
@@ -567,12 +597,14 @@ export function wrapToolsWithTimingMetadata({
   timeLeftMs,
   getLastProgressSentAt,
   setLastProgressSentAt,
+  isRunCurrent,
 }: {
   tools: Record<string, unknown>;
   agentStartedAt: number;
   timeLeftMs: () => number | null;
   getLastProgressSentAt: () => number;
   setLastProgressSentAt: (sentAt: number) => void;
+  isRunCurrent: () => Promise<boolean>;
 }): Record<string, unknown> {
   const wrappedTools: Record<string, unknown> = {};
 
@@ -587,6 +619,13 @@ export function wrapToolsWithTimingMetadata({
     wrappedTools[toolName] = {
       ...tool,
       execute: async (args: unknown) => {
+        if (!(await isRunCurrent())) {
+          if (DEFER_ON_STALE_TOOLS.has(toolName)) {
+            return buildStaleRunDeferredResult(toolName);
+          }
+          throw new Error('superseded_by_newer_message');
+        }
+
         const result = await execute(args);
         const now = Date.now();
 
