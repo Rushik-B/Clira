@@ -9,6 +9,11 @@ Operational baseline for running Clira in a stable app + worker topology.
 - `db`: Postgres
 - `redis`: Redis
 
+Telegram v1 runtime model:
+
+- Telegram polling is hosted in `worker` only.
+- Do not run duplicate worker instances that share the same bot token unless ownership/coordination is handled.
+
 ## Health Checks
 
 - App health: `GET /api/health`
@@ -44,11 +49,19 @@ Operational checks:
 2. Confirm jobs are enqueued in API route logs
 3. Confirm worker consumes and marks completion/failure with retries
 
+Telegram-specific checks:
+
+1. Confirm `TELEGRAM_BOT_TOKEN` is present in worker runtime env
+2. Confirm worker log includes Telegram monitor start
+3. Confirm graceful shutdown logs Telegram monitor stop
+4. Verify poll offset row exists/updates in `TelegramPollerState`
+
 ## Logging Focus Areas
 
 - Gmail push ingestion: `src/lib/email/gmailPushService.ts`
 - Reply generation stages: `src/lib/services/core/replyGenerator.ts`
 - Twilio/WhatsApp webhooks: `src/app/api/twilio/webhook/route.ts`, `src/app/api/whatsapp/webhook/route.ts`
+- Telegram poller + processor: `src/lib/services/telegram/telegramClient.ts`, `src/lib/services/telegram/messageProcessor.ts`
 - Cron failures: `src/app/api/cron/*`
 
 ## Deployment Checklist

@@ -99,6 +99,10 @@ This document lists all application API routes under `src/app/api` and their exp
 | /api/queue/stream | GET | Queue & Reply |
 | /api/settings/calendar | GET,POST | Settings |
 | /api/settings/email-filters | GET,POST | Settings |
+| /api/settings/messaging-channels | GET,PATCH | Settings |
+| /api/settings/telegram | GET,POST,DELETE | Settings |
+| /api/settings/telegram/health | GET | Settings |
+| /api/settings/text-channels | GET | Settings |
 | /api/settings/twilio | GET,POST | Settings |
 | /api/settings/whatsapp | GET,POST | Settings |
 | /api/test-email | POST,GET | Dev & Test |

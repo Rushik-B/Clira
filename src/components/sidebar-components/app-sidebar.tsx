@@ -39,7 +39,7 @@ import { Sparkles } from "@/components/icons/icons"
 // Custom icon type for our custom icons
 type CustomIcon = React.ComponentType<{ className?: string; style?: React.CSSProperties }>
 
-type SettingsSection = 'account-privacy' | 'assistant-replies' | 'folders-labels' | 'whatsapp-integration' | 'inboxes'
+type SettingsSection = 'account-privacy' | 'assistant-replies' | 'folders-labels' | 'text-channels' | 'inboxes'
 
 interface AppSidebarProps extends React.ComponentProps<typeof Sidebar> {
   activePage: PageType
@@ -161,11 +161,11 @@ export function AppSidebar({
           isActive: activeSettingsSection === 'folders-labels'
         },
         {
-          title: "WhatsApp",
-          url: "/settings/whatsapp-integration",
+          title: "Text Clira",
+          url: "/settings/text-channels",
           icon: Phone,
-          onClick: () => handleNavigation('settings', 'whatsapp-integration'),
-          isActive: activeSettingsSection === 'whatsapp-integration'
+          onClick: () => handleNavigation('settings', 'text-channels'),
+          isActive: activeSettingsSection === 'text-channels'
         },
         {
           title: "Inboxes",

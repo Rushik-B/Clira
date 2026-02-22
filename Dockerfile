@@ -7,13 +7,13 @@ FROM node:22-alpine AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-RUN npx prisma generate
 # Dummy build-time env vars so module initialization doesn't throw.
 # These are never used at runtime — real values come from docker-compose / .env.
 ARG DATABASE_URL=postgresql://dummy:dummy@dummy:5432/dummy
 ARG REDIS_URL=redis://dummy:6379
 # Empty NEXT_PUBLIC_LANDING_PAGE_URL at build time so client code falls back to /signin
 ARG NEXT_PUBLIC_LANDING_PAGE_URL=""
+RUN npx prisma generate
 RUN DATABASE_URL="${DATABASE_URL}" REDIS_URL="${REDIS_URL}" NEXT_PUBLIC_LANDING_PAGE_URL="${NEXT_PUBLIC_LANDING_PAGE_URL}" NODE_OPTIONS="--max-old-space-size=4096" npm run build
 RUN npm prune --omit=dev
 

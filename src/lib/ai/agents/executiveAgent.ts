@@ -14,7 +14,7 @@
  * 3. check_calendar - Analyzes calendar availability
  * 4. search_calendar - Searches for specific events in the calendar
  * 5. append_to_supermemory - Stores user preferences/facts to memory
- * 6. add_email_alert - Creates an email alert that triggers WhatsApp notifications
+ * 6. add_email_alert - Creates an email alert that triggers messaging notifications
  * 7. remove_email_alert - Deletes an email alert by ID or description match
  * 8. list_email_alerts - Lists active email alerts
  * 9. add_reminder - Creates a time-based reminder
@@ -79,6 +79,7 @@ import {
   createSendProgressUpdateTool,
   type ProgressUpdateContext,
 } from '@/lib/ai/tools/sendProgressUpdate';
+import type { ProgressUpdateChannel } from '@/lib/ai/progressTypes';
 import { generateReauthUrl, REQUIRED_SCOPES } from '@/lib/auth/scope-utils';
 import {
   type ConversationMessageDTO,
@@ -584,7 +585,11 @@ function formatConversationHistory(
  * Generates a deterministic customId for memory deduplication.
  * Based on userId + normalized content to prevent duplicate memories.
  */
-function generateMemoryCustomId(userId: string, content: string): string {
+function generateMemoryCustomId(
+  userId: string,
+  channel: ProgressUpdateChannel,
+  content: string,
+): string {
   const normalized = content
     .toLowerCase()
     .trim()
@@ -592,10 +597,20 @@ function generateMemoryCustomId(userId: string, content: string): string {
     .slice(0, 200); // Limit to first 200 chars for hashing
   const hash = crypto
     .createHash('sha256')
-    .update(`${userId}:${normalized}`)
+    .update(`${userId}:${channel}:${normalized}`)
     .digest('hex')
     .slice(0, 16);
-  return `whatsapp-ea-${hash}`;
+  return `${channel}-ea-${hash}`;
+}
+
+function resolveProgressChannel(input: ExecutiveAgentInput): ProgressUpdateChannel {
+  return input.progressContext?.channel ?? 'whatsapp';
+}
+
+function resolveRetrievalProfile(
+  channel: ProgressUpdateChannel,
+): 'default' | 'messaging' {
+  return channel === 'web' ? 'default' : 'messaging';
 }
 
 /**
@@ -860,7 +875,10 @@ type SearchInboxContextArgs = {
   };
 };
 
-async function buildExecutiveAgentPrompt(input: ExecutiveAgentInput): Promise<PromptContext> {
+async function buildExecutiveAgentPrompt(
+  input: ExecutiveAgentInput,
+  channel: ProgressUpdateChannel,
+): Promise<PromptContext> {
   const template = readPromptFile('whatsapp/executiveAgentPrompt.md');
 
   // Fetch user settings for timezone
@@ -943,6 +961,7 @@ async function buildExecutiveAgentPrompt(input: ExecutiveAgentInput): Promise<Pr
     .replace('{timeSinceLastMessage}', timeSinceLastMessage)
     .replace('{userEmail}', input.userEmail)
     .replace('{userRequest}', input.userRequest)
+    .replace('{messagingChannel}', channel)
     .replace('{conversationHistory}', formatConversationHistory(input.conversationHistory, now, userTimezone))
     .replace('{memoryContext}', memoryContext);
 
@@ -961,7 +980,7 @@ async function buildExecutiveAgentPrompt(input: ExecutiveAgentInput): Promise<Pr
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Executive Agent (EA) for WhatsApp conversations.
+ * Executive Agent (EA) for messaging conversations.
  *
  * Handles natural language requests to draft, refine, and send emails.
  * Uses tool calling to access email history, calendar, and memory.
@@ -970,12 +989,14 @@ export class ExecutiveAgent {
   private memoryStored = false;
 
   /**
-   * Processes a user's WhatsApp message and returns a response.
+   * Processes a user's message and returns a response.
    */
   async process(input: ExecutiveAgentInput): Promise<ExecutiveAgentOutput> {
     this.memoryStored = false;
+    const resolvedChannel = resolveProgressChannel(input);
+    const retrievalProfile = resolveRetrievalProfile(resolvedChannel);
 
-    const promptContext = await buildExecutiveAgentPrompt(input);
+    const promptContext = await buildExecutiveAgentPrompt(input, resolvedChannel);
     const { prompt, userTimezone, currentTimeUtc, currentTimeUserTz, dayOfWeek } = promptContext;
     const pendingRecordForPrompt = await prisma.pendingCalendarChange.findFirst({
       where: {
@@ -1103,7 +1124,7 @@ export class ExecutiveAgent {
                   intent,
                   mode,
                   constraints: args.constraints,
-                  profile: 'whatsapp',
+                  profile: retrievalProfile,
                 },
                 {
                   userId: input.userId,
@@ -1488,7 +1509,7 @@ export class ExecutiveAgent {
           try {
             const calService = await CalendarService.create({
               userId: input.userId,
-              purpose: 'whatsapp:calendar-list',
+              purpose: `${resolvedChannel}:calendar-list`,
               requester: 'executiveAgent.plan_calendar_change',
             });
             if (calService) {
@@ -2209,7 +2230,7 @@ export class ExecutiveAgent {
 
           const calendarService = await CalendarService.create({
             userId: input.userId,
-            purpose: 'whatsapp:calendar-mutation',
+            purpose: `${resolvedChannel}:calendar-mutation`,
             requester: 'executiveAgent.commit_calendar_change',
           });
 
@@ -2838,7 +2859,7 @@ export class ExecutiveAgent {
           }
 
           try {
-            const customId = generateMemoryCustomId(input.userId, args.content);
+            const customId = generateMemoryCustomId(input.userId, resolvedChannel, args.content);
             const client = getSupermemoryClient();
 
             await client.addDocument({
@@ -2846,7 +2867,7 @@ export class ExecutiveAgent {
               customId,
               metadata: {
                 type: args.type,
-                source: 'whatsapp',
+                source: resolvedChannel,
                 timestamp: new Date().toISOString(),
               },
               containerTags: [input.userId],
@@ -2870,7 +2891,7 @@ export class ExecutiveAgent {
       // ─────────────────────────────────────────────────────────────────────────
       add_email_alert: {
         description:
-          'Create an email notification alert. You will be notified via WhatsApp when matching emails arrive. ' +
+          'Create an email notification alert. You will be notified via your linked messaging channel when matching emails arrive. ' +
           'Examples: "emails from my teacher", "emails about invoices", "emails from john@company.com", etc...',
         inputSchema: z.object({
           description: z
@@ -3275,7 +3296,7 @@ export class ExecutiveAgent {
           'Send an email immediately via Gmail. TERMINAL action - ONLY call after user explicitly says "yes", "send it", "go ahead", or similar clear permission. ' +
           'This IMMEDIATELY SENDS the email - it is NOT a draft or preview. The email will be sent from the user\'s Gmail account. ' +
           'Always show the email details to the user first, wait for their explicit "send" approval, then call this tool. ' +
-          'After calling this, provide a brief WhatsApp confirmation message.',
+          'After calling this, provide a brief channel-appropriate confirmation message.',
         inputSchema: z.object({
           to: z.string().email().describe('Email recipient (primary)'),
           cc: z.array(z.string().email()).optional().describe('CC recipient(s)'),
@@ -3299,7 +3320,7 @@ export class ExecutiveAgent {
           try {
             const gmailContext = await createGmailServiceForUser({
               userId: input.userId,
-              purpose: 'whatsapp:send-email',
+              purpose: `${resolvedChannel}:send-email`,
               requester: 'executiveAgent.send_email',
             });
 
@@ -3363,7 +3384,7 @@ export class ExecutiveAgent {
 
     try {
       const systemPrompt =
-        'You are Clira, an Executive AI Agent helping the user via WhatsApp. ' +
+        'You are Clira, an Executive AI Agent helping the user over messaging. ' +
         'You are warm, casual, confident, and high-agency (like a top-tier human EA). ' +
         'NEVER sound robotic or use phrases like "as an AI" or "I don\'t have feelings". ' +
         'Keep responses SHORT by default. Ask clarifying questions only when truly needed. ' +
@@ -3427,8 +3448,8 @@ export class ExecutiveAgent {
         deadlineMs: MESSAGING_DEADLINE_MS,
         stopWhen: stopConditions,
         temperature: 0.7,
-        op: 'whatsapp.executive',
-        concurrency: { key: 'whatsapp.executive', maxConcurrency: 4 },
+        op: `${resolvedChannel}.executive`,
+        concurrency: { key: `${resolvedChannel}.executive`, maxConcurrency: 4 },
         retry: { maxAttempts: 3, baseDelayMs: 500 },
         abortSignal: toolAbortSignal,
         providerOptions,

@@ -443,6 +443,9 @@ model User {
   threads                            Thread[]
   settings                           UserSettings?
   tokenAccessAudits                  TokenAccessAudit[]
+  telegramLink                       TelegramLink?
+  telegramConversations              TelegramConversation[]
+  telegramPairingApprovals           TelegramPairingRequest[]    @relation("TelegramPairingRequestApprovedByUser")
 }
 
 model UserSettings {
@@ -477,6 +480,9 @@ model UserSettings {
   twilioVerified             Boolean            @default(false)
   /// Whether the user has seen the WhatsApp feature promotion card
   whatsappPromoSeen          Boolean            @default(false)
+  /// Preferred messaging channel for reminder/alert delivery.
+  /// BOTH keeps current behavior and sends to all available channels.
+  notificationDeliveryChannel NotificationDeliveryChannel @default(BOTH)
   user                       User               @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
@@ -511,6 +517,98 @@ model WhatsAppMessage {
   @@index([conversationId])
   @@index([conversationId, createdAt])
   @@index([waMessageId])
+}
+
+model TelegramConversation {
+  id             String                      @id @default(cuid())
+  userId         String
+  /// Telegram private chat ID for DM-only conversations
+  chatId         String
+  /// Telegram user ID of the conversation partner
+  telegramUserId String
+  status         TelegramConversationStatus  @default(ACTIVE)
+  createdAt      DateTime                    @default(now())
+  updatedAt      DateTime                    @updatedAt
+  user           User                        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages       TelegramMessage[]
+
+  @@unique([userId, chatId])
+  @@index([userId])
+  @@index([userId, status])
+  @@index([userId, updatedAt])
+}
+
+model TelegramMessage {
+  id                 String                   @id @default(cuid())
+  conversationId     String
+  /// Telegram update ID for dedupe of inbound updates
+  telegramUpdateId   BigInt?                  @unique
+  /// Telegram message ID from Bot API
+  telegramMessageId  String?
+  direction          TelegramMessageDirection
+  content            String
+  role               TelegramMessageRole
+  /// Optional metadata (JSON: tool calls, media provenance, delivery source, etc.)
+  metadata           Json?
+  createdAt          DateTime                 @default(now())
+  conversation       TelegramConversation      @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId])
+  @@index([conversationId, createdAt])
+  @@index([telegramMessageId])
+}
+
+model TelegramLink {
+  id                String   @id @default(cuid())
+  userId            String   @unique
+  /// Telegram user ID linked to this Clira user
+  telegramUserId    String   @unique
+  /// Telegram private chat ID for outbound delivery
+  chatId            String
+  telegramUsername  String?
+  telegramFirstName String?
+  isActive          Boolean  @default(true)
+  linkedAt          DateTime @default(now())
+  lastSeenAt        DateTime?
+  deactivatedAt     DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([userId, isActive])
+  @@index([userId, updatedAt])
+}
+
+model TelegramPairingRequest {
+  id                String               @id @default(cuid())
+  telegramUserId    String
+  chatId            String
+  telegramUsername  String?
+  telegramFirstName String?
+  /// 8-char pairing code generated for in-app approval
+  pairingCode       String               @unique
+  status            TelegramPairingStatus @default(PENDING)
+  expiresAt         DateTime
+  approvedAt        DateTime?
+  rejectedAt        DateTime?
+  approvedByUserId  String?
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+  approvedByUser    User?                @relation("TelegramPairingRequestApprovedByUser", fields: [approvedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([telegramUserId, chatId])
+  @@index([status, expiresAt])
+  @@index([approvedByUserId, status])
+}
+
+model TelegramPollerState {
+  id           String   @id @default(cuid())
+  /// Stable worker key to support offset persistence across restarts
+  workerKey    String   @unique
+  lastUpdateId Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 }
 
 enum ActionHistoryType {
@@ -634,4 +732,34 @@ enum WhatsAppMessageRole {
   USER
   ASSISTANT
   SYSTEM
+}
+
+enum TelegramConversationStatus {
+  ACTIVE
+  PENDING_CONFIRMATION
+  COMPLETED
+}
+
+enum TelegramMessageDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum TelegramMessageRole {
+  USER
+  ASSISTANT
+  SYSTEM
+}
+
+enum TelegramPairingStatus {
+  PENDING
+  APPROVED
+  EXPIRED
+  REJECTED
+}
+
+enum NotificationDeliveryChannel {
+  WHATSAPP
+  TELEGRAM
+  BOTH
 }

@@ -2,7 +2,7 @@ export const progressUpdateKinds = ['ack', 'deep_search', 'long_task', 'clarific
 
 export type ProgressUpdateKind = (typeof progressUpdateKinds)[number];
 
-export type ProgressUpdateChannel = 'whatsapp' | 'twilio' | 'web';
+export type ProgressUpdateChannel = 'whatsapp' | 'twilio' | 'telegram' | 'web';
 
 export type ProgressUpdateEvent = {
   id: string;

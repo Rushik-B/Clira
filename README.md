@@ -7,13 +7,13 @@ Clira is a self-hosted AI email assistant focused on safe automation and draft-f
 - Self-hosted by default (app + worker + Postgres + Redis)
 - Draft-first pipeline with deterministic filtering before LLM generation
 - Multi-mailbox aware Gmail integration
-- Optional conversational channels (Twilio SMS, WhatsApp Cloud API)
+- Optional conversational channels (Twilio SMS, WhatsApp Cloud API, Telegram)
 - Optional long-term memory via Supermemory
 
 ## Current Product Scope
 
 - Implemented: Gmail ingestion, queue review UI, staged reply generation, smart folders, onboarding pipeline
-- Implemented: Optional Twilio and WhatsApp assistant channels
+- Implemented: Optional Twilio, WhatsApp, and Telegram assistant channels
 - Implemented: Worker-based background processing and cron endpoints
 - Not implemented: Outlook pipeline parity
 
@@ -110,6 +110,7 @@ This starts `app`, `worker`, `db`, and `redis` using the production image build.
 
 - Twilio channel: `TWILIO_*`
 - WhatsApp Cloud API: `WHATSAPP_*`
+- Telegram Bot API: `TELEGRAM_*`
 - Supermemory: `SUPERMEMORY_*`
 - KMS encryption toggles: `ENABLE_KMS_OAUTH_ENCRYPTION`, `ENABLE_KMS_EMAIL_ENCRYPTION`, `KMS_KEY_ID`
 - Always-on sorting toggles: `FEATURE_FLAG_ALWAYS_ON_SORTING`, `ALWAYS_ON_SORT_*`, `MAPPING_*`

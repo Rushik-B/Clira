@@ -12,11 +12,10 @@ Use this index to navigate the codebase runbooks quickly.
 ## Feature Guides
 
 - `docs/api-reference.md` - complete API route and method reference
-
 - `docs/folders.md` - folder generation, mapping, and learning pipeline
 - `docs/masterprompt.md` - voice profile generation and usage
 - `docs/supermemory.md` - optional memory integration
-- `docs/executive-agent.md` - optional Twilio and WhatsApp channels
+- `docs/executive-agent.md` - optional Twilio, WhatsApp, and Telegram channels
 
 ## Quality And Governance
 
