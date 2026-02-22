@@ -1,8 +1,8 @@
 export {
   ExecutiveAgent,
   getExecutiveAgent,
-} from './executive-agent';
+} from './executiveAgent';
 export type {
   ExecutiveAgentInput,
   ExecutiveAgentOutput,
-} from './executive-agent';
+} from './types';
