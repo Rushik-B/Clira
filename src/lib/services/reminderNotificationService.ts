@@ -1,4 +1,3 @@
-import crypto from 'crypto';
 import { DEFAULT_CALENDAR_TIMEZONE } from '@/constants/time';
 import { getExecutiveAgent } from '@/lib/ai/agents/executiveAgent';
 import { logger } from '@/lib/logger';
@@ -12,8 +11,8 @@ import {
   getConversationManager as getTelegramConversationManager,
 } from '@/lib/services/telegram';
 import { resolveMessagingTargets } from '@/lib/services/messagingDeliveryTargets';
+import { buildNotificationProgressContext } from '@/lib/services/notificationProgressContext';
 import { convertUserLocalTimeToUtc, getZonedTimeComponents } from '@/lib/utils/timezone';
-import type { ProgressUpdateContext } from '@/lib/ai/tools/sendProgressUpdate';
 import type { Prisma, ReminderStatus } from '@prisma/client';
 
 type ReminderRecurrence = {
@@ -136,18 +135,6 @@ function calculateNextOccurrence(
   }
 
   return nextUtc;
-}
-
-function buildNotificationProgressContext(
-  channel: 'whatsapp' | 'telegram',
-  conversationId: string,
-): ProgressUpdateContext {
-  return {
-    channel,
-    requestId: crypto.randomUUID(),
-    conversationId,
-    persistMessage: async () => undefined,
-  };
 }
 
 export async function markReminderMissed({
@@ -346,47 +333,65 @@ export async function triggerReminderNotification(input: ReminderNotificationInp
   const deliveredChannels: Array<'whatsapp' | 'telegram'> = [];
 
   if (whatsappConversation && settings?.whatsappPhoneNumber) {
-    const client = getWhatsAppClient();
-    const { messageId: waResponseId } = await client.sendMessage(settings.whatsappPhoneNumber, result.response);
-    const outboundMetadata =
-      result.metadata != null && typeof result.metadata === 'object' && !Array.isArray(result.metadata)
-        ? { ...(result.metadata as Record<string, unknown>) }
-        : {};
-    outboundMetadata.source = 'reminder_notification';
-    outboundMetadata.reminderId = reminder.id;
-    outboundMetadata.dueAt = dueAt.toISOString();
-    outboundMetadata.channel = 'whatsapp';
+    try {
+      const client = getWhatsAppClient();
+      const { messageId: waResponseId } = await client.sendMessage(settings.whatsappPhoneNumber, result.response);
+      const outboundMetadata =
+        result.metadata != null && typeof result.metadata === 'object' && !Array.isArray(result.metadata)
+          ? { ...(result.metadata as Record<string, unknown>) }
+          : {};
+      outboundMetadata.source = 'reminder_notification';
+      outboundMetadata.reminderId = reminder.id;
+      outboundMetadata.dueAt = dueAt.toISOString();
+      outboundMetadata.channel = 'whatsapp';
 
-    await whatsappConversationManager.addMessage(whatsappConversation.id, {
-      content: result.response,
-      role: 'ASSISTANT',
-      direction: 'OUTBOUND',
-      waMessageId: waResponseId,
-      metadata: outboundMetadata as Prisma.InputJsonObject,
-    });
-    deliveredChannels.push('whatsapp');
+      await whatsappConversationManager.addMessage(whatsappConversation.id, {
+        content: result.response,
+        role: 'ASSISTANT',
+        direction: 'OUTBOUND',
+        waMessageId: waResponseId,
+        metadata: outboundMetadata as Prisma.InputJsonObject,
+      });
+      deliveredChannels.push('whatsapp');
+    } catch (error) {
+      logger.error('[reminderNotification] WhatsApp delivery failed', {
+        reminderId: reminder.id,
+        userId: reminder.userId,
+        userEmail: reminder.user?.email ?? input.userEmail,
+        error,
+      });
+    }
   }
 
   if (telegramConversation && telegramTarget) {
-    const client = getTelegramClient();
-    const { messageId: telegramResponseId } = await client.sendMessage(telegramTarget.chatId, result.response);
-    const outboundMetadata =
-      result.metadata != null && typeof result.metadata === 'object' && !Array.isArray(result.metadata)
-        ? { ...(result.metadata as Record<string, unknown>) }
-        : {};
-    outboundMetadata.source = 'reminder_notification';
-    outboundMetadata.reminderId = reminder.id;
-    outboundMetadata.dueAt = dueAt.toISOString();
-    outboundMetadata.channel = 'telegram';
+    try {
+      const client = getTelegramClient();
+      const { messageId: telegramResponseId } = await client.sendMessage(telegramTarget.chatId, result.response);
+      const outboundMetadata =
+        result.metadata != null && typeof result.metadata === 'object' && !Array.isArray(result.metadata)
+          ? { ...(result.metadata as Record<string, unknown>) }
+          : {};
+      outboundMetadata.source = 'reminder_notification';
+      outboundMetadata.reminderId = reminder.id;
+      outboundMetadata.dueAt = dueAt.toISOString();
+      outboundMetadata.channel = 'telegram';
 
-    await telegramConversationManager.addMessage(telegramConversation.id, {
-      content: result.response,
-      role: 'ASSISTANT',
-      direction: 'OUTBOUND',
-      telegramMessageId: telegramResponseId,
-      metadata: outboundMetadata as Prisma.InputJsonObject,
-    });
-    deliveredChannels.push('telegram');
+      await telegramConversationManager.addMessage(telegramConversation.id, {
+        content: result.response,
+        role: 'ASSISTANT',
+        direction: 'OUTBOUND',
+        telegramMessageId: telegramResponseId,
+        metadata: outboundMetadata as Prisma.InputJsonObject,
+      });
+      deliveredChannels.push('telegram');
+    } catch (error) {
+      logger.error('[reminderNotification] Telegram delivery failed', {
+        reminderId: reminder.id,
+        userId: reminder.userId,
+        userEmail: reminder.user?.email ?? input.userEmail,
+        error,
+      });
+    }
   }
 
   if (deliveredChannels.length === 0) {

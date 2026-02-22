@@ -1,15 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { z } from 'zod';
-import type { NotificationDeliveryChannel } from '@prisma/client';
 import { authOptions } from '@/lib/auth/auth';
 import { prisma } from '@/lib/prisma';
 
 const deliveryChannelSchema = z.object({
   notificationDeliveryChannel: z.enum(['WHATSAPP', 'TELEGRAM', 'BOTH']),
 });
-
-type DeliveryChannel = NotificationDeliveryChannel;
 
 async function resolveSessionUserId(): Promise<string> {
   const session = await getServerSession(authOptions);
@@ -77,8 +74,7 @@ export async function PATCH(request: NextRequest) {
     return NextResponse.json({
       success: true,
       settings: {
-        notificationDeliveryChannel:
-          updated.notificationDeliveryChannel as DeliveryChannel,
+        notificationDeliveryChannel: updated.notificationDeliveryChannel,
       },
     });
   } catch (error) {

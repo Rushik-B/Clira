@@ -1,3 +1,5 @@
+import type { NotificationDeliveryChannel } from '@prisma/client';
+import { logger } from '@/lib/logger';
 import { prisma } from '@/lib/prisma';
 import {
   getPairingManager,
@@ -6,8 +8,7 @@ import {
   isTelegramConfigured,
   isTelegramEnabled,
 } from '@/lib/services/telegram';
-
-export type NotificationDeliveryChannel = 'WHATSAPP' | 'TELEGRAM' | 'BOTH';
+import { normalizeNotificationDeliveryChannel } from '@/lib/services/messagingChannelPreferences';
 
 export interface TextChannelsSettingsSnapshot {
   whatsappPhoneNumber: string | null;
@@ -50,10 +51,9 @@ export interface TextChannelsSettingsSnapshot {
 }
 
 function normalizeDeliveryChannel(
-  value: string | null | undefined,
+  value: NotificationDeliveryChannel | null | undefined,
 ): NotificationDeliveryChannel {
-  if (value === 'WHATSAPP' || value === 'TELEGRAM') return value;
-  return 'BOTH';
+  return normalizeNotificationDeliveryChannel(value);
 }
 
 export async function getTextChannelsSettingsSnapshot(
@@ -79,8 +79,17 @@ export async function getTextChannelsSettingsSnapshot(
 
   let botUsername: string | null = null;
   if (isTelegramConfigured()) {
-    const identity = await getTelegramClient().getBotIdentity();
-    botUsername = identity?.username ?? null;
+    try {
+      const identity = await getTelegramClient().getBotIdentity();
+      botUsername = identity?.username ?? null;
+    } catch (error) {
+      logger.error('[TextChannelSettings] Failed to fetch Telegram bot identity', {
+        userId,
+        context: 'getTextChannelsSettingsSnapshot',
+        error,
+      });
+      botUsername = null;
+    }
   }
 
   return {

@@ -21,7 +21,7 @@ services:
 
   worker:
     build: .
-    command: sh -c "npx prisma migrate deploy && npm run start:worker"
+    command: sh -c "npm run start:worker"
     env_file:
       - .env
     environment:

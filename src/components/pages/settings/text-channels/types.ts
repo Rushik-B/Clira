@@ -1,11 +1,11 @@
+export type { NotificationDeliveryChannel } from '@prisma/client';
+
 export interface TextingSettings {
   whatsappPhoneNumber: string | null;
   whatsappVerified: boolean;
   twilioPhoneNumber: string | null;
   twilioVerified: boolean;
 }
-
-export type NotificationDeliveryChannel = 'WHATSAPP' | 'TELEGRAM' | 'BOTH';
 
 export interface TelegramLinkSettings {
   id: string;

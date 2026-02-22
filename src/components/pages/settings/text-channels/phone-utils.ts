@@ -29,7 +29,10 @@ const getCountryByCode = (code: string) =>
   COUNTRY_OPTIONS.find((option) => option.code === code) ??
   COUNTRY_OPTIONS.find((option) => option.code === DEFAULT_COUNTRY_CODE)!;
 
-export function parseE164Number(value: string | null): {
+export function parseE164Number(
+  value: string | null,
+  preferredCountryCode?: string,
+): {
   countryCode: string;
   nationalNumber: string;
 } {
@@ -42,9 +45,24 @@ export function parseE164Number(value: string | null): {
     return { countryCode: DEFAULT_COUNTRY_CODE, nationalNumber: '' };
   }
 
-  const matchedCountry = COUNTRY_OPTIONS_BY_DIAL.find((option) =>
+  const matchedDialCode = COUNTRY_OPTIONS_BY_DIAL.find((option) =>
     digits.startsWith(option.dialCode),
+  )?.dialCode;
+
+  if (!matchedDialCode) {
+    return { countryCode: DEFAULT_COUNTRY_CODE, nationalNumber: digits };
+  }
+
+  const dialCodeMatches = COUNTRY_OPTIONS.filter(
+    (option) => option.dialCode === matchedDialCode,
   );
+  const matchedCountry =
+    (preferredCountryCode
+      ? dialCodeMatches.find((option) => option.code === preferredCountryCode)
+      : null) ??
+    dialCodeMatches.find((option) => option.code === DEFAULT_COUNTRY_CODE) ??
+    dialCodeMatches[0] ??
+    COUNTRY_OPTIONS_BY_DIAL.find((option) => option.dialCode === matchedDialCode);
 
   if (!matchedCountry) {
     return { countryCode: DEFAULT_COUNTRY_CODE, nationalNumber: digits };

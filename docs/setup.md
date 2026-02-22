@@ -60,16 +60,16 @@ Use `docs/gmail-pubsub.md` to configure Pub/Sub and webhook delivery.
 ### Admin setup (one-time)
 
 1. Create a bot with `@BotFather` in Telegram.
-2. Run `/newbot` and finish bot creation.
-3. Copy the bot token.
-4. Set in `.env`:
+1. Run `/newbot` and finish bot creation.
+1. Copy the bot token.
+1. Set in `.env`:
 
 ```env
 TELEGRAM_BOT_TOKEN=your_botfather_token
 TELEGRAM_ENABLED=true
 ```
 
-5. Restart app + worker so both processes load new env values.
+1. Restart app + worker so both processes load new env values.
 
 If running full Docker stack:
 

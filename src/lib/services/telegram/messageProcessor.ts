@@ -47,11 +47,96 @@ const VOICE_MEMO_NO_CONTENT_PHRASES = [
   'inaudible',
 ];
 
-const inFlightRuns = new Map<
-  string,
-  { abortController: AbortController; runId: number }
->();
+const DEFAULT_IN_FLIGHT_RUN_TTL_MS = 120_000;
+const parsedInFlightRunTtlMs = Number.parseInt(
+  process.env.TELEGRAM_IN_FLIGHT_RUN_TTL_MS ?? '',
+  10,
+);
+const IN_FLIGHT_RUN_TTL_MS =
+  Number.isFinite(parsedInFlightRunTtlMs) && parsedInFlightRunTtlMs > 0
+    ? parsedInFlightRunTtlMs
+    : DEFAULT_IN_FLIGHT_RUN_TTL_MS;
+const IN_FLIGHT_RUN_SWEEP_INTERVAL_MS = Math.min(60_000, IN_FLIGHT_RUN_TTL_MS);
+
+type InFlightRun = {
+  abortController: AbortController;
+  runId: number;
+  startedAt: number;
+  timeoutHandle: ReturnType<typeof setTimeout>;
+};
+
+const inFlightRuns = new Map<string, InFlightRun>();
 let runIdCounter = 0;
+
+function clearInFlightRun(conversationId: string, runId?: number): void {
+  const existing = inFlightRuns.get(conversationId);
+  if (!existing) return;
+  if (runId != null && existing.runId !== runId) return;
+
+  clearTimeout(existing.timeoutHandle);
+  inFlightRuns.delete(conversationId);
+}
+
+function abortAndClearInFlightRun(
+  conversationId: string,
+  reason: string,
+  runId?: number,
+): void {
+  const existing = inFlightRuns.get(conversationId);
+  if (!existing) return;
+  if (runId != null && existing.runId !== runId) return;
+
+  existing.abortController.abort(reason);
+  clearInFlightRun(conversationId, existing.runId);
+}
+
+function registerInFlightRun(
+  conversationId: string,
+  abortController: AbortController,
+  runId: number,
+): void {
+  abortAndClearInFlightRun(conversationId, 'superseded_by_new_run');
+
+  const timeoutHandle = setTimeout(() => {
+    const active = inFlightRuns.get(conversationId);
+    if (!active || active.runId !== runId) return;
+
+    logger.warn('[telegramProcessor] Aborting stale in-flight run due to TTL', {
+      conversationId,
+      runId,
+      ttlMs: IN_FLIGHT_RUN_TTL_MS,
+    });
+    abortAndClearInFlightRun(conversationId, 'in_flight_run_ttl_expired', runId);
+  }, IN_FLIGHT_RUN_TTL_MS);
+
+  inFlightRuns.set(conversationId, {
+    abortController,
+    runId,
+    startedAt: Date.now(),
+    timeoutHandle,
+  });
+}
+
+function sweepInFlightRuns(): void {
+  const now = Date.now();
+
+  for (const [conversationId, active] of inFlightRuns.entries()) {
+    if (now - active.startedAt < IN_FLIGHT_RUN_TTL_MS) {
+      continue;
+    }
+
+    logger.warn('[telegramProcessor] Sweeping stale in-flight run', {
+      conversationId,
+      runId: active.runId,
+      ttlMs: IN_FLIGHT_RUN_TTL_MS,
+      ageMs: now - active.startedAt,
+    });
+    abortAndClearInFlightRun(conversationId, 'in_flight_run_sweep_expired', active.runId);
+  }
+}
+
+const inFlightSweepTimer = setInterval(sweepInFlightRuns, IN_FLIGHT_RUN_SWEEP_INTERVAL_MS);
+inFlightSweepTimer.unref?.();
 
 function isVoiceMemoNoContent(transcript: string): boolean {
   const t = transcript.trim().toLowerCase();
@@ -150,7 +235,7 @@ async function handleSaveCommand(
   return runExecutiveAgent(userId, userEmail, conversationId, 'save to drafts', { progressContext });
 }
 
-async function handleClearCommand(conversationId: string): Promise<ProcessMessageResult> {
+async function clearConversationAndCancelPending(conversationId: string): Promise<void> {
   const conversationManager = getConversationManager();
   await Promise.all([
     conversationManager.clearConversation(conversationId),
@@ -165,7 +250,10 @@ async function handleClearCommand(conversationId: string): Promise<ProcessMessag
       },
     }),
   ]);
+}
 
+async function handleClearCommand(conversationId: string): Promise<ProcessMessageResult> {
+  await clearConversationAndCancelPending(conversationId);
   return {
     success: true,
     response: 'Fresh start! What can I help you with?',
@@ -173,20 +261,7 @@ async function handleClearCommand(conversationId: string): Promise<ProcessMessag
 }
 
 async function handleCancelCommand(conversationId: string): Promise<ProcessMessageResult> {
-  const conversationManager = getConversationManager();
-  await Promise.all([
-    conversationManager.clearConversation(conversationId),
-    prisma.pendingCalendarChange.updateMany({
-      where: {
-        conversationId,
-        status: { in: ['PENDING', 'IN_PROGRESS'] },
-      },
-      data: {
-        status: 'CANCELLED',
-        cancelledAt: new Date(),
-      },
-    }),
-  ]);
+  await clearConversationAndCancelPending(conversationId);
 
   return {
     success: true,
@@ -304,7 +379,7 @@ export async function processTelegramMessage(
   if (message.voiceFileId || message.imageFileId) {
     abortController = new AbortController();
     myRunId = ++runIdCounter;
-    inFlightRuns.set(conversation.id, { abortController, runId: myRunId });
+    registerInFlightRun(conversation.id, abortController, myRunId);
 
     try {
       if (message.voiceFileId) {
@@ -314,9 +389,7 @@ export async function processTelegramMessage(
         });
 
         if (!effectiveText.trim() || isVoiceMemoNoContent(effectiveText)) {
-          if (inFlightRuns.get(conversation.id)?.runId === myRunId) {
-            inFlightRuns.delete(conversation.id);
-          }
+          clearInFlightRun(conversation.id, myRunId ?? undefined);
           await telegramClient.sendMessage(
             chatId,
             "I couldn't make that out. Can you repeat it?",
@@ -343,9 +416,7 @@ export async function processTelegramMessage(
           .join('\n\n');
       }
     } catch (error) {
-      if (inFlightRuns.get(conversation.id)?.runId === myRunId) {
-        inFlightRuns.delete(conversation.id);
-      }
+      clearInFlightRun(conversation.id, myRunId ?? undefined);
 
       if (isAbortError(error)) {
         logger.debug('[telegramProcessor] Media processing superseded by newer message');
@@ -395,8 +466,8 @@ export async function processTelegramMessage(
   let result: ProcessMessageResult;
 
   if (command) {
-    if (myRunId !== null && inFlightRuns.get(conversation.id)?.runId === myRunId) {
-      inFlightRuns.delete(conversation.id);
+    if (myRunId !== null) {
+      clearInFlightRun(conversation.id, myRunId);
     }
 
     switch (command) {
@@ -440,13 +511,10 @@ export async function processTelegramMessage(
     }
   } else {
     if (!abortController) {
-      const prev = inFlightRuns.get(conversation.id);
-      if (prev) {
-        prev.abortController.abort('superseded_by_new_message');
-      }
+      abortAndClearInFlightRun(conversation.id, 'superseded_by_new_message');
       abortController = new AbortController();
       myRunId = ++runIdCounter;
-      inFlightRuns.set(conversation.id, { abortController, runId: myRunId });
+      registerInFlightRun(conversation.id, abortController, myRunId);
     }
 
     try {
@@ -465,9 +533,7 @@ export async function processTelegramMessage(
       }
       throw error;
     } finally {
-      if (myRunId !== null && inFlightRuns.get(conversation.id)?.runId === myRunId) {
-        inFlightRuns.delete(conversation.id);
-      }
+      clearInFlightRun(conversation.id, myRunId ?? undefined);
     }
   }
 

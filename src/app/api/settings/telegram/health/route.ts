@@ -5,7 +5,7 @@ import { getTelegramHealthSnapshot } from '@/lib/services/telegram';
 
 /**
  * GET /api/settings/telegram/health
- * Returns Telegram worker/poller health for the authenticated user.
+ * Returns global Telegram service health for worker/poller status across the system.
  */
 export async function GET() {
   try {

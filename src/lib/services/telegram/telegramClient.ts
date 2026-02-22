@@ -13,6 +13,7 @@ import { logger } from '@/lib/logger';
 
 const DEFAULT_POLL_TIMEOUT_SECONDS = 30;
 const DEFAULT_POLL_RETRY_MAX_MS = 15_000;
+const TELEGRAM_FILE_FETCH_TIMEOUT_MS = 30_000;
 export const TELEGRAM_POLLER_WORKER_KEY = 'telegram-worker-main';
 
 export interface TelegramClientConfig {
@@ -261,15 +262,29 @@ export class TelegramClient {
     }
 
     const fileUrl = `https://api.telegram.org/file/bot${this.config.botToken}/${fileMeta.file_path}`;
-    const response = await fetch(fileUrl);
+    const abortController = new AbortController();
+    const timeoutHandle = setTimeout(() => {
+      abortController.abort('telegram_file_download_timeout');
+    }, TELEGRAM_FILE_FETCH_TIMEOUT_MS);
 
-    if (!response.ok) {
-      throw new Error(`Telegram file download failed: ${response.status} ${response.statusText}`);
+    try {
+      const response = await fetch(fileUrl, { signal: abortController.signal });
+
+      if (!response.ok) {
+        throw new Error(`Telegram file download failed: ${response.status} ${response.statusText}`);
+      }
+
+      const mimeType = response.headers.get('content-type') ?? 'application/octet-stream';
+      const data = Buffer.from(await response.arrayBuffer());
+      return { data, mimeType };
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') {
+        throw new Error(`Telegram file download timed out after ${TELEGRAM_FILE_FETCH_TIMEOUT_MS}ms`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeoutHandle);
     }
-
-    const mimeType = response.headers.get('content-type') ?? 'application/octet-stream';
-    const data = Buffer.from(await response.arrayBuffer());
-    return { data, mimeType };
   }
 
   async startMonitor(options: TelegramMonitorOptions): Promise<void> {

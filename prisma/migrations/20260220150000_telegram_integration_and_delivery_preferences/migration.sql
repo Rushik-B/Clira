@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS "TelegramConversation" (
 CREATE TABLE IF NOT EXISTS "TelegramMessage" (
   "id" TEXT NOT NULL,
   "conversationId" TEXT NOT NULL,
-  "telegramUpdateId" INTEGER,
+  "telegramUpdateId" BIGINT,
   "telegramMessageId" TEXT,
   "direction" "TelegramMessageDirection" NOT NULL,
   "content" TEXT NOT NULL,
@@ -192,6 +192,20 @@ BEGIN
     ALTER TABLE "TelegramConversation"
     ADD CONSTRAINT "TelegramConversation_userId_fkey"
     FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  END IF;
+END $$;
+
+-- AddForeignKey
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'TelegramPairingRequest_approvedByUserId_fkey'
+  ) THEN
+    ALTER TABLE "TelegramPairingRequest"
+    ADD CONSTRAINT "TelegramPairingRequest_approvedByUserId_fkey"
+    FOREIGN KEY ("approvedByUserId") REFERENCES "User"("id") ON DELETE SET NULL ON UPDATE CASCADE;
   END IF;
 END $$;
 

@@ -125,8 +125,8 @@ function getInitialTextChannelsState(initialSettings: TextChannelsSettingsSnapsh
       ? initialSettings.notificationDeliveryChannel
       : 'BOTH';
 
-  const parsedWhatsApp = parseE164Number(settings.whatsappPhoneNumber);
-  const parsedSms = parseE164Number(settings.twilioPhoneNumber);
+  const parsedWhatsApp = parseE164Number(settings.whatsappPhoneNumber, DEFAULT_COUNTRY_CODE);
+  const parsedSms = parseE164Number(settings.twilioPhoneNumber, DEFAULT_COUNTRY_CODE);
 
   return {
     settings,
@@ -227,12 +227,16 @@ export const TextChannelsIntegrationPage: React.FC<TextChannelsIntegrationPagePr
 
   const applyTelegramLiveSettings = useCallback(
     (nextSettings: NonNullable<TelegramLiveSettingsResponse['settings']>) => {
+      const hasBotUsername = Object.prototype.hasOwnProperty.call(
+        nextSettings,
+        'botUsername',
+      );
+
       setTelegramSettings((prev) => ({
         ...prev,
         telegramConfigured: nextSettings.telegramConfigured,
         telegramEnabled: nextSettings.telegramEnabled,
-        // Keep existing username if live payload omits it for fast polling.
-        botUsername: nextSettings.botUsername ?? prev.botUsername,
+        botUsername: hasBotUsername ? nextSettings.botUsername : prev.botUsername,
         links: Array.isArray(nextSettings.links) ? nextSettings.links : prev.links,
         pendingPairingRequests: Array.isArray(nextSettings.pendingPairingRequests)
           ? nextSettings.pendingPairingRequests

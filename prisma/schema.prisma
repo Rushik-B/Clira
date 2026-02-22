@@ -444,6 +444,8 @@ model User {
   settings                           UserSettings?
   tokenAccessAudits                  TokenAccessAudit[]
   telegramLink                       TelegramLink?
+  telegramConversations              TelegramConversation[]
+  telegramPairingApprovals           TelegramPairingRequest[]    @relation("TelegramPairingRequestApprovedByUser")
 }
 
 model UserSettings {
@@ -527,6 +529,7 @@ model TelegramConversation {
   status         TelegramConversationStatus  @default(ACTIVE)
   createdAt      DateTime                    @default(now())
   updatedAt      DateTime                    @updatedAt
+  user           User                        @relation(fields: [userId], references: [id], onDelete: Cascade)
   messages       TelegramMessage[]
 
   @@unique([userId, chatId])
@@ -539,7 +542,7 @@ model TelegramMessage {
   id                 String                   @id @default(cuid())
   conversationId     String
   /// Telegram update ID for dedupe of inbound updates
-  telegramUpdateId   Int?                     @unique
+  telegramUpdateId   BigInt?                  @unique
   /// Telegram message ID from Bot API
   telegramMessageId  String?
   direction          TelegramMessageDirection
@@ -592,6 +595,7 @@ model TelegramPairingRequest {
   approvedByUserId  String?
   createdAt         DateTime             @default(now())
   updatedAt         DateTime             @updatedAt
+  approvedByUser    User?                @relation("TelegramPairingRequestApprovedByUser", fields: [approvedByUserId], references: [id], onDelete: SetNull)
 
   @@index([telegramUserId, chatId])
   @@index([status, expiresAt])

@@ -1193,7 +1193,14 @@ heartbeatInterval = setInterval(() => {
 if (isTelegramEnabled()) {
   startTelegramMonitor({
     onMessage: async (message) => {
-      await processTelegramMessage(message);
+      try {
+        await processTelegramMessage(message);
+      } catch (error) {
+        logger.error('Error processing Telegram message', {
+          message,
+          error,
+        });
+      }
     },
   })
     .then(() => {

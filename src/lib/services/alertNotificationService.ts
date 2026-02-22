@@ -1,8 +1,6 @@
-import crypto from 'crypto';
 import { prisma } from '@/lib/prisma';
 import { logger } from '@/lib/logger';
 import { getExecutiveAgent } from '@/lib/ai/agents/executiveAgent';
-import type { ProgressUpdateContext } from '@/lib/ai/tools/sendProgressUpdate';
 import {
   getWhatsAppClient,
   getConversationManager as getWhatsAppConversationManager,
@@ -12,6 +10,7 @@ import {
   getConversationManager as getTelegramConversationManager,
 } from '@/lib/services/telegram';
 import { resolveMessagingTargets } from '@/lib/services/messagingDeliveryTargets';
+import { buildNotificationProgressContext } from '@/lib/services/notificationProgressContext';
 import type { Prisma } from '@prisma/client';
 
 interface AlertNotificationInput {
@@ -19,18 +18,178 @@ interface AlertNotificationInput {
   userEmail: string;
   email: { from: string; subject: string; snippet: string };
   alert: { id: string; description: string };
+  primaryChannelPreference?: 'whatsapp' | 'telegram';
 }
 
-function buildNotificationProgressContext(
-  channel: 'whatsapp' | 'telegram',
-  conversationId: string,
-): ProgressUpdateContext {
+type NotificationChannel = 'whatsapp' | 'telegram';
+type PrimaryConversationMessage = {
+  id: string;
+  content: string;
+  role: 'USER' | 'ASSISTANT' | 'SYSTEM';
+  direction: 'INBOUND' | 'OUTBOUND';
+  createdAt: Date;
+  metadata: Prisma.JsonValue | null;
+};
+
+function getMostRecentTimestamp(messages: Array<{ createdAt: Date }>): number {
+  let latest = 0;
+
+  for (const message of messages) {
+    const timestamp = message.createdAt.getTime();
+    if (timestamp > latest) {
+      latest = timestamp;
+    }
+  }
+
+  return latest;
+}
+
+async function selectPrimaryAlertChannel({
+  preferredChannel,
+  whatsappConversation,
+  telegramConversation,
+  whatsappConversationManager,
+  telegramConversationManager,
+}: {
+  preferredChannel?: NotificationChannel;
+  whatsappConversation: { id: string } | null;
+  telegramConversation: { id: string } | null;
+  whatsappConversationManager: ReturnType<typeof getWhatsAppConversationManager>;
+  telegramConversationManager: ReturnType<typeof getTelegramConversationManager>;
+}): Promise<{
+  primaryChannel: NotificationChannel;
+  primaryConversationId: string;
+  primaryConversationMessages: PrimaryConversationMessage[];
+}> {
+  if (!whatsappConversation && !telegramConversation) {
+    throw new Error('No messaging conversation available for primary channel selection');
+  }
+
+  if (preferredChannel === 'whatsapp' && whatsappConversation) {
+    return {
+      primaryChannel: 'whatsapp',
+      primaryConversationId: whatsappConversation.id,
+      primaryConversationMessages: await whatsappConversationManager.getRecentMessages(
+        whatsappConversation.id,
+        15,
+      ),
+    };
+  }
+
+  if (preferredChannel === 'telegram' && telegramConversation) {
+    return {
+      primaryChannel: 'telegram',
+      primaryConversationId: telegramConversation.id,
+      primaryConversationMessages: await telegramConversationManager.getRecentMessages(
+        telegramConversation.id,
+        15,
+      ),
+    };
+  }
+
+  if (!whatsappConversation) {
+    return {
+      primaryChannel: 'telegram',
+      primaryConversationId: telegramConversation!.id,
+      primaryConversationMessages: await telegramConversationManager.getRecentMessages(
+        telegramConversation!.id,
+        15,
+      ),
+    };
+  }
+
+  if (!telegramConversation) {
+    return {
+      primaryChannel: 'whatsapp',
+      primaryConversationId: whatsappConversation.id,
+      primaryConversationMessages: await whatsappConversationManager.getRecentMessages(
+        whatsappConversation.id,
+        15,
+      ),
+    };
+  }
+
+  const [whatsappMessages, telegramMessages] = await Promise.all([
+    whatsappConversationManager.getRecentMessages(whatsappConversation.id, 15),
+    telegramConversationManager.getRecentMessages(telegramConversation.id, 15),
+  ]);
+
+  const whatsappLatest = getMostRecentTimestamp(whatsappMessages);
+  const telegramLatest = getMostRecentTimestamp(telegramMessages);
+
+  if (telegramLatest > whatsappLatest) {
+    return {
+      primaryChannel: 'telegram',
+      primaryConversationId: telegramConversation.id,
+      primaryConversationMessages: telegramMessages,
+    };
+  }
+
+  if (whatsappLatest > telegramLatest) {
+    return {
+      primaryChannel: 'whatsapp',
+      primaryConversationId: whatsappConversation.id,
+      primaryConversationMessages: whatsappMessages,
+    };
+  }
+
+  if (telegramMessages.length > whatsappMessages.length) {
+    return {
+      primaryChannel: 'telegram',
+      primaryConversationId: telegramConversation.id,
+      primaryConversationMessages: telegramMessages,
+    };
+  }
+
   return {
-    channel,
-    requestId: crypto.randomUUID(),
-    conversationId,
-    persistMessage: async () => undefined,
+    primaryChannel: 'whatsapp',
+    primaryConversationId: whatsappConversation.id,
+    primaryConversationMessages: whatsappMessages,
   };
+}
+
+async function recordAlertChannelDeliveryFailure({
+  userId,
+  userEmail,
+  alertId,
+  email,
+  channel,
+  error,
+}: {
+  userId: string;
+  userEmail: string;
+  alertId: string;
+  email: AlertNotificationInput['email'];
+  channel: NotificationChannel;
+  error: unknown;
+}): Promise<void> {
+  const message = error instanceof Error ? error.message : String(error);
+
+  try {
+    await prisma.actionHistory.create({
+      data: {
+        userId,
+        actionType: 'ALERT_SKIPPED',
+        actionSummary: `Alert delivery failed on ${channel}`,
+        actionDetails: {
+          alertId,
+          email,
+          userEmail,
+          channel,
+          reason: 'messaging-delivery-failed',
+          error: message,
+        },
+        undoable: false,
+      },
+    });
+  } catch (historyError) {
+    logger.error('[alertNotification] Failed to record channel delivery failure', {
+      userId,
+      alertId,
+      channel,
+      error: historyError,
+    });
+  }
 }
 
 // Orchestrates alert notifications via ExecutiveAgent + messaging channels.
@@ -96,6 +255,18 @@ export async function triggerAlertNotification(input: AlertNotificationInput): P
         )
       : null;
 
+    const {
+      primaryChannel,
+      primaryConversationId,
+      primaryConversationMessages,
+    } = await selectPrimaryAlertChannel({
+      preferredChannel: input.primaryChannelPreference,
+      whatsappConversation,
+      telegramConversation,
+      whatsappConversationManager,
+      telegramConversationManager,
+    });
+
     if (whatsappConversation) {
       await whatsappConversationManager.addMessage(whatsappConversation.id, {
         content: systemMessage,
@@ -113,13 +284,6 @@ export async function triggerAlertNotification(input: AlertNotificationInput): P
       });
     }
 
-    const primaryChannel: 'telegram' | 'whatsapp' = telegramConversation ? 'telegram' : 'whatsapp';
-    const primaryConversationId = primaryChannel === 'telegram'
-      ? telegramConversation!.id
-      : whatsappConversation!.id;
-    const primaryConversationMessages = primaryChannel === 'telegram'
-      ? await telegramConversationManager.getRecentMessages(telegramConversation!.id, 15)
-      : await whatsappConversationManager.getRecentMessages(whatsappConversation!.id, 15);
     const conversationHistory = primaryConversationMessages.map((msg) => ({
       id: msg.id,
       content: msg.content,
@@ -143,45 +307,79 @@ export async function triggerAlertNotification(input: AlertNotificationInput): P
     const deliveredChannels: Array<'whatsapp' | 'telegram'> = [];
 
     if (whatsappConversation && settings?.whatsappPhoneNumber) {
-      const client = getWhatsAppClient();
-      const { messageId: waResponseId } = await client.sendMessage(settings.whatsappPhoneNumber, result.response);
-      const outboundMetadata =
-        result.metadata != null && typeof result.metadata === 'object' && !Array.isArray(result.metadata)
-          ? { ...(result.metadata as Record<string, unknown>) }
-          : {};
-      outboundMetadata.source = 'alert_notification';
-      outboundMetadata.alertId = input.alert.id;
-      outboundMetadata.channel = 'whatsapp';
+      try {
+        const client = getWhatsAppClient();
+        const { messageId: waResponseId } = await client.sendMessage(settings.whatsappPhoneNumber, result.response);
+        const outboundMetadata =
+          result.metadata != null && typeof result.metadata === 'object' && !Array.isArray(result.metadata)
+            ? { ...(result.metadata as Record<string, unknown>) }
+            : {};
+        outboundMetadata.source = 'alert_notification';
+        outboundMetadata.alertId = input.alert.id;
+        outboundMetadata.channel = 'whatsapp';
 
-      await whatsappConversationManager.addMessage(whatsappConversation.id, {
-        content: result.response,
-        role: 'ASSISTANT',
-        direction: 'OUTBOUND',
-        waMessageId: waResponseId,
-        metadata: outboundMetadata as Prisma.InputJsonObject,
-      });
-      deliveredChannels.push('whatsapp');
+        await whatsappConversationManager.addMessage(whatsappConversation.id, {
+          content: result.response,
+          role: 'ASSISTANT',
+          direction: 'OUTBOUND',
+          waMessageId: waResponseId,
+          metadata: outboundMetadata as Prisma.InputJsonObject,
+        });
+        deliveredChannels.push('whatsapp');
+      } catch (error) {
+        logger.error('[alertNotification] WhatsApp delivery failed', {
+          userId: input.userId,
+          userEmail: input.userEmail,
+          alertId: input.alert.id,
+          error,
+        });
+        await recordAlertChannelDeliveryFailure({
+          userId: input.userId,
+          userEmail: input.userEmail,
+          alertId: input.alert.id,
+          email: input.email,
+          channel: 'whatsapp',
+          error,
+        });
+      }
     }
 
     if (telegramConversation && telegramTarget) {
-      const client = getTelegramClient();
-      const { messageId: telegramResponseId } = await client.sendMessage(telegramTarget.chatId, result.response);
-      const outboundMetadata =
-        result.metadata != null && typeof result.metadata === 'object' && !Array.isArray(result.metadata)
-          ? { ...(result.metadata as Record<string, unknown>) }
-          : {};
-      outboundMetadata.source = 'alert_notification';
-      outboundMetadata.alertId = input.alert.id;
-      outboundMetadata.channel = 'telegram';
+      try {
+        const client = getTelegramClient();
+        const { messageId: telegramResponseId } = await client.sendMessage(telegramTarget.chatId, result.response);
+        const outboundMetadata =
+          result.metadata != null && typeof result.metadata === 'object' && !Array.isArray(result.metadata)
+            ? { ...(result.metadata as Record<string, unknown>) }
+            : {};
+        outboundMetadata.source = 'alert_notification';
+        outboundMetadata.alertId = input.alert.id;
+        outboundMetadata.channel = 'telegram';
 
-      await telegramConversationManager.addMessage(telegramConversation.id, {
-        content: result.response,
-        role: 'ASSISTANT',
-        direction: 'OUTBOUND',
-        telegramMessageId: telegramResponseId,
-        metadata: outboundMetadata as Prisma.InputJsonObject,
-      });
-      deliveredChannels.push('telegram');
+        await telegramConversationManager.addMessage(telegramConversation.id, {
+          content: result.response,
+          role: 'ASSISTANT',
+          direction: 'OUTBOUND',
+          telegramMessageId: telegramResponseId,
+          metadata: outboundMetadata as Prisma.InputJsonObject,
+        });
+        deliveredChannels.push('telegram');
+      } catch (error) {
+        logger.error('[alertNotification] Telegram delivery failed', {
+          userId: input.userId,
+          userEmail: input.userEmail,
+          alertId: input.alert.id,
+          error,
+        });
+        await recordAlertChannelDeliveryFailure({
+          userId: input.userId,
+          userEmail: input.userEmail,
+          alertId: input.alert.id,
+          email: input.email,
+          channel: 'telegram',
+          error,
+        });
+      }
     }
 
     if (deliveredChannels.length === 0) {

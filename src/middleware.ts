@@ -12,7 +12,6 @@ const PUBLIC_PATHS = [
   "/api/gmail-push",
   "/api/whatsapp/webhook", // WhatsApp webhook must be public (called by Meta)
   "/api/twilio/webhook", // Twilio webhook must be public (called by Twilio)
-  "/api/telegram/webhook", // Telegram webhook/poller compatibility endpoint
   "/privacy",
   "/terms",
   "/_next",
