@@ -28,11 +28,23 @@ export interface TelegramHealthState {
   lastUpdateAt: string | null;
 }
 
+export interface TelegramPendingPairingRequest {
+  id: string;
+  pairingCode: string;
+  telegramUserId: string;
+  chatId: string;
+  telegramUsername: string | null;
+  telegramFirstName: string | null;
+  expiresAt: string;
+  createdAt: string;
+}
+
 export interface TelegramSettingsState {
   telegramConfigured: boolean;
   telegramEnabled: boolean;
   botUsername: string | null;
   links: TelegramLinkSettings[];
+  pendingPairingRequests: TelegramPendingPairingRequest[];
   health: TelegramHealthState | null;
 }
 

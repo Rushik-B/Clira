@@ -308,6 +308,39 @@ export class PairingManager {
     });
   }
 
+  async getPendingPairingRequests(limit = 10) {
+    const now = new Date();
+
+    await prisma.telegramPairingRequest.updateMany({
+      where: {
+        status: 'PENDING',
+        expiresAt: { lte: now },
+      },
+      data: {
+        status: 'EXPIRED',
+      },
+    });
+
+    return prisma.telegramPairingRequest.findMany({
+      where: {
+        status: 'PENDING',
+        expiresAt: { gt: now },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+      select: {
+        id: true,
+        pairingCode: true,
+        telegramUserId: true,
+        chatId: true,
+        telegramUsername: true,
+        telegramFirstName: true,
+        expiresAt: true,
+        createdAt: true,
+      },
+    });
+  }
+
   async getMostRecentActiveLinkForUser(userId: string) {
     return prisma.telegramLink.findFirst({
       where: {

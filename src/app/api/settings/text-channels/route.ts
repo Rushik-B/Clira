@@ -25,7 +25,8 @@ export async function GET() {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const [settings, links, telegramHealth] = await Promise.all([
+    const pairingManager = getPairingManager();
+    const [settings, links, pendingPairingRequests, telegramHealth] = await Promise.all([
       prisma.userSettings.findUnique({
         where: { userId: session.userId },
         select: {
@@ -36,7 +37,8 @@ export async function GET() {
           notificationDeliveryChannel: true,
         },
       }),
-      getPairingManager().getActiveLinksForUser(session.userId),
+      pairingManager.getActiveLinksForUser(session.userId),
+      pairingManager.getPendingPairingRequests(),
       getTelegramHealthSnapshot(),
     ]);
 
@@ -59,6 +61,7 @@ export async function GET() {
         telegramEnabled: isTelegramEnabled(),
         botUsername,
         links,
+        pendingPairingRequests,
         telegramHealth,
       },
     });

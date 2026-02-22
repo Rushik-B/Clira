@@ -22,8 +22,9 @@ export async function GET() {
     }
 
     const pairingManager = getPairingManager();
-    const [links, health] = await Promise.all([
+    const [links, pendingPairingRequests, health] = await Promise.all([
       pairingManager.getActiveLinksForUser(session.userId),
+      pairingManager.getPendingPairingRequests(),
       getTelegramHealthSnapshot(),
     ]);
 
@@ -40,6 +41,7 @@ export async function GET() {
         telegramEnabled: isTelegramEnabled(),
         botUsername,
         links,
+        pendingPairingRequests,
         health,
       },
     });
