@@ -15,6 +15,12 @@ export {
   classifyMessageRelevance,
 } from './relevanceClassifier';
 
+export {
+  buildOrchestrationMessageMetadata,
+  buildRunContextPromptFragment,
+  emitOrchestratorEvent,
+} from './observability';
+
 export type {
   BurstState,
   ChannelAdapter,

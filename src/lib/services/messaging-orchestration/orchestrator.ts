@@ -6,6 +6,7 @@ import {
   updateBurstState,
 } from './stateStore';
 import { classifyMessageRelevance } from './relevanceClassifier';
+import { emitOrchestratorEvent } from './observability';
 import type {
   BurstState,
   FinalizeResult,
@@ -36,6 +37,8 @@ type LocalRunRecord = {
   startedAt: number;
   windowEndsAt: number;
   hasQueuedFollowup: boolean;
+  classifierDecision: RelevanceClassification['decision'] | null;
+  droppedSummary: string[];
   stale: boolean;
 };
 
@@ -157,6 +160,8 @@ function buildRunContext(record: LocalRunRecord): RunContext {
     channel: record.channel,
     conversationId: record.conversationId,
     conversationKey: record.conversationKey,
+    classifierDecision: record.classifierDecision,
+    droppedSummary: record.droppedSummary,
     abortSignal: record.abortController.signal,
     isRunCurrent: async () => {
       const local = localRuns.get(record.conversationKey);
@@ -201,9 +206,19 @@ function registerLocalRun(params: {
   revision: number;
   burstId: string;
   windowEndsAt: number;
+  classifierDecision: RelevanceClassification['decision'] | null;
+  droppedSummary: string[];
 }): RunContext {
   const previous = localRuns.get(params.conversationKey);
   if (previous && previous.runId !== params.runId) {
+    emitOrchestratorEvent('orchestrator.run.superseded', {
+      channel: params.channel,
+      conversationId: params.conversationId,
+      conversationKey: params.conversationKey,
+      supersededRunId: previous.runId,
+      replacementRunId: params.runId,
+      reason: 'superseded_by_new_run',
+    });
     abortLocalRun(params.conversationKey, previous.runId, 'superseded_by_new_run');
   }
 
@@ -218,6 +233,8 @@ function registerLocalRun(params: {
     startedAt: Date.now(),
     windowEndsAt: params.windowEndsAt,
     hasQueuedFollowup: false,
+    classifierDecision: params.classifierDecision,
+    droppedSummary: [...params.droppedSummary],
     stale: false,
   };
 
@@ -242,6 +259,8 @@ export class MessagingOrchestrator {
         revision: Date.now(),
         burstId: crypto.randomUUID(),
         windowEndsAt: Date.now(),
+        classifierDecision: null,
+        droppedSummary: [],
       });
 
       return {
@@ -251,13 +270,45 @@ export class MessagingOrchestrator {
       };
     }
 
-    const { current: stateAfterInbound } = await updateBurstState(conversationKey, (state) =>
+    const { previous: stateBeforeInbound, current: stateAfterInbound } = await updateBurstState(conversationKey, (state) =>
       applyInboundToState(state, userRequest),
     );
+
+    if (stateBeforeInbound.burstId !== stateAfterInbound.burstId) {
+      emitOrchestratorEvent('orchestrator.burst.started', {
+        channel,
+        conversationId,
+        conversationKey,
+        burstId: stateAfterInbound.burstId,
+        revision: stateAfterInbound.revision,
+      });
+    }
+
+    if (stateAfterInbound.droppedSummary.length > stateBeforeInbound.droppedSummary.length) {
+      const overflowEntries = stateAfterInbound.droppedSummary.slice(
+        stateBeforeInbound.droppedSummary.length,
+      );
+      emitOrchestratorEvent('orchestrator.queue.overflow_summary', {
+        channel,
+        conversationId,
+        conversationKey,
+        burstId: stateAfterInbound.burstId,
+        droppedCount: stateAfterInbound.droppedSummary.length,
+        overflowAdded: overflowEntries.length,
+        overflowSummary: overflowEntries,
+      });
+    }
 
     if (params.isCommand) {
       const activeRunId = stateAfterInbound.activeRunId;
       if (activeRunId) {
+        emitOrchestratorEvent('orchestrator.run.superseded', {
+          channel,
+          conversationId,
+          conversationKey,
+          supersededRunId: activeRunId,
+          reason: 'command_bypass',
+        });
         abortLocalRun(conversationKey, activeRunId, 'superseded_by_command');
       }
 
@@ -295,13 +346,26 @@ export class MessagingOrchestrator {
         incomingText: userRequest,
       });
 
-      logger.info('[messagingOrchestration] classifier decision', {
+      emitOrchestratorEvent('orchestrator.classifier.decision', {
+        channel,
+        conversationId,
         conversationKey,
+        runId: stateAfterInbound.activeRunId,
         decision: classifierDecision.decision,
         confidence: classifierDecision.confidence,
+        explanation: classifierDecision.explanation,
       });
 
       if (shouldSupersede(classifierDecision)) {
+        emitOrchestratorEvent('orchestrator.run.superseded', {
+          channel,
+          conversationId,
+          conversationKey,
+          supersededRunId: stateAfterInbound.activeRunId,
+          reason: 'classifier_supersede',
+          decision: classifierDecision.decision,
+          confidence: classifierDecision.confidence,
+        });
         abortLocalRun(
           conversationKey,
           stateAfterInbound.activeRunId,
@@ -504,7 +568,20 @@ export class MessagingOrchestrator {
       revision: current.activeRevision ?? current.revision,
       burstId: current.burstId,
       windowEndsAt: current.windowEndsAt,
+      classifierDecision: current.classifierDecision,
+      droppedSummary: current.droppedSummary,
     });
+
+    if (params.nextBurstId) {
+      emitOrchestratorEvent('orchestrator.burst.started', {
+        channel: params.channel,
+        conversationId: params.conversationId,
+        conversationKey: params.conversationKey,
+        burstId: current.burstId,
+        revision: current.activeRevision ?? current.revision,
+        reason: 'queued_followup',
+      });
+    }
 
     logger.info('[messagingOrchestration] run started', {
       conversationKey: params.conversationKey,

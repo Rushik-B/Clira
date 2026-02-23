@@ -42,6 +42,8 @@ export type RunContext = {
   conversationKey: string;
   channel: OrchestrationChannel;
   conversationId: string;
+  classifierDecision: RelevanceDecision | null;
+  droppedSummary: string[];
   abortSignal: AbortSignal;
   isRunCurrent: () => Promise<boolean>;
   isBurstStable: () => boolean;
