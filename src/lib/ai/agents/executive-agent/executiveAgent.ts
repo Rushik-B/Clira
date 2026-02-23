@@ -214,6 +214,20 @@ export class ExecutiveAgent {
       if (toolBudget) {
         metadata.toolBudget = toolBudget as Prisma.InputJsonValue;
       }
+      if (input.runContext) {
+        metadata.orchestration = {
+          runId: input.runContext.runId,
+          burstId: input.runContext.burstId,
+          classifierDecision: input.runContext.classifierDecision ?? null,
+          queueOverflowSummary:
+            (input.runContext.droppedSummary ?? []).length > 0
+              ? {
+                  droppedCount: (input.runContext.droppedSummary ?? []).length,
+                  droppedMessages: input.runContext.droppedSummary ?? [],
+                }
+              : null,
+        } as Prisma.InputJsonValue;
+      }
 
       return {
         response,

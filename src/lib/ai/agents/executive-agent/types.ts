@@ -19,6 +19,8 @@ export interface ExecutiveAgentInput {
   runContext?: {
     runId: string;
     burstId: string;
+    classifierDecision?: 'supersede' | 'followup' | 'ambiguous' | null;
+    droppedSummary?: string[];
     isRunCurrent: () => Promise<boolean>;
     isBurstStable: () => boolean;
   };
