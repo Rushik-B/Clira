@@ -26,6 +26,8 @@ import { getExecutiveAgent, type ExecutiveAgentOutput } from '@/lib/ai/agents/ex
 import type { ProgressUpdateContext } from '@/lib/ai/tools/sendProgressUpdate';
 import type { ProgressUpdateEvent } from '@/lib/ai/progressTypes';
 import {
+  buildOrchestrationMessageMetadata,
+  emitOrchestratorEvent,
   getMessagingOrchestrator,
   type RunContext,
 } from '@/lib/services/messaging-orchestration';
@@ -414,13 +416,12 @@ export async function processTwilioMessage(
     if (result.response && await runContext.isRunCurrent()) {
       try {
         const { messageSid: twilioResponseSid } = await twilioClient.sendMessage(from, result.response);
-        const outboundMetadata =
+        const outboundMetadata = buildOrchestrationMessageMetadata(
+          runContext,
           result.metadata != null && typeof result.metadata === 'object' && !Array.isArray(result.metadata)
-            ? { ...(result.metadata as Record<string, unknown>) }
-            : {};
-        outboundMetadata.burstId = runContext.burstId;
-        outboundMetadata.runId = runContext.runId;
-        outboundMetadata.superseded = false;
+            ? (result.metadata as Record<string, unknown>)
+            : null,
+        );
 
         await conversationManager.addMessage(conversation.id, {
           content: result.response,
@@ -428,6 +429,16 @@ export async function processTwilioMessage(
           direction: 'OUTBOUND',
           twilioSid: twilioResponseSid,
           metadata: outboundMetadata as Prisma.InputJsonObject,
+        });
+
+        emitOrchestratorEvent('orchestrator.final.sent', {
+          channel: 'twilio',
+          conversationId: conversation.id,
+          runId: runContext.runId,
+          burstId: runContext.burstId,
+          classifierDecision: runContext.classifierDecision,
+          droppedCount: runContext.droppedSummary.length,
+          externalId: twilioResponseSid,
         });
 
         logger.info(
@@ -501,6 +512,8 @@ async function runExecutiveAgent(
         ? {
             runId: options.runContext.runId,
             burstId: options.runContext.burstId,
+            classifierDecision: options.runContext.classifierDecision,
+            droppedSummary: options.runContext.droppedSummary,
             isRunCurrent: options.runContext.isRunCurrent,
             isBurstStable: options.runContext.isBurstStable,
           }
@@ -698,19 +711,27 @@ export async function processWebChatMessage(
     }
 
     if (result.response && await runContext.isRunCurrent()) {
-      const outboundMetadata =
+      const outboundMetadata = buildOrchestrationMessageMetadata(
+        runContext,
         result.metadata != null && typeof result.metadata === 'object' && !Array.isArray(result.metadata)
-          ? { ...(result.metadata as Record<string, unknown>) }
-          : {};
-      outboundMetadata.burstId = runContext.burstId;
-      outboundMetadata.runId = runContext.runId;
-      outboundMetadata.superseded = false;
+          ? (result.metadata as Record<string, unknown>)
+          : null,
+      );
 
       await conversationManager.addMessage(conversation.id, {
         content: result.response,
         role: 'ASSISTANT',
         direction: 'OUTBOUND',
         metadata: outboundMetadata as Prisma.InputJsonObject,
+      });
+
+      emitOrchestratorEvent('orchestrator.final.sent', {
+        channel: 'web',
+        conversationId: conversation.id,
+        runId: runContext.runId,
+        burstId: runContext.burstId,
+        classifierDecision: runContext.classifierDecision,
+        droppedCount: runContext.droppedSummary.length,
       });
     }
 
