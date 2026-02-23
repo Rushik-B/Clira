@@ -25,6 +25,8 @@ import {
   type TelegramInboundMessage,
 } from '@/lib/services/telegram';
 import {
+  buildOrchestrationMessageMetadata,
+  emitOrchestratorEvent,
   getMessagingOrchestrator,
   type RunContext,
 } from '@/lib/services/messaging-orchestration';
@@ -540,13 +542,12 @@ export async function processTelegramMessage(
     if (result.response && await runContext.isRunCurrent()) {
       try {
         const { messageId: telegramResponseId } = await telegramClient.sendMessage(chatId, result.response);
-        const outboundMetadata =
+        const outboundMetadata = buildOrchestrationMessageMetadata(
+          runContext,
           result.metadata != null && typeof result.metadata === 'object' && !Array.isArray(result.metadata)
-            ? { ...(result.metadata as Record<string, unknown>) }
-            : {};
-        outboundMetadata.burstId = runContext.burstId;
-        outboundMetadata.runId = runContext.runId;
-        outboundMetadata.superseded = false;
+            ? (result.metadata as Record<string, unknown>)
+            : null,
+        );
 
         await conversationManager.addMessage(conversation.id, {
           content: result.response,
@@ -554,6 +555,16 @@ export async function processTelegramMessage(
           direction: 'OUTBOUND',
           telegramMessageId: telegramResponseId,
           metadata: outboundMetadata as Prisma.InputJsonObject,
+        });
+
+        emitOrchestratorEvent('orchestrator.final.sent', {
+          channel: 'telegram',
+          conversationId: conversation.id,
+          runId: runContext.runId,
+          burstId: runContext.burstId,
+          classifierDecision: runContext.classifierDecision,
+          droppedCount: runContext.droppedSummary.length,
+          externalId: telegramResponseId,
         });
       } catch (error) {
         logger.error('[telegramProcessor] Failed sending Telegram response', {
@@ -617,6 +628,8 @@ async function runExecutiveAgent(
         ? {
             runId: options.runContext.runId,
             burstId: options.runContext.burstId,
+            classifierDecision: options.runContext.classifierDecision,
+            droppedSummary: options.runContext.droppedSummary,
             isRunCurrent: options.runContext.isRunCurrent,
             isBurstStable: options.runContext.isBurstStable,
           }
