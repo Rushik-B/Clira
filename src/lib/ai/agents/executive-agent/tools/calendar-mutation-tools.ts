@@ -784,6 +784,8 @@ export function buildCalendarMutationTools({
           const stale = await ensureCurrentRun('commit_calendar_change');
           if (stale) return stale;
 
+          await context.input.runContext?.markRunPhase?.('commit_boundary');
+
           const latestPending = await prisma.pendingCalendarChange.findFirst({
             where: {
               userId: input.userId,

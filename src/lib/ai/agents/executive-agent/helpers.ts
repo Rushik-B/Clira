@@ -554,6 +554,11 @@ const DEFER_ON_STALE_TOOLS = new Set([
   'remove_email_alert',
 ]);
 
+const DEFER_ON_PENDING_STEER_TOOLS = new Set([
+  'send_email',
+  'commit_calendar_change',
+]);
+
 function buildStaleRunDeferredResult(toolName: string): Record<string, unknown> {
   if (toolName === 'plan_calendar_change' || toolName === 'commit_calendar_change') {
     return {
@@ -569,6 +574,25 @@ function buildStaleRunDeferredResult(toolName: string): Record<string, unknown> 
     status: 'deferred',
     error: 'superseded_by_newer_message',
     message: 'A newer user message arrived, so this action was deferred.',
+  };
+}
+
+function buildPendingSteerDeferredResult(toolName: string): Record<string, unknown> {
+  const message = 'A new user correction arrived, so this action was deferred.';
+  if (toolName === 'commit_calendar_change') {
+    return {
+      ok: false,
+      status: 'deferred',
+      error: 'pending_steer_event',
+      message,
+    };
+  }
+
+  return {
+    success: false,
+    status: 'deferred',
+    error: 'pending_steer_event',
+    message,
   };
 }
 
@@ -598,6 +622,7 @@ export function wrapToolsWithTimingMetadata({
   getLastProgressSentAt,
   setLastProgressSentAt,
   isRunCurrent,
+  hasPendingSteer,
 }: {
   tools: Record<string, unknown>;
   agentStartedAt: number;
@@ -605,6 +630,7 @@ export function wrapToolsWithTimingMetadata({
   getLastProgressSentAt: () => number;
   setLastProgressSentAt: (sentAt: number) => void;
   isRunCurrent: () => Promise<boolean>;
+  hasPendingSteer?: () => Promise<boolean>;
 }): Record<string, unknown> {
   const wrappedTools: Record<string, unknown> = {};
 
@@ -624,6 +650,21 @@ export function wrapToolsWithTimingMetadata({
             return buildStaleRunDeferredResult(toolName);
           }
           throw new Error('superseded_by_newer_message');
+        }
+
+        if (
+          hasPendingSteer &&
+          DEFER_ON_PENDING_STEER_TOOLS.has(toolName) &&
+          (await hasPendingSteer())
+        ) {
+          const now = Date.now();
+          const lastProgressSentAt = getLastProgressSentAt();
+          const timing: ToolTimingMetadata = {
+            elapsed_ms: now - agentStartedAt,
+            ms_since_last_progress_update: now - (lastProgressSentAt || agentStartedAt),
+            time_left_ms: timeLeftMs(),
+          };
+          return attachTimingMetadata(buildPendingSteerDeferredResult(toolName), timing);
         }
 
         const result = await execute(args);

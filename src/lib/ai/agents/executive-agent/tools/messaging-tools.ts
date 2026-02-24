@@ -557,6 +557,8 @@ export function buildMessagingTools({
             };
           }
 
+          await context.input.runContext?.markRunPhase?.('commit_boundary');
+
           logger.info(`[executiveAgent] send_email: to=${args.to} subject="${truncate(args.subject, 30)}"`);
 
           try {
