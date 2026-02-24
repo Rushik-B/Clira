@@ -49,6 +49,49 @@ test('scenario 8: stale side-effect tool calls are deferred before execution', a
   assert.equal(sideEffectCalls, 0);
 });
 
+test('scenario 8: pending steering defers commit-boundary side-effect tools', async () => {
+  let sendEmailCalls = 0;
+  let commitCalendarCalls = 0;
+
+  const wrapped = wrapToolsWithTimingMetadata({
+    tools: {
+      send_email: {
+        execute: async () => {
+          sendEmailCalls += 1;
+          return { success: true };
+        },
+      },
+      commit_calendar_change: {
+        execute: async () => {
+          commitCalendarCalls += 1;
+          return { ok: true };
+        },
+      },
+    },
+    agentStartedAt: Date.now(),
+    timeLeftMs: () => 10_000,
+    getLastProgressSentAt: () => 0,
+    setLastProgressSentAt: () => {},
+    isRunCurrent: async () => true,
+    hasPendingSteer: async () => true,
+  });
+
+  const sendEmailTool = getExecutableTool<Record<string, never>, Record<string, unknown>>(wrapped.send_email);
+  const sendEmailResult = await sendEmailTool.execute({});
+  assert.equal(sendEmailResult.status, 'deferred');
+  assert.equal(sendEmailResult.error, 'pending_steer_event');
+  assert.equal(sendEmailResult.success, false);
+
+  const commitCalendarTool = getExecutableTool<Record<string, never>, Record<string, unknown>>(wrapped.commit_calendar_change);
+  const commitCalendarResult = await commitCalendarTool.execute({});
+  assert.equal(commitCalendarResult.status, 'deferred');
+  assert.equal(commitCalendarResult.error, 'pending_steer_event');
+  assert.equal(commitCalendarResult.ok, false);
+
+  assert.equal(sendEmailCalls, 0);
+  assert.equal(commitCalendarCalls, 0);
+});
+
 test('scenario 9: progress update is suppressed while burst is unstable', async () => {
   let sentCalls = 0;
   let persistedCalls = 0;

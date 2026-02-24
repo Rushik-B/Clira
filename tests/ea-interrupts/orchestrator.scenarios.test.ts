@@ -18,6 +18,7 @@ type Harness = {
   orchestrator: MessagingOrchestrator;
   sleepCalls: number[];
   getState: (channel: OrchestrationChannel, conversationId: string) => BurstState;
+  getEvents: () => Array<{ event: string; payload: Record<string, unknown> }>;
 };
 
 function createHarness(params?: {
@@ -27,6 +28,7 @@ function createHarness(params?: {
   let idCounter = 0;
   const sleepCalls: number[] = [];
   const states = new Map<string, BurstState>();
+  const events: Array<{ event: string; payload: Record<string, unknown> }> = [];
 
   const createId = () => `id-${++idCounter}`;
   const classify =
@@ -86,7 +88,12 @@ function createHarness(params?: {
       return { previous, current };
     },
     classify: async (input: ClassifierInput) => classify(input),
-    emitEvent: () => {},
+    emitEvent: (event, payload) => {
+      events.push({
+        event,
+        payload: payload as Record<string, unknown>,
+      });
+    },
   });
 
   return {
@@ -94,6 +101,7 @@ function createHarness(params?: {
     sleepCalls,
     getState: (channel: OrchestrationChannel, conversationId: string) =>
       structuredClone(getOrInitState(`${channel}:${conversationId}`)),
+    getEvents: () => structuredClone(events),
   };
 }
 
@@ -228,6 +236,12 @@ test('scenario 7: cooperative steering enqueues in-run steer event (ambiguous >=
     assert.equal(consumed.events[0]?.text, 'actually, keep it shorter');
     assert.equal(consumed.nextSeq, consumed.events[0]?.seq);
     assert.equal(await first.runContext.hasPendingSteer(0), false);
+
+    const enqueued = harness
+      .getEvents()
+      .filter((entry) => entry.event === 'orchestrator.steer.enqueued');
+    assert.equal(enqueued.length, 1);
+    assert.equal(enqueued[0]?.payload.runId, first.runContext.runId);
   });
 });
 
@@ -259,6 +273,13 @@ test('scenario 8: commit-boundary blocks steering and queues followup', async ()
 
     assert.equal(incoming.kind, 'skip');
     assert.equal(incoming.reason, 'queued_followup');
+
+    const blocked = harness
+      .getEvents()
+      .filter((entry) => entry.event === 'orchestrator.steer.blocked_commit_boundary');
+    assert.equal(blocked.length, 1);
+    assert.equal(blocked[0]?.payload.runId, first.runContext.runId);
+    assert.equal(blocked[0]?.payload.runPhase, 'commit_boundary');
   });
 });
 
@@ -303,6 +324,78 @@ test('scenario 9: steer mailbox caps and summarizes overflow deterministically',
     assert.equal(consumed.events.length, 2);
     assert.equal(consumed.droppedSummary.length, 2);
   });
+});
+
+test('scenario 11: consuming mailbox emits steer.applied lifecycle event', async () => {
+  await withEnv({ EA_STEER_COOPERATIVE: 'true' }, async () => {
+    const harness = createHarness({
+      classify: ({ incomingText }) => ({
+        decision: 'ambiguous',
+        confidence: 0.7,
+        explanation: 'likely correction',
+        latestIntentText: incomingText,
+      }),
+    });
+
+    const first = await harness.orchestrator.prepareRun({
+      channel: 'twilio',
+      conversationId: 'conv-11',
+      userRequest: 'Draft to Alex',
+    });
+    assert.equal(first.kind, 'start');
+
+    for (const msg of ['make it shorter', 'mention timeline']) {
+      const decision = await harness.orchestrator.prepareRun({
+        channel: 'twilio',
+        conversationId: 'conv-11',
+        userRequest: msg,
+      });
+      assert.equal(decision.kind, 'skip');
+      assert.equal(decision.reason, 'steered_in_run');
+    }
+
+    const consumed = await first.runContext.consumeSteerEvents(0);
+    assert.equal(consumed.events.length, 2);
+
+    const applied = harness
+      .getEvents()
+      .filter((entry) => entry.event === 'orchestrator.steer.applied');
+    assert.equal(applied.length, 1);
+    assert.equal(applied[0]?.payload.runId, first.runContext.runId);
+    assert.equal(applied[0]?.payload.fromSeq, 0);
+    assert.equal(applied[0]?.payload.toSeq, 2);
+    assert.equal(applied[0]?.payload.appliedEvents, 2);
+    assert.equal(applied[0]?.payload.appliedDroppedSummary, 0);
+  });
+});
+
+test('scenario 12: run phase transitions emit lifecycle events', async () => {
+  const harness = createHarness();
+
+  const first = await harness.orchestrator.prepareRun({
+    channel: 'twilio',
+    conversationId: 'conv-12',
+    userRequest: 'Draft to Alex',
+  });
+  assert.equal(first.kind, 'start');
+
+  await first.runContext.markRunPhase('commit_boundary');
+  await harness.orchestrator.finalizeRun({ runContext: first.runContext });
+
+  const phaseEvents = harness
+    .getEvents()
+    .filter((entry) => entry.event === 'orchestrator.run.phase.changed');
+  assert.equal(phaseEvents.length, 2);
+
+  assert.equal(phaseEvents[0]?.payload.runId, first.runContext.runId);
+  assert.equal(phaseEvents[0]?.payload.fromPhase, 'running');
+  assert.equal(phaseEvents[0]?.payload.toPhase, 'commit_boundary');
+  assert.equal(phaseEvents[0]?.payload.reason, 'mark_run_phase');
+
+  assert.equal(phaseEvents[1]?.payload.runId, first.runContext.runId);
+  assert.equal(phaseEvents[1]?.payload.fromPhase, 'commit_boundary');
+  assert.equal(phaseEvents[1]?.payload.toPhase, 'completed');
+  assert.equal(phaseEvents[1]?.payload.reason, 'finalize_run');
 });
 
 test('scenario 4: command bypass supersedes active run immediately', async () => {
