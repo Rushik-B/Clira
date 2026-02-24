@@ -29,6 +29,8 @@ import {
   buildOrchestrationMessageMetadata,
   emitOrchestratorEvent,
   getMessagingOrchestrator,
+  isDuplicateInboundFromAdapter,
+  type ChannelAdapter,
   type RunContext,
 } from '@/lib/services/messaging-orchestration';
 
@@ -265,20 +267,47 @@ export async function processTwilioMessage(
   const { from, body, messageSid } = message;
   const conversationManager = getConversationManager();
   const twilioClient = getTwilioClient();
+  let activeConversationId = '';
+
+  const adapter: ChannelAdapter = {
+    channel: 'twilio',
+    conversationId: () => activeConversationId,
+    messageIdForDedupe: () => messageSid ?? null,
+    persistInbound: async () => {
+      if (!activeConversationId) {
+        throw new Error('twilio_inbound_persist_missing_conversation_id');
+      }
+      await conversationManager.addMessage(activeConversationId, {
+        content: body,
+        role: 'USER',
+        direction: 'INBOUND',
+        twilioSid: messageSid,
+      });
+    },
+    sendFinal: async (text: string) => {
+      const { messageSid: externalId } = await twilioClient.sendMessage(from, text);
+      return { externalId };
+    },
+    sendProgress: async (text: string) => {
+      const { messageSid: externalId } = await twilioClient.sendMessage(from, text);
+      return { externalId };
+    },
+  };
 
   logger.info(
     `[messageProcessor] Processing message: from=${from.slice(0, 4)}**** text="${body.slice(0, 50)}..."`,
   );
 
-  if (messageSid) {
-    const isDuplicate = await conversationManager.hasInboundMessageWithTwilioSid(messageSid);
-    if (isDuplicate) {
-      logger.info('[messageProcessor] Duplicate inbound Twilio message detected, skipping', {
-        from: `${from.slice(0, 4)}****`,
-        messageSid,
-      });
-      return { success: true, response: '' };
-    }
+  const dedupe = await isDuplicateInboundFromAdapter(
+    adapter,
+    (id) => conversationManager.hasInboundMessageWithTwilioSid(id),
+  );
+  if (dedupe.isDuplicate) {
+    logger.info('[messageProcessor] Duplicate inbound Twilio message detected, skipping', {
+      from: `${from.slice(0, 4)}****`,
+      messageSid: dedupe.messageId,
+    });
+    return { success: true, response: '' };
   }
 
   // Step 1: Look up user by Twilio phone number
@@ -337,14 +366,10 @@ export async function processTwilioMessage(
 
   // Step 3: Get or create conversation
   const conversation = await conversationManager.getOrCreateConversation(userId, from);
+  activeConversationId = conversation.id;
 
   // Step 4: Add user message to the conversation
-  await conversationManager.addMessage(conversation.id, {
-    content: body,
-    role: 'USER',
-    direction: 'INBOUND',
-    twilioSid: messageSid,
-  });
+  await adapter.persistInbound();
 
   // Step 5: Detect and handle commands
   let activeCommand: Command = detectCommand(body);
@@ -353,9 +378,8 @@ export async function processTwilioMessage(
   }
 
   const orchestrator = getMessagingOrchestrator();
-  const orchestrationDecision = await orchestrator.prepareRun({
-    channel: 'twilio',
-    conversationId: conversation.id,
+  const orchestrationDecision = await orchestrator.prepareRunWithAdapter({
+    adapter,
     userRequest: body,
     isCommand: Boolean(activeCommand),
   });
@@ -371,9 +395,8 @@ export async function processTwilioMessage(
   while (runContext) {
     const progressContext = buildProgressContext({
       conversationId: conversation.id,
-      phoneNumber: from,
       conversationManager,
-      twilioClient,
+      adapter,
       canEmitProgress: runContext.canEmitProgress,
     });
 
@@ -415,7 +438,7 @@ export async function processTwilioMessage(
 
     if (result.response && await runContext.isRunCurrent()) {
       try {
-        const { messageSid: twilioResponseSid } = await twilioClient.sendMessage(from, result.response);
+        const { externalId: twilioResponseSid } = await adapter.sendFinal(result.response);
         const outboundMetadata = buildOrchestrationMessageMetadata(
           runContext,
           result.metadata != null && typeof result.metadata === 'object' && !Array.isArray(result.metadata)
@@ -544,15 +567,13 @@ async function runExecutiveAgent(
 
 function buildProgressContext({
   conversationId,
-  phoneNumber,
   conversationManager,
-  twilioClient,
+  adapter,
   canEmitProgress,
 }: {
   conversationId: string;
-  phoneNumber: string;
   conversationManager: ReturnType<typeof getConversationManager>;
-  twilioClient: ReturnType<typeof getTwilioClient>;
+  adapter: Pick<ChannelAdapter, 'sendProgress'>;
   canEmitProgress?: () => boolean;
 }): ProgressUpdateContext {
   return {
@@ -560,10 +581,7 @@ function buildProgressContext({
     requestId: crypto.randomUUID(),
     conversationId,
     canEmitProgress,
-    sendMessage: async (text) => {
-      const { messageSid } = await twilioClient.sendMessage(phoneNumber, text);
-      return { externalId: messageSid };
-    },
+    sendMessage: adapter.sendProgress,
     persistMessage: async ({ content, metadata, externalId }) => {
       await conversationManager.addMessage(conversationId, {
         content,
@@ -580,12 +598,14 @@ function buildWebProgressContext({
   conversationId,
   conversationManager,
   emitWebProgress,
+  adapter,
   requestId,
   canEmitProgress,
 }: {
   conversationId: string;
   conversationManager: ReturnType<typeof getConversationManager>;
   emitWebProgress: (event: ProgressUpdateEvent) => Promise<void> | void;
+  adapter: Pick<ChannelAdapter, 'sendProgress'>;
   requestId?: string;
   canEmitProgress?: () => boolean;
 }): ProgressUpdateContext {
@@ -594,6 +614,7 @@ function buildWebProgressContext({
     requestId: requestId ?? crypto.randomUUID(),
     conversationId,
     canEmitProgress,
+    sendMessage: adapter.sendProgress,
     emitWebProgress,
     persistMessage: async ({ content, metadata }) => {
       await conversationManager.addMessage(conversationId, {
@@ -629,18 +650,34 @@ export async function processWebChatMessage(
 
   // Use a synthetic phone number for web chat conversations
   const webPhoneNumber = 'web-test';
+  let activeConversationId = '';
+
+  const adapter: ChannelAdapter = {
+    channel: 'web',
+    conversationId: () => activeConversationId,
+    messageIdForDedupe: () => null,
+    persistInbound: async () => {
+      if (!activeConversationId) {
+        throw new Error('web_inbound_persist_missing_conversation_id');
+      }
+      await conversationManager.addMessage(activeConversationId, {
+        content: message,
+        role: 'USER',
+        direction: 'INBOUND',
+      });
+    },
+    sendFinal: async () => ({}),
+    sendProgress: async () => ({}),
+  };
 
   logger.info(`[messageProcessor] Processing web chat: userId=${userId.slice(0, 8)}...`);
 
   // Get or create conversation
   const conversation = await conversationManager.getOrCreateConversation(userId, webPhoneNumber);
+  activeConversationId = conversation.id;
 
   // Add user message to the conversation
-  await conversationManager.addMessage(conversation.id, {
-    content: message,
-    role: 'USER',
-    direction: 'INBOUND',
-  });
+  await adapter.persistInbound();
 
   let activeCommand: Command = detectCommand(message);
   if (activeCommand) {
@@ -648,9 +685,8 @@ export async function processWebChatMessage(
   }
 
   const orchestrator = getMessagingOrchestrator();
-  const orchestrationDecision = await orchestrator.prepareRun({
-    channel: 'web',
-    conversationId: conversation.id,
+  const orchestrationDecision = await orchestrator.prepareRunWithAdapter({
+    adapter,
     userRequest: message,
     isCommand: Boolean(activeCommand),
   });
@@ -669,6 +705,7 @@ export async function processWebChatMessage(
           conversationId: conversation.id,
           conversationManager,
           emitWebProgress: options.onProgress,
+          adapter,
           requestId: options.requestId,
           canEmitProgress: runContext.canEmitProgress,
         })
@@ -711,6 +748,7 @@ export async function processWebChatMessage(
     }
 
     if (result.response && await runContext.isRunCurrent()) {
+      await adapter.sendFinal(result.response);
       const outboundMetadata = buildOrchestrationMessageMetadata(
         runContext,
         result.metadata != null && typeof result.metadata === 'object' && !Array.isArray(result.metadata)
