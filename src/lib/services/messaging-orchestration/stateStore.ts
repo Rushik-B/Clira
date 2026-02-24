@@ -4,6 +4,8 @@ import redisConnection, { isRedisConnected } from '@/lib/services/utils/redis';
 import type {
   BurstState,
   OrchestrationChannel,
+  RunPhase,
+  SteerEvent,
 } from './types';
 import {
   EA_STATE_TTL_SECONDS,
@@ -29,6 +31,7 @@ function createDefaultState(): BurstState {
     burstId: crypto.randomUUID(),
     activeRunId: null,
     activeRevision: null,
+    activeRunPhase: 'running',
     revision: 0,
     windowEndsAt: 0,
     pendingCount: 0,
@@ -37,11 +40,55 @@ function createDefaultState(): BurstState {
     classifierDecision: null,
     queuedIntentText: null,
     queuedRevision: null,
+    steerSeq: 0,
+    steerMailbox: [],
+    steerDroppedSummary: [],
     updatedAt: now,
   };
 }
 
-function parseState(raw: string | null): BurstState {
+function normalizeRunPhase(value: unknown, fallback: RunPhase): RunPhase {
+  if (value === 'running' || value === 'commit_boundary' || value === 'completed') {
+    return value;
+  }
+  return fallback;
+}
+
+function parseSteerEvent(value: unknown): SteerEvent | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const seq = typeof record.seq === 'number' ? record.seq : null;
+  const revision = typeof record.revision === 'number' ? record.revision : null;
+  const receivedAt = typeof record.receivedAt === 'number' ? record.receivedAt : null;
+  const text = typeof record.text === 'string' ? record.text : null;
+  const decision = record.decision;
+  const confidence = typeof record.confidence === 'number' ? record.confidence : null;
+
+  if (
+    seq === null ||
+    revision === null ||
+    receivedAt === null ||
+    text === null ||
+    confidence === null
+  ) {
+    return null;
+  }
+
+  if (!(decision === 'supersede' || decision === 'followup' || decision === 'ambiguous')) {
+    return null;
+  }
+
+  return {
+    seq,
+    revision,
+    receivedAt,
+    text,
+    decision,
+    confidence,
+  };
+}
+
+export function parseBurstState(raw: string | null): BurstState {
   if (!raw) return createDefaultState();
 
   try {
@@ -54,6 +101,9 @@ function parseState(raw: string | null): BurstState {
       droppedSummary: Array.isArray(parsed.droppedSummary)
         ? parsed.droppedSummary.filter((item): item is string => typeof item === 'string')
         : defaults.droppedSummary,
+      steerDroppedSummary: Array.isArray(parsed.steerDroppedSummary)
+        ? parsed.steerDroppedSummary.filter((item): item is string => typeof item === 'string')
+        : defaults.steerDroppedSummary,
       classifierDecision:
         parsed.classifierDecision === 'supersede' ||
         parsed.classifierDecision === 'followup' ||
@@ -62,9 +112,16 @@ function parseState(raw: string | null): BurstState {
           : null,
       activeRunId: typeof parsed.activeRunId === 'string' ? parsed.activeRunId : null,
       activeRevision: typeof parsed.activeRevision === 'number' ? parsed.activeRevision : null,
+      activeRunPhase: normalizeRunPhase(parsed.activeRunPhase as unknown, defaults.activeRunPhase),
       queuedIntentText: typeof parsed.queuedIntentText === 'string' ? parsed.queuedIntentText : null,
       queuedRevision: typeof parsed.queuedRevision === 'number' ? parsed.queuedRevision : null,
       latestIntentText: typeof parsed.latestIntentText === 'string' ? parsed.latestIntentText : '',
+      steerSeq: typeof parsed.steerSeq === 'number' ? parsed.steerSeq : defaults.steerSeq,
+      steerMailbox: Array.isArray(parsed.steerMailbox)
+        ? parsed.steerMailbox
+            .map(parseSteerEvent)
+            .filter((item): item is SteerEvent => item !== null)
+        : defaults.steerMailbox,
       updatedAt: typeof parsed.updatedAt === 'number' ? parsed.updatedAt : defaults.updatedAt,
     };
   } catch (error) {
@@ -104,7 +161,7 @@ export function buildConversationKey(
 export async function readBurstState(conversationKey: string): Promise<BurstState> {
   await ensureRedisReady();
   const raw = await redisConnection.get(stateKey(conversationKey));
-  return parseState(raw);
+  return parseBurstState(raw);
 }
 
 export async function writeBurstState(
@@ -136,7 +193,7 @@ export async function updateBurstState(
     await redisConnection.watch(key);
 
     try {
-      const previous = parseState(await redisConnection.get(key));
+      const previous = parseBurstState(await redisConnection.get(key));
       const current = {
         ...updater(previous),
         updatedAt: Date.now(),
