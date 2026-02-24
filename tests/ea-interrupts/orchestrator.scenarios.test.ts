@@ -42,6 +42,7 @@ function createHarness(params?: {
     burstId: createId(),
     activeRunId: null,
     activeRevision: null,
+    activeRunPhase: 'running',
     revision: 0,
     windowEndsAt: 0,
     pendingCount: 0,
@@ -50,6 +51,9 @@ function createHarness(params?: {
     classifierDecision: null,
     queuedIntentText: null,
     queuedRevision: null,
+    steerSeq: 0,
+    steerMailbox: [],
+    steerDroppedSummary: [],
     updatedAt: now,
   });
 
@@ -91,6 +95,30 @@ function createHarness(params?: {
     getState: (channel: OrchestrationChannel, conversationId: string) =>
       structuredClone(getOrInitState(`${channel}:${conversationId}`)),
   };
+}
+
+async function withEnv<T>(vars: Record<string, string | undefined>, run: () => Promise<T>): Promise<T> {
+  const prev: Record<string, string | undefined> = {};
+  for (const [key, value] of Object.entries(vars)) {
+    prev[key] = process.env[key];
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
+
+  try {
+    return await run();
+  } finally {
+    for (const [key, value] of Object.entries(prev)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
 }
 
 test('scenario 1: single start uses micro-buffer and starts run', async () => {
@@ -165,6 +193,116 @@ test('scenario 3: unrelated followup queues until finalize', async () => {
   const finalized = await harness.orchestrator.finalizeRun({ runContext: first.runContext });
   assert.ok(finalized.nextRun);
   assert.equal(finalized.nextRun?.userRequest, 'Also check calendar conflicts');
+});
+
+test('scenario 7: cooperative steering enqueues in-run steer event (ambiguous >= 0.65)', async () => {
+  await withEnv({ EA_STEER_COOPERATIVE: 'true' }, async () => {
+    const harness = createHarness({
+      classify: ({ incomingText }) => ({
+        decision: 'ambiguous',
+        confidence: 0.7,
+        explanation: 'likely correction',
+        latestIntentText: incomingText,
+      }),
+    });
+
+    const first = await harness.orchestrator.prepareRun({
+      channel: 'twilio',
+      conversationId: 'conv-7',
+      userRequest: 'Draft to Alex',
+    });
+    assert.equal(first.kind, 'start');
+
+    const steer = await harness.orchestrator.prepareRun({
+      channel: 'twilio',
+      conversationId: 'conv-7',
+      userRequest: 'actually, keep it shorter',
+    });
+
+    assert.equal(steer.kind, 'skip');
+    assert.equal(steer.reason, 'steered_in_run');
+    assert.equal(await first.runContext.isRunCurrent(), true);
+
+    const consumed = await first.runContext.consumeSteerEvents(0);
+    assert.equal(consumed.events.length, 1);
+    assert.equal(consumed.events[0]?.text, 'actually, keep it shorter');
+    assert.equal(consumed.nextSeq, consumed.events[0]?.seq);
+    assert.equal(await first.runContext.hasPendingSteer(0), false);
+  });
+});
+
+test('scenario 8: commit-boundary blocks steering and queues followup', async () => {
+  await withEnv({ EA_STEER_COOPERATIVE: 'true' }, async () => {
+    const harness = createHarness({
+      classify: ({ incomingText }) => ({
+        decision: 'ambiguous',
+        confidence: 0.7,
+        explanation: 'likely correction',
+        latestIntentText: incomingText,
+      }),
+    });
+
+    const first = await harness.orchestrator.prepareRun({
+      channel: 'twilio',
+      conversationId: 'conv-8',
+      userRequest: 'Draft to Alex',
+    });
+    assert.equal(first.kind, 'start');
+
+    await first.runContext.markRunPhase('commit_boundary');
+
+    const incoming = await harness.orchestrator.prepareRun({
+      channel: 'twilio',
+      conversationId: 'conv-8',
+      userRequest: 'actually, add a line about the deadline',
+    });
+
+    assert.equal(incoming.kind, 'skip');
+    assert.equal(incoming.reason, 'queued_followup');
+  });
+});
+
+test('scenario 9: steer mailbox caps and summarizes overflow deterministically', async () => {
+  await withEnv({ EA_STEER_COOPERATIVE: 'true', EA_STEER_MAILBOX_CAP: '2' }, async () => {
+    const harness = createHarness({
+      classify: ({ incomingText }) => ({
+        decision: 'ambiguous',
+        confidence: 0.7,
+        explanation: 'likely correction',
+        latestIntentText: incomingText,
+      }),
+    });
+
+    const first = await harness.orchestrator.prepareRun({
+      channel: 'twilio',
+      conversationId: 'conv-9',
+      userRequest: 'Draft to Alex',
+    });
+    assert.equal(first.kind, 'start');
+
+    for (const msg of ['msg-1', 'msg-2', 'msg-3', 'msg-4']) {
+      const decision = await harness.orchestrator.prepareRun({
+        channel: 'twilio',
+        conversationId: 'conv-9',
+        userRequest: msg,
+      });
+      assert.equal(decision.kind, 'skip');
+      assert.equal(decision.reason, 'steered_in_run');
+    }
+
+    const state = harness.getState('twilio', 'conv-9');
+    assert.equal(state.steerSeq, 4);
+    assert.equal(state.steerMailbox.length, 2);
+    assert.equal(state.steerDroppedSummary.length, 2);
+    assert.deepEqual(
+      state.steerMailbox.map((e) => e.text),
+      ['msg-3', 'msg-4'],
+    );
+
+    const consumed = await first.runContext.consumeSteerEvents(0);
+    assert.equal(consumed.events.length, 2);
+    assert.equal(consumed.droppedSummary.length, 2);
+  });
 });
 
 test('scenario 4: command bypass supersedes active run immediately', async () => {
