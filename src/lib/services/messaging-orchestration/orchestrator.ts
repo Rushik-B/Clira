@@ -331,11 +331,22 @@ export class MessagingOrchestrator {
 
       const cooperativeSteeringEnabled = isCooperativeSteeringEnabled(channel);
       const activeRunPhase = stateAfterInbound.activeRunPhase ?? 'running';
+      const steerCandidateDecision = shouldSteerInRun(classifierDecision, { runPhase: 'running' });
 
-      if (
-        cooperativeSteeringEnabled &&
-        shouldSteerInRun(classifierDecision, { runPhase: activeRunPhase })
-      ) {
+      if (cooperativeSteeringEnabled && steerCandidateDecision && activeRunPhase === 'commit_boundary') {
+        this.deps.emitEvent('orchestrator.steer.blocked_commit_boundary', {
+          channel,
+          conversationId,
+          conversationKey,
+          runId: stateAfterInbound.activeRunId,
+          burstId: stateAfterInbound.burstId,
+          runPhase: activeRunPhase,
+          decision: classifierDecision.decision,
+          confidence: classifierDecision.confidence,
+        });
+      }
+
+      if (cooperativeSteeringEnabled && steerCandidateDecision && activeRunPhase === 'running') {
         const cap = getSteerMailboxCap();
         const appendedAt = this.deps.now();
         const { current } = await this.deps.updateState(conversationKey, (state) => {
@@ -503,7 +514,7 @@ export class MessagingOrchestrator {
       };
     }
 
-    await this.deps.updateState(conversationKey, (current) => {
+    const { previous, current } = await this.deps.updateState(conversationKey, (current) => {
       if (current.activeRunId !== runContext.runId || current.activeRevision !== runContext.revision) {
         return current;
       }
@@ -520,6 +531,24 @@ export class MessagingOrchestrator {
         steerDroppedSummary: [],
       };
     });
+
+    if (
+      previous.activeRunId === runContext.runId &&
+      previous.activeRevision === runContext.revision &&
+      previous.activeRunPhase !== current.activeRunPhase &&
+      current.activeRunPhase === 'completed'
+    ) {
+      this.deps.emitEvent('orchestrator.run.phase.changed', {
+        channel: runContext.channel,
+        conversationId: runContext.conversationId,
+        conversationKey,
+        runId: runContext.runId,
+        burstId: runContext.burstId,
+        fromPhase: previous.activeRunPhase,
+        toPhase: current.activeRunPhase,
+        reason: 'finalize_run',
+      });
+    }
 
     this.clearLocalRun(conversationKey, runContext.runId);
     return {};
@@ -663,12 +692,16 @@ export class MessagingOrchestrator {
         let consumed: SteerEvent[] = [];
         let droppedSummary: string[] = [];
         let nextSeq = afterSeq;
+        let burstId = record.burstId;
+        let runPhase: RunPhase = local.runPhase;
 
         await this.deps.updateState(record.conversationKey, (state) => {
           if (state.activeRunId !== record.runId || state.activeRevision !== record.revision) {
             return state;
           }
 
+          burstId = state.burstId;
+          runPhase = state.activeRunPhase ?? runPhase;
           const mailbox = Array.isArray(state.steerMailbox) ? state.steerMailbox : [];
           consumed = mailbox.filter((event) => event.seq > afterSeq);
           droppedSummary = Array.isArray(state.steerDroppedSummary) ? state.steerDroppedSummary : [];
@@ -683,6 +716,21 @@ export class MessagingOrchestrator {
             steerDroppedSummary: [],
           };
         });
+
+        if (consumed.length > 0 || droppedSummary.length > 0) {
+          this.deps.emitEvent('orchestrator.steer.applied', {
+            channel: record.channel,
+            conversationId: record.conversationId,
+            conversationKey: record.conversationKey,
+            runId: record.runId,
+            burstId,
+            runPhase,
+            fromSeq: afterSeq,
+            toSeq: nextSeq,
+            appliedEvents: consumed.length,
+            appliedDroppedSummary: droppedSummary.length,
+          });
+        }
 
         return { events: consumed, nextSeq, droppedSummary };
       },
@@ -713,13 +761,26 @@ export class MessagingOrchestrator {
           return;
         }
 
+        const previousLocalPhase = local.runPhase;
         local.runPhase = phase;
 
         if (!isEnabled(record.channel)) {
+          if (previousLocalPhase !== phase) {
+            this.deps.emitEvent('orchestrator.run.phase.changed', {
+              channel: record.channel,
+              conversationId: record.conversationId,
+              conversationKey: record.conversationKey,
+              runId: record.runId,
+              burstId: record.burstId,
+              fromPhase: previousLocalPhase,
+              toPhase: phase,
+              reason: 'mark_run_phase',
+            });
+          }
           return;
         }
 
-        await this.deps.updateState(record.conversationKey, (state) => {
+        const { previous, current } = await this.deps.updateState(record.conversationKey, (state) => {
           if (state.activeRunId !== record.runId || state.activeRevision !== record.revision) {
             return state;
           }
@@ -729,6 +790,23 @@ export class MessagingOrchestrator {
             activeRunPhase: phase,
           };
         });
+
+        if (
+          previous.activeRunId === record.runId &&
+          previous.activeRevision === record.revision &&
+          previous.activeRunPhase !== current.activeRunPhase
+        ) {
+          this.deps.emitEvent('orchestrator.run.phase.changed', {
+            channel: record.channel,
+            conversationId: record.conversationId,
+            conversationKey: record.conversationKey,
+            runId: record.runId,
+            burstId: current.burstId,
+            fromPhase: previous.activeRunPhase,
+            toPhase: current.activeRunPhase,
+            reason: 'mark_run_phase',
+          });
+        }
       },
       getRunPhase: async () => {
         const local = this.localRuns.get(record.conversationKey);

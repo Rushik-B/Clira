@@ -10,6 +10,9 @@ type OrchestratorEventName =
   | 'orchestrator.classifier.decision'
   | 'orchestrator.queue.overflow_summary'
   | 'orchestrator.steer.enqueued'
+  | 'orchestrator.steer.applied'
+  | 'orchestrator.steer.blocked_commit_boundary'
+  | 'orchestrator.run.phase.changed'
   | 'orchestrator.final.sent';
 
 type EventPayload = Record<string, unknown>;
