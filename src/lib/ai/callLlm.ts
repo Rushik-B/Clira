@@ -36,6 +36,21 @@ type ToolBudgetState = {
   perTool: Map<string, number>;
 };
 
+export type ToolBudgetReport = {
+  totalCalls: number;
+  perTool: Record<string, number>;
+  maxToolCallsTotal?: number;
+  maxToolCallsPerTool?: Record<string, number>;
+  deadlineMs?: number;
+};
+
+export type ToolBudgetController = {
+  tools: Record<string, ToolDefinition>;
+  state: ToolBudgetState;
+  config?: ToolBudgetOptions;
+  report: () => ToolBudgetReport | undefined;
+};
+
 type ToolBudgetExceededResult = {
   ok: false;
   error: 'tool_budget_exceeded' | 'deadline_exceeded';
@@ -127,16 +142,20 @@ function wrapToolsWithBudgets({
   budgets,
   timeLeftMs,
   op,
+  state: existingState,
 }: {
   tools: Record<string, ToolDefinition>;
   budgets?: ToolBudgetOptions;
   timeLeftMs: () => number | null;
   op: string;
+  state?: ToolBudgetState;
 }): { tools: Record<string, ToolDefinition>; state: ToolBudgetState } {
-  const state: ToolBudgetState = {
-    totalCalls: 0,
-    perTool: new Map<string, number>(),
-  };
+  const state: ToolBudgetState =
+    existingState ??
+    ({
+      totalCalls: 0,
+      perTool: new Map<string, number>(),
+    } satisfies ToolBudgetState);
 
   const hasBudgets =
     typeof budgets?.maxToolCallsTotal === 'number' ||
@@ -239,6 +258,51 @@ function wrapToolsWithBudgets({
   }
 
   return { tools: budgetedTools, state };
+}
+
+export function createToolBudgetController(params: {
+  tools: Record<string, ToolDefinition>;
+  maxToolCallsTotal?: number;
+  maxToolCallsPerTool?: Record<string, number>;
+  deadlineMs?: number;
+  timeLeftMs: () => number | null;
+  op: string;
+}): ToolBudgetController {
+  const hasBudgetConfig =
+    typeof params.maxToolCallsTotal === 'number' ||
+    typeof params.deadlineMs === 'number' ||
+    !!params.maxToolCallsPerTool;
+
+  const config: ToolBudgetOptions | undefined = hasBudgetConfig
+    ? {
+        maxToolCallsTotal: params.maxToolCallsTotal,
+        maxToolCallsPerTool: params.maxToolCallsPerTool,
+        deadlineMs: params.deadlineMs,
+      }
+    : undefined;
+
+  const { tools: budgetedTools, state } = wrapToolsWithBudgets({
+    tools: params.tools,
+    budgets: config,
+    timeLeftMs: params.timeLeftMs,
+    op: params.op,
+  });
+
+  return {
+    tools: budgetedTools,
+    state,
+    config,
+    report: () => {
+      if (!config) return undefined;
+      return {
+        totalCalls: state.totalCalls,
+        perTool: Object.fromEntries(state.perTool.entries()),
+        maxToolCallsTotal: config.maxToolCallsTotal,
+        maxToolCallsPerTool: config.maxToolCallsPerTool,
+        deadlineMs: config.deadlineMs,
+      };
+    },
+  };
 }
 
 export async function callText({
@@ -398,13 +462,13 @@ export async function callTextWithTools({
         toolCalls,
         toolResults,
         toolBudget: budgetConfig
-          ? {
+          ? ({
               totalCalls: budgetState.totalCalls,
               perTool: Object.fromEntries(budgetState.perTool.entries()),
               maxToolCallsTotal: budgetConfig.maxToolCallsTotal,
               maxToolCallsPerTool: budgetConfig.maxToolCallsPerTool,
               deadlineMs: budgetConfig.deadlineMs,
-            }
+            } satisfies ToolBudgetReport)
           : undefined,
       };
     } catch (err) {
@@ -418,6 +482,85 @@ export async function callTextWithTools({
       throw err;
     } finally {
       cleanup();
+    }
+  };
+
+  return withConcurrency(() => withRetry(exec, retry), {
+    key: concurrency?.key ?? op,
+    maxConcurrency: concurrency?.maxConcurrency,
+  });
+}
+
+export async function callTextWithToolsStep({
+  model,
+  system,
+  messages,
+  tools,
+  stopWhen,
+  temperature = 0.3,
+  abortSignal,
+  op = 'agent.step',
+  concurrency,
+  retry,
+  providerOptions,
+}: LlmOptions & {
+  messages: any[];
+  tools: any;
+  stopWhen?: any;
+}) {
+  const exec = async () => {
+    const start = Date.now();
+    const messageCount = Array.isArray(messages) ? messages.length : 0;
+    const systemChars = system?.length ?? 0;
+    const modelLabelStart = typeof model === 'string' ? model : 'unknown';
+
+    logger.info(
+      `🚀 [llm] start op=${op} model=${modelLabelStart} messages=${messageCount} sys=${systemChars} temp=${temperature} steps=1`,
+    );
+
+    try {
+      const stepCap = stepCountIs(1);
+      const composedStopWhen = stopWhen
+        ? [stepCap, ...(Array.isArray(stopWhen) ? stopWhen : [stopWhen])]
+        : stepCap;
+
+      const result = await generateText({
+        model,
+        system,
+        messages,
+        temperature,
+        tools,
+        stopWhen: composedStopWhen,
+        abortSignal,
+        providerOptions,
+      } as any);
+
+      const { text, usage, totalUsage, response, steps, toolCalls, toolResults } = result as any;
+      const dur = Date.now() - start;
+      const modelId = (response && (response as any).modelId) || modelLabelStart;
+      const u = totalUsage ?? usage;
+
+      logger.info(
+        `✅ [llm] done op=${op} model=${modelId} 🔢 in=${u?.inputTokens ?? '-'} out=${u?.outputTokens ?? '-'} total=${u?.totalTokens ?? '-'} ⏱️ ${dur}ms`,
+      );
+
+      return {
+        text,
+        usage: u,
+        steps,
+        toolCalls,
+        toolResults,
+        responseMessages: (response && (response as any).messages) || [],
+      };
+    } catch (err) {
+      const dur = Date.now() - start;
+      const usage = (err as any)?.usage;
+      const response = (err as any)?.response;
+      const modelId = (response && (response as any).modelId) || modelLabelStart;
+      logger.warn(
+        `❌ [llm] fail op=${op} model=${modelId} 🔢 in=${usage?.inputTokens ?? '-'} out=${usage?.outputTokens ?? '-'} total=${usage?.totalTokens ?? '-'} ⏱️ ${dur}ms reason=${(err as any)?.code ?? (err as any)?.name ?? 'error'}`,
+      );
+      throw err;
     }
   };
 
