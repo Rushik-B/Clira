@@ -1,14 +1,13 @@
 import crypto from 'crypto';
 import { logger } from '@/lib/logger';
-import {
-  buildConversationKey,
-  readBurstState,
-  updateBurstState,
-} from './stateStore';
 import { classifyMessageRelevance } from './relevanceClassifier';
 import { emitOrchestratorEvent } from './observability';
+import {
+  ensureAdapterChannel,
+} from './channelAdapters';
 import type {
   BurstState,
+  ChannelAdapter,
   FinalizeResult,
   FinalizeRunParams,
   OrchestrationDecision,
@@ -26,6 +25,9 @@ import {
   EA_SUPERSEDE_CONFIDENCE_MIN,
 } from './types';
 
+type OrchestratorEventName = Parameters<typeof emitOrchestratorEvent>[0];
+type OrchestratorEventPayload = Parameters<typeof emitOrchestratorEvent>[1];
+
 type LocalRunRecord = {
   runId: string;
   revision: number;
@@ -42,7 +44,18 @@ type LocalRunRecord = {
   stale: boolean;
 };
 
-const localRuns = new Map<string, LocalRunRecord>();
+type MessagingOrchestratorDependencies = {
+  now: () => number;
+  sleep: (ms: number) => Promise<void>;
+  createId: () => string;
+  readState: (conversationKey: string) => Promise<BurstState>;
+  updateState: (
+    conversationKey: string,
+    updater: (state: BurstState) => BurstState,
+  ) => Promise<{ previous: BurstState; current: BurstState }>;
+  classify: typeof classifyMessageRelevance;
+  emitEvent: (event: OrchestratorEventName, payload: OrchestratorEventPayload) => void;
+};
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -91,158 +104,60 @@ function isBenignStartConflict(error: unknown): boolean {
   );
 }
 
-function applyInboundToState(
-  state: BurstState,
-  userRequest: string,
-): BurstState {
-  const now = Date.now();
-  const next = { ...state };
-
-  if (!next.activeRunId && now > next.windowEndsAt) {
-    next.burstId = crypto.randomUUID();
-    next.pendingCount = 0;
-    next.droppedSummary = [];
-    next.queuedIntentText = null;
-    next.queuedRevision = null;
-  }
-
-  next.revision += 1;
-  next.windowEndsAt = now + EA_STEER_WINDOW_MS;
-  next.pendingCount += 1;
-
-  if (next.pendingCount > EA_QUEUE_CAP) {
-    next.pendingCount = EA_QUEUE_CAP;
-    next.droppedSummary = [
-      ...next.droppedSummary.slice(-(EA_QUEUE_CAP - 1)),
-      summarizeDroppedMessage(userRequest),
-    ];
-  }
-
-  return next;
+function buildConversationKey(
+  channel: OrchestrationChannel,
+  conversationId: string,
+): string {
+  return `${channel}:${conversationId}`;
 }
 
-function markLocalRunQueued(
+async function defaultReadState(conversationKey: string): Promise<BurstState> {
+  const { readBurstState } = await import('./stateStore');
+  return readBurstState(conversationKey);
+}
+
+async function defaultUpdateState(
   conversationKey: string,
-  runId: string,
-  windowEndsAt: number,
-): void {
-  const active = localRuns.get(conversationKey);
-  if (!active || active.runId !== runId) return;
-
-  active.hasQueuedFollowup = true;
-  active.windowEndsAt = windowEndsAt;
-}
-
-function clearLocalRun(conversationKey: string, runId: string): void {
-  const active = localRuns.get(conversationKey);
-  if (!active || active.runId !== runId) return;
-  localRuns.delete(conversationKey);
-}
-
-function abortLocalRun(
-  conversationKey: string,
-  runId: string,
-  reason: string,
-): void {
-  const active = localRuns.get(conversationKey);
-  if (!active || active.runId !== runId) return;
-
-  active.stale = true;
-  active.abortController.abort(reason);
-  localRuns.delete(conversationKey);
-}
-
-function buildRunContext(record: LocalRunRecord): RunContext {
-  return {
-    runId: record.runId,
-    burstId: record.burstId,
-    revision: record.revision,
-    channel: record.channel,
-    conversationId: record.conversationId,
-    conversationKey: record.conversationKey,
-    classifierDecision: record.classifierDecision,
-    droppedSummary: record.droppedSummary,
-    abortSignal: record.abortController.signal,
-    isRunCurrent: async () => {
-      const local = localRuns.get(record.conversationKey);
-      if (!local || local.runId !== record.runId || local.stale) {
-        return false;
-      }
-
-      if (!isEnabled(record.channel)) {
-        return true;
-      }
-
-      const state = await readBurstState(record.conversationKey);
-      return state.activeRunId === record.runId && state.activeRevision === record.revision;
-    },
-    isBurstStable: () => {
-      const local = localRuns.get(record.conversationKey);
-      if (!local || local.runId !== record.runId || local.stale) {
-        return false;
-      }
-
-      return Date.now() >= local.windowEndsAt && !local.hasQueuedFollowup;
-    },
-    canEmitProgress: () => {
-      const local = localRuns.get(record.conversationKey);
-      if (!local || local.runId !== record.runId || local.stale) {
-        return false;
-      }
-
-      return (
-        (Date.now() >= local.windowEndsAt && !local.hasQueuedFollowup) ||
-        Date.now() - local.startedAt >= EA_LONG_TASK_PROGRESS_MS
-      );
-    },
-  };
-}
-
-function registerLocalRun(params: {
-  channel: OrchestrationChannel;
-  conversationId: string;
-  conversationKey: string;
-  runId: string;
-  revision: number;
-  burstId: string;
-  windowEndsAt: number;
-  classifierDecision: RelevanceClassification['decision'] | null;
-  droppedSummary: string[];
-}): RunContext {
-  const previous = localRuns.get(params.conversationKey);
-  if (previous && previous.runId !== params.runId) {
-    emitOrchestratorEvent('orchestrator.run.superseded', {
-      channel: params.channel,
-      conversationId: params.conversationId,
-      conversationKey: params.conversationKey,
-      supersededRunId: previous.runId,
-      replacementRunId: params.runId,
-      reason: 'superseded_by_new_run',
-    });
-    abortLocalRun(params.conversationKey, previous.runId, 'superseded_by_new_run');
-  }
-
-  const record: LocalRunRecord = {
-    runId: params.runId,
-    revision: params.revision,
-    burstId: params.burstId,
-    channel: params.channel,
-    conversationId: params.conversationId,
-    conversationKey: params.conversationKey,
-    abortController: new AbortController(),
-    startedAt: Date.now(),
-    windowEndsAt: params.windowEndsAt,
-    hasQueuedFollowup: false,
-    classifierDecision: params.classifierDecision,
-    droppedSummary: [...params.droppedSummary],
-    stale: false,
-  };
-
-  localRuns.set(params.conversationKey, record);
-  return buildRunContext(record);
+  updater: (state: BurstState) => BurstState,
+): Promise<{ previous: BurstState; current: BurstState }> {
+  const { updateBurstState } = await import('./stateStore');
+  return updateBurstState(conversationKey, updater);
 }
 
 export class MessagingOrchestrator {
+  private readonly deps: MessagingOrchestratorDependencies;
+
+  private readonly localRuns = new Map<string, LocalRunRecord>();
+
+  constructor(overrides: Partial<MessagingOrchestratorDependencies> = {}) {
+    this.deps = {
+      now: Date.now,
+      sleep,
+      createId: () => crypto.randomUUID(),
+      readState: defaultReadState,
+      updateState: defaultUpdateState,
+      classify: classifyMessageRelevance,
+      emitEvent: emitOrchestratorEvent,
+      ...overrides,
+    };
+  }
+
+  async prepareRunWithAdapter(params: {
+    adapter: Pick<ChannelAdapter, 'channel' | 'conversationId'>;
+    userRequest: string;
+    isCommand?: boolean;
+  }): Promise<OrchestrationDecision> {
+    const conversationId = params.adapter.conversationId();
+    ensureAdapterChannel(params.adapter.channel, params.adapter);
+
+    return this.prepareRun({
+      channel: params.adapter.channel,
+      conversationId,
+      userRequest: params.userRequest,
+      isCommand: params.isCommand,
+    });
+  }
+
   async prepareRun(params: PrepareRunParams): Promise<OrchestrationDecision> {
     const channel = params.channel;
     const conversationId = params.conversationId;
@@ -250,15 +165,15 @@ export class MessagingOrchestrator {
     const userRequest = normalizeUserRequest(params.userRequest);
 
     if (!isEnabled(channel)) {
-      const runId = crypto.randomUUID();
-      const runContext = registerLocalRun({
+      const runId = this.deps.createId();
+      const runContext = this.registerLocalRun({
         channel,
         conversationId,
         conversationKey,
         runId,
-        revision: Date.now(),
-        burstId: crypto.randomUUID(),
-        windowEndsAt: Date.now(),
+        revision: this.deps.now(),
+        burstId: this.deps.createId(),
+        windowEndsAt: this.deps.now(),
         classifierDecision: null,
         droppedSummary: [],
       });
@@ -270,12 +185,13 @@ export class MessagingOrchestrator {
       };
     }
 
-    const { previous: stateBeforeInbound, current: stateAfterInbound } = await updateBurstState(conversationKey, (state) =>
-      applyInboundToState(state, userRequest),
+    const { previous: stateBeforeInbound, current: stateAfterInbound } = await this.deps.updateState(
+      conversationKey,
+      (state) => this.applyInboundToState(state, userRequest),
     );
 
     if (stateBeforeInbound.burstId !== stateAfterInbound.burstId) {
-      emitOrchestratorEvent('orchestrator.burst.started', {
+      this.deps.emitEvent('orchestrator.burst.started', {
         channel,
         conversationId,
         conversationKey,
@@ -288,7 +204,7 @@ export class MessagingOrchestrator {
       const overflowEntries = stateAfterInbound.droppedSummary.slice(
         stateBeforeInbound.droppedSummary.length,
       );
-      emitOrchestratorEvent('orchestrator.queue.overflow_summary', {
+      this.deps.emitEvent('orchestrator.queue.overflow_summary', {
         channel,
         conversationId,
         conversationKey,
@@ -302,14 +218,14 @@ export class MessagingOrchestrator {
     if (params.isCommand) {
       const activeRunId = stateAfterInbound.activeRunId;
       if (activeRunId) {
-        emitOrchestratorEvent('orchestrator.run.superseded', {
+        this.deps.emitEvent('orchestrator.run.superseded', {
           channel,
           conversationId,
           conversationKey,
           supersededRunId: activeRunId,
           reason: 'command_bypass',
         });
-        abortLocalRun(conversationKey, activeRunId, 'superseded_by_command');
+        this.abortLocalRun(conversationKey, activeRunId, 'superseded_by_command');
       }
 
       const start = await this.startRun({
@@ -341,12 +257,12 @@ export class MessagingOrchestrator {
     }
 
     if (stateAfterInbound.activeRunId) {
-      const classifierDecision = await classifyMessageRelevance({
+      const classifierDecision = await this.deps.classify({
         activeIntentText: stateAfterInbound.latestIntentText,
         incomingText: userRequest,
       });
 
-      emitOrchestratorEvent('orchestrator.classifier.decision', {
+      this.deps.emitEvent('orchestrator.classifier.decision', {
         channel,
         conversationId,
         conversationKey,
@@ -357,7 +273,7 @@ export class MessagingOrchestrator {
       });
 
       if (shouldSupersede(classifierDecision)) {
-        emitOrchestratorEvent('orchestrator.run.superseded', {
+        this.deps.emitEvent('orchestrator.run.superseded', {
           channel,
           conversationId,
           conversationKey,
@@ -366,7 +282,7 @@ export class MessagingOrchestrator {
           decision: classifierDecision.decision,
           confidence: classifierDecision.confidence,
         });
-        abortLocalRun(
+        this.abortLocalRun(
           conversationKey,
           stateAfterInbound.activeRunId,
           'superseded_by_newer_message',
@@ -403,14 +319,14 @@ export class MessagingOrchestrator {
         };
       }
 
-      await updateBurstState(conversationKey, (state) => ({
+      await this.deps.updateState(conversationKey, (state) => ({
         ...state,
         classifierDecision: classifierDecision.decision,
         queuedIntentText: userRequest,
         queuedRevision: state.revision,
       }));
 
-      markLocalRunQueued(
+      this.markLocalRunQueued(
         conversationKey,
         stateAfterInbound.activeRunId,
         stateAfterInbound.windowEndsAt,
@@ -423,9 +339,9 @@ export class MessagingOrchestrator {
       };
     }
 
-    await sleep(EA_MICRO_BUFFER_MS);
+    await this.deps.sleep(EA_MICRO_BUFFER_MS);
 
-    const currentState = await readBurstState(conversationKey);
+    const currentState = await this.deps.readState(conversationKey);
     if (currentState.revision !== stateAfterInbound.revision || currentState.activeRunId) {
       return {
         kind: 'skip',
@@ -466,13 +382,13 @@ export class MessagingOrchestrator {
     const conversationKey = runContext.conversationKey;
 
     if (!isEnabled(runContext.channel)) {
-      clearLocalRun(conversationKey, runContext.runId);
+      this.clearLocalRun(conversationKey, runContext.runId);
       return {};
     }
 
-    const state = await readBurstState(conversationKey);
+    const state = await this.deps.readState(conversationKey);
     if (state.activeRunId !== runContext.runId || state.activeRevision !== runContext.revision) {
-      clearLocalRun(conversationKey, runContext.runId);
+      this.clearLocalRun(conversationKey, runContext.runId);
       return {};
     }
 
@@ -487,7 +403,7 @@ export class MessagingOrchestrator {
         userRequest: queuedText,
         expectedRevision: state.revision,
         forceReplace: true,
-        nextBurstId: crypto.randomUUID(),
+        nextBurstId: this.deps.createId(),
       }).catch((error) => {
         if (isBenignStartConflict(error)) {
           return null;
@@ -495,7 +411,7 @@ export class MessagingOrchestrator {
         throw error;
       });
 
-      clearLocalRun(conversationKey, runContext.runId);
+      this.clearLocalRun(conversationKey, runContext.runId);
       if (!start) {
         return {};
       }
@@ -508,7 +424,7 @@ export class MessagingOrchestrator {
       };
     }
 
-    await updateBurstState(conversationKey, (current) => {
+    await this.deps.updateState(conversationKey, (current) => {
       if (current.activeRunId !== runContext.runId || current.activeRevision !== runContext.revision) {
         return current;
       }
@@ -522,8 +438,159 @@ export class MessagingOrchestrator {
       };
     });
 
-    clearLocalRun(conversationKey, runContext.runId);
+    this.clearLocalRun(conversationKey, runContext.runId);
     return {};
+  }
+
+  private applyInboundToState(
+    state: BurstState,
+    userRequest: string,
+  ): BurstState {
+    const now = this.deps.now();
+    const next = { ...state };
+
+    if (!next.activeRunId && now > next.windowEndsAt) {
+      next.burstId = this.deps.createId();
+      next.pendingCount = 0;
+      next.droppedSummary = [];
+      next.queuedIntentText = null;
+      next.queuedRevision = null;
+    }
+
+    next.revision += 1;
+    next.windowEndsAt = now + EA_STEER_WINDOW_MS;
+    next.pendingCount += 1;
+
+    if (next.pendingCount > EA_QUEUE_CAP) {
+      next.pendingCount = EA_QUEUE_CAP;
+      next.droppedSummary = [
+        ...next.droppedSummary.slice(-(EA_QUEUE_CAP - 1)),
+        summarizeDroppedMessage(userRequest),
+      ];
+    }
+
+    return next;
+  }
+
+  private markLocalRunQueued(
+    conversationKey: string,
+    runId: string,
+    windowEndsAt: number,
+  ): void {
+    const active = this.localRuns.get(conversationKey);
+    if (!active || active.runId !== runId) return;
+
+    active.hasQueuedFollowup = true;
+    active.windowEndsAt = windowEndsAt;
+  }
+
+  private clearLocalRun(conversationKey: string, runId: string): void {
+    const active = this.localRuns.get(conversationKey);
+    if (!active || active.runId !== runId) return;
+    this.localRuns.delete(conversationKey);
+  }
+
+  private abortLocalRun(
+    conversationKey: string,
+    runId: string,
+    reason: string,
+  ): void {
+    const active = this.localRuns.get(conversationKey);
+    if (!active || active.runId !== runId) return;
+
+    active.stale = true;
+    active.abortController.abort(reason);
+    this.localRuns.delete(conversationKey);
+  }
+
+  private buildRunContext(record: LocalRunRecord): RunContext {
+    return {
+      runId: record.runId,
+      burstId: record.burstId,
+      revision: record.revision,
+      channel: record.channel,
+      conversationId: record.conversationId,
+      conversationKey: record.conversationKey,
+      classifierDecision: record.classifierDecision,
+      droppedSummary: record.droppedSummary,
+      abortSignal: record.abortController.signal,
+      isRunCurrent: async () => {
+        const local = this.localRuns.get(record.conversationKey);
+        if (!local || local.runId !== record.runId || local.stale) {
+          return false;
+        }
+
+        if (!isEnabled(record.channel)) {
+          return true;
+        }
+
+        const state = await this.deps.readState(record.conversationKey);
+        return state.activeRunId === record.runId && state.activeRevision === record.revision;
+      },
+      isBurstStable: () => {
+        const local = this.localRuns.get(record.conversationKey);
+        if (!local || local.runId !== record.runId || local.stale) {
+          return false;
+        }
+
+        return this.deps.now() >= local.windowEndsAt && !local.hasQueuedFollowup;
+      },
+      canEmitProgress: () => {
+        const local = this.localRuns.get(record.conversationKey);
+        if (!local || local.runId !== record.runId || local.stale) {
+          return false;
+        }
+
+        return (
+          (this.deps.now() >= local.windowEndsAt && !local.hasQueuedFollowup) ||
+          this.deps.now() - local.startedAt >= EA_LONG_TASK_PROGRESS_MS
+        );
+      },
+    };
+  }
+
+  private registerLocalRun(params: {
+    channel: OrchestrationChannel;
+    conversationId: string;
+    conversationKey: string;
+    runId: string;
+    revision: number;
+    burstId: string;
+    windowEndsAt: number;
+    classifierDecision: RelevanceClassification['decision'] | null;
+    droppedSummary: string[];
+  }): RunContext {
+    const previous = this.localRuns.get(params.conversationKey);
+    if (previous && previous.runId !== params.runId) {
+      this.deps.emitEvent('orchestrator.run.superseded', {
+        channel: params.channel,
+        conversationId: params.conversationId,
+        conversationKey: params.conversationKey,
+        supersededRunId: previous.runId,
+        replacementRunId: params.runId,
+        reason: 'superseded_by_new_run',
+      });
+      this.abortLocalRun(params.conversationKey, previous.runId, 'superseded_by_new_run');
+    }
+
+    const record: LocalRunRecord = {
+      runId: params.runId,
+      revision: params.revision,
+      burstId: params.burstId,
+      channel: params.channel,
+      conversationId: params.conversationId,
+      conversationKey: params.conversationKey,
+      abortController: new AbortController(),
+      startedAt: this.deps.now(),
+      windowEndsAt: params.windowEndsAt,
+      hasQueuedFollowup: false,
+      classifierDecision: params.classifierDecision,
+      droppedSummary: [...params.droppedSummary],
+      stale: false,
+    };
+
+    this.localRuns.set(params.conversationKey, record);
+    return this.buildRunContext(record);
   }
 
   private async startRun(params: {
@@ -536,9 +603,9 @@ export class MessagingOrchestrator {
     classifierDecision?: RelevanceClassification;
     nextBurstId?: string;
   }): Promise<{ runContext: RunContext }> {
-    const runId = crypto.randomUUID();
+    const runId = this.deps.createId();
 
-    const { current } = await updateBurstState(params.conversationKey, (state) => {
+    const { current } = await this.deps.updateState(params.conversationKey, (state) => {
       if (state.revision !== params.expectedRevision) {
         throw new Error('orchestration_revision_mismatch');
       }
@@ -560,7 +627,7 @@ export class MessagingOrchestrator {
       };
     });
 
-    const runContext = registerLocalRun({
+    const runContext = this.registerLocalRun({
       channel: params.channel,
       conversationId: params.conversationId,
       conversationKey: params.conversationKey,
@@ -573,7 +640,7 @@ export class MessagingOrchestrator {
     });
 
     if (params.nextBurstId) {
-      emitOrchestratorEvent('orchestrator.burst.started', {
+      this.deps.emitEvent('orchestrator.burst.started', {
         channel: params.channel,
         conversationId: params.conversationId,
         conversationKey: params.conversationKey,
