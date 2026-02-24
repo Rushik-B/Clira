@@ -539,6 +539,10 @@ async function runExecutiveAgent(
             droppedSummary: options.runContext.droppedSummary,
             isRunCurrent: options.runContext.isRunCurrent,
             isBurstStable: options.runContext.isBurstStable,
+            consumeSteerEvents: options.runContext.consumeSteerEvents,
+            hasPendingSteer: options.runContext.hasPendingSteer,
+            markRunPhase: options.runContext.markRunPhase,
+            getRunPhase: options.runContext.getRunPhase,
           }
         : undefined,
     });
