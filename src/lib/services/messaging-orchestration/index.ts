@@ -21,6 +21,12 @@ export {
   emitOrchestratorEvent,
 } from './observability';
 
+export {
+  buildConversationKeyFromAdapter,
+  ensureAdapterChannel,
+  isDuplicateInboundFromAdapter,
+} from './channelAdapters';
+
 export type {
   BurstState,
   ChannelAdapter,

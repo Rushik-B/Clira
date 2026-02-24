@@ -15,3 +15,16 @@ export function ensureAdapterChannel(
     throw new Error(`Channel adapter mismatch: expected ${channel}, got ${adapter.channel}`);
   }
 }
+
+export async function isDuplicateInboundFromAdapter(
+  adapter: Pick<ChannelAdapter, 'messageIdForDedupe'>,
+  hasSeenMessageId: (messageId: string) => Promise<boolean>,
+): Promise<{ isDuplicate: boolean; messageId: string | null }> {
+  const messageId = adapter.messageIdForDedupe();
+  if (!messageId) {
+    return { isDuplicate: false, messageId: null };
+  }
+
+  const isDuplicate = await hasSeenMessageId(messageId);
+  return { isDuplicate, messageId };
+}
