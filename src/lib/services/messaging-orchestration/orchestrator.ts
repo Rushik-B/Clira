@@ -8,6 +8,7 @@ import {
 import type {
   BurstState,
   ChannelAdapter,
+  ConsumeSteerEventsResult,
   FinalizeResult,
   FinalizeRunParams,
   OrchestrationDecision,
@@ -15,6 +16,8 @@ import type {
   PrepareRunParams,
   RelevanceClassification,
   RunContext,
+  RunPhase,
+  SteerEvent,
 } from './types';
 import {
   EA_FOLLOWUP_CONFIDENCE_MAX,
@@ -24,6 +27,11 @@ import {
   EA_STEER_WINDOW_MS,
   EA_SUPERSEDE_CONFIDENCE_MIN,
 } from './types';
+import {
+  getSteerMailboxCap,
+  isCooperativeSteeringEnabled,
+  shouldSteerInRun,
+} from './steeringConfig';
 
 type OrchestratorEventName = Parameters<typeof emitOrchestratorEvent>[0];
 type OrchestratorEventPayload = Parameters<typeof emitOrchestratorEvent>[1];
@@ -41,6 +49,7 @@ type LocalRunRecord = {
   hasQueuedFollowup: boolean;
   classifierDecision: RelevanceClassification['decision'] | null;
   droppedSummary: string[];
+  runPhase: RunPhase;
   stale: boolean;
 };
 
@@ -176,6 +185,7 @@ export class MessagingOrchestrator {
         windowEndsAt: this.deps.now(),
         classifierDecision: null,
         droppedSummary: [],
+        runPhase: 'running',
       });
 
       return {
@@ -319,6 +329,75 @@ export class MessagingOrchestrator {
         };
       }
 
+      const cooperativeSteeringEnabled = isCooperativeSteeringEnabled(channel);
+      const activeRunPhase = stateAfterInbound.activeRunPhase ?? 'running';
+
+      if (
+        cooperativeSteeringEnabled &&
+        shouldSteerInRun(classifierDecision, { runPhase: activeRunPhase })
+      ) {
+        const cap = getSteerMailboxCap();
+        const appendedAt = this.deps.now();
+        const { current } = await this.deps.updateState(conversationKey, (state) => {
+          if (state.activeRunId !== stateAfterInbound.activeRunId) {
+            return state;
+          }
+          if (state.activeRevision !== stateAfterInbound.activeRevision) {
+            return state;
+          }
+
+          const nextSeq = (state.steerSeq ?? 0) + 1;
+          const nextEvent: SteerEvent = {
+            seq: nextSeq,
+            revision: state.revision,
+            receivedAt: appendedAt,
+            text: userRequest,
+            decision: classifierDecision.decision,
+            confidence: classifierDecision.confidence,
+          };
+
+          const mailbox = Array.isArray(state.steerMailbox) ? [...state.steerMailbox, nextEvent] : [nextEvent];
+          const droppedSummary = Array.isArray(state.steerDroppedSummary) ? [...state.steerDroppedSummary] : [];
+
+          if (mailbox.length > cap) {
+            const overflow = mailbox.splice(0, mailbox.length - cap);
+            for (const dropped of overflow) {
+              droppedSummary.push(summarizeDroppedMessage(dropped.text));
+            }
+          }
+
+          return {
+            ...state,
+            classifierDecision: classifierDecision.decision,
+            latestIntentText: classifierDecision.latestIntentText,
+            steerSeq: nextSeq,
+            steerMailbox: mailbox,
+            steerDroppedSummary: droppedSummary,
+          };
+        });
+
+        this.deps.emitEvent('orchestrator.steer.enqueued', {
+          channel,
+          conversationId,
+          conversationKey,
+          runId: stateAfterInbound.activeRunId,
+          burstId: current.burstId,
+          runPhase: activeRunPhase,
+          seq: current.steerSeq,
+          cap,
+          mailboxSize: current.steerMailbox.length,
+          droppedSummaryCount: current.steerDroppedSummary.length,
+        });
+
+        this.markLocalRunSteered(conversationKey, stateAfterInbound.activeRunId, stateAfterInbound.windowEndsAt);
+
+        return {
+          kind: 'skip',
+          reason: 'steered_in_run',
+          classifierDecision,
+        };
+      }
+
       await this.deps.updateState(conversationKey, (state) => ({
         ...state,
         classifierDecision: classifierDecision.decision,
@@ -433,8 +512,12 @@ export class MessagingOrchestrator {
         ...current,
         activeRunId: null,
         activeRevision: null,
+        activeRunPhase: 'completed',
         classifierDecision: null,
         pendingCount: 0,
+        steerSeq: 0,
+        steerMailbox: [],
+        steerDroppedSummary: [],
       };
     });
 
@@ -455,6 +538,10 @@ export class MessagingOrchestrator {
       next.droppedSummary = [];
       next.queuedIntentText = null;
       next.queuedRevision = null;
+      next.activeRunPhase = 'running';
+      next.steerSeq = 0;
+      next.steerMailbox = [];
+      next.steerDroppedSummary = [];
     }
 
     next.revision += 1;
@@ -484,6 +571,17 @@ export class MessagingOrchestrator {
     active.windowEndsAt = windowEndsAt;
   }
 
+  private markLocalRunSteered(
+    conversationKey: string,
+    runId: string,
+    windowEndsAt: number,
+  ): void {
+    const active = this.localRuns.get(conversationKey);
+    if (!active || active.runId !== runId) return;
+
+    active.windowEndsAt = windowEndsAt;
+  }
+
   private clearLocalRun(conversationKey: string, runId: string): void {
     const active = this.localRuns.get(conversationKey);
     if (!active || active.runId !== runId) return;
@@ -504,6 +602,12 @@ export class MessagingOrchestrator {
   }
 
   private buildRunContext(record: LocalRunRecord): RunContext {
+    const emptyConsume = async (afterSeq: number): Promise<ConsumeSteerEventsResult> => ({
+      events: [],
+      nextSeq: afterSeq,
+      droppedSummary: [],
+    });
+
     return {
       runId: record.runId,
       burstId: record.burstId,
@@ -546,6 +650,103 @@ export class MessagingOrchestrator {
           this.deps.now() - local.startedAt >= EA_LONG_TASK_PROGRESS_MS
         );
       },
+      consumeSteerEvents: async (afterSeq: number) => {
+        const local = this.localRuns.get(record.conversationKey);
+        if (!local || local.runId !== record.runId || local.stale) {
+          return emptyConsume(afterSeq);
+        }
+
+        if (!isEnabled(record.channel) || !isCooperativeSteeringEnabled(record.channel)) {
+          return emptyConsume(afterSeq);
+        }
+
+        let consumed: SteerEvent[] = [];
+        let droppedSummary: string[] = [];
+        let nextSeq = afterSeq;
+
+        await this.deps.updateState(record.conversationKey, (state) => {
+          if (state.activeRunId !== record.runId || state.activeRevision !== record.revision) {
+            return state;
+          }
+
+          const mailbox = Array.isArray(state.steerMailbox) ? state.steerMailbox : [];
+          consumed = mailbox.filter((event) => event.seq > afterSeq);
+          droppedSummary = Array.isArray(state.steerDroppedSummary) ? state.steerDroppedSummary : [];
+          nextSeq =
+            consumed.length > 0 ? consumed[consumed.length - 1]!.seq : afterSeq;
+
+          const remaining = mailbox.filter((event) => event.seq > nextSeq);
+
+          return {
+            ...state,
+            steerMailbox: remaining,
+            steerDroppedSummary: [],
+          };
+        });
+
+        return { events: consumed, nextSeq, droppedSummary };
+      },
+      hasPendingSteer: async (afterSeq: number) => {
+        const local = this.localRuns.get(record.conversationKey);
+        if (!local || local.runId !== record.runId || local.stale) {
+          return false;
+        }
+
+        if (!isEnabled(record.channel) || !isCooperativeSteeringEnabled(record.channel)) {
+          return false;
+        }
+
+        const state = await this.deps.readState(record.conversationKey);
+        if (state.activeRunId !== record.runId || state.activeRevision !== record.revision) {
+          return false;
+        }
+
+        const mailbox = Array.isArray(state.steerMailbox) ? state.steerMailbox : [];
+        if (mailbox.some((event) => event.seq > afterSeq)) return true;
+
+        const dropped = Array.isArray(state.steerDroppedSummary) ? state.steerDroppedSummary : [];
+        return dropped.length > 0;
+      },
+      markRunPhase: async (phase: RunPhase) => {
+        const local = this.localRuns.get(record.conversationKey);
+        if (!local || local.runId !== record.runId || local.stale) {
+          return;
+        }
+
+        local.runPhase = phase;
+
+        if (!isEnabled(record.channel)) {
+          return;
+        }
+
+        await this.deps.updateState(record.conversationKey, (state) => {
+          if (state.activeRunId !== record.runId || state.activeRevision !== record.revision) {
+            return state;
+          }
+
+          return {
+            ...state,
+            activeRunPhase: phase,
+          };
+        });
+      },
+      getRunPhase: async () => {
+        const local = this.localRuns.get(record.conversationKey);
+        if (!local || local.runId !== record.runId || local.stale) {
+          return 'completed';
+        }
+
+        if (!isEnabled(record.channel)) {
+          return local.runPhase;
+        }
+
+        const state = await this.deps.readState(record.conversationKey);
+        if (state.activeRunId !== record.runId || state.activeRevision !== record.revision) {
+          return 'completed';
+        }
+
+        return state.activeRunPhase ?? local.runPhase;
+      },
     };
   }
 
@@ -559,6 +760,7 @@ export class MessagingOrchestrator {
     windowEndsAt: number;
     classifierDecision: RelevanceClassification['decision'] | null;
     droppedSummary: string[];
+    runPhase: RunPhase;
   }): RunContext {
     const previous = this.localRuns.get(params.conversationKey);
     if (previous && previous.runId !== params.runId) {
@@ -586,6 +788,7 @@ export class MessagingOrchestrator {
       hasQueuedFollowup: false,
       classifierDecision: params.classifierDecision,
       droppedSummary: [...params.droppedSummary],
+      runPhase: params.runPhase,
       stale: false,
     };
 
@@ -619,11 +822,15 @@ export class MessagingOrchestrator {
         burstId: params.nextBurstId ?? state.burstId,
         activeRunId: runId,
         activeRevision: state.revision,
+        activeRunPhase: 'running',
         latestIntentText: params.userRequest,
         classifierDecision: params.classifierDecision?.decision ?? state.classifierDecision,
         pendingCount: 0,
         queuedIntentText: null,
         queuedRevision: null,
+        steerSeq: 0,
+        steerMailbox: [],
+        steerDroppedSummary: [],
       };
     });
 
@@ -637,6 +844,7 @@ export class MessagingOrchestrator {
       windowEndsAt: current.windowEndsAt,
       classifierDecision: current.classifierDecision,
       droppedSummary: current.droppedSummary,
+      runPhase: current.activeRunPhase ?? 'running',
     });
 
     if (params.nextBurstId) {

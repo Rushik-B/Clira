@@ -9,6 +9,7 @@ type OrchestratorEventName =
   | 'orchestrator.run.superseded'
   | 'orchestrator.classifier.decision'
   | 'orchestrator.queue.overflow_summary'
+  | 'orchestrator.steer.enqueued'
   | 'orchestrator.final.sent';
 
 type EventPayload = Record<string, unknown>;
