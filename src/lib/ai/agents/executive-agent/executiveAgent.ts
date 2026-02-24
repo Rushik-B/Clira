@@ -5,6 +5,14 @@ import {
 import { LlmError } from '@/lib/ai/errors';
 import { models } from '@/lib/ai/models';
 import {
+  isNativeSteeringEnabled,
+  requireNativeSteeringRuntime,
+  resolveNativeSteeringRuntime,
+} from '@/lib/ai/runtime/steeringRuntime';
+import {
+  isCooperativeSteeringEnabled,
+} from '@/lib/services/messaging-orchestration/steeringConfig';
+import {
   type Prisma,
   PendingCalendarChangeStatus,
 } from '@prisma/client';
@@ -28,6 +36,7 @@ import {
   wrapToolsWithTimingMetadata,
 } from './helpers';
 import { buildExecutiveAgentPrompt } from './prompt';
+import { runSteerableTextWithTools, type SteerRunContext } from './steerableLoop';
 import { buildExecutiveAgentTools } from './tools';
 import type {
   ExecutiveAgentInput,
@@ -106,6 +115,11 @@ export class ExecutiveAgent {
       const startTime = Date.now();
       let lastProgressSentAt = 0;
 
+      const hasPendingSteer = async () => {
+        if (typeof input.runContext?.hasPendingSteer !== 'function') return false;
+        return input.runContext.hasPendingSteer(0);
+      };
+
       const timedTools = wrapToolsWithTimingMetadata({
         tools,
         agentStartedAt: startTime,
@@ -115,6 +129,7 @@ export class ExecutiveAgent {
           lastProgressSentAt = sentAt;
         },
         isRunCurrent,
+        hasPendingSteer,
       });
 
       const systemPrompt =
@@ -167,23 +182,59 @@ export class ExecutiveAgent {
         ? { google: { thinkingConfig: { thinkingBudget: 0 } } }
         : undefined;
 
-      const { text, toolCalls, toolResults, steps, toolBudget } = await callTextWithTools({
-        model: models.execAgent(),
-        system: systemPrompt,
-        prompt,
-        tools: timedTools,
-        maxSteps: MESSAGING_MAX_STEPS,
-        maxToolCallsTotal: MESSAGING_MAX_TOOL_CALLS_TOTAL,
-        maxToolCallsPerTool: MESSAGING_TOOL_BUDGETS_BASE,
-        deadlineMs: MESSAGING_DEADLINE_MS,
-        stopWhen: stopConditions,
-        temperature: 0.7,
-        op: `${resolvedChannel}.executive`,
-        concurrency: { key: `${resolvedChannel}.executive`, maxConcurrency: 4 },
-        retry: { maxAttempts: 3, baseDelayMs: 500 },
-        abortSignal: toolAbortSignal,
-        providerOptions,
-      });
+      const nativeSteerEnabled = isNativeSteeringEnabled(resolvedChannel);
+      if (nativeSteerEnabled) {
+        requireNativeSteeringRuntime(resolveNativeSteeringRuntime(), {
+          op: `${resolvedChannel}.executive`,
+        });
+      }
+
+      const canCooperativeSteer =
+        typeof input.runContext?.consumeSteerEvents === 'function' &&
+        typeof input.runContext?.markRunPhase === 'function' &&
+        isCooperativeSteeringEnabled(resolvedChannel);
+
+      const exec = canCooperativeSteer
+        ? await runSteerableTextWithTools({
+            model: models.execAgent(),
+            system: systemPrompt,
+            prompt,
+            tools: timedTools,
+            timeLeftMs: () => toolAbort!.timeLeftMs(),
+            maxSteps: MESSAGING_MAX_STEPS,
+            maxToolCallsTotal: MESSAGING_MAX_TOOL_CALLS_TOTAL,
+            maxToolCallsPerTool: MESSAGING_TOOL_BUDGETS_BASE,
+            deadlineMs: MESSAGING_DEADLINE_MS,
+            stopWhen: stopConditions,
+            temperature: 0.7,
+            op: `${resolvedChannel}.executive`,
+            concurrency: { key: `${resolvedChannel}.executive`, maxConcurrency: 4 },
+            retry: { maxAttempts: 3, baseDelayMs: 500 },
+            abortSignal: toolAbortSignal,
+            providerOptions,
+            runContext: input.runContext as unknown as SteerRunContext,
+          })
+        : await callTextWithTools({
+            model: models.execAgent(),
+            system: systemPrompt,
+            prompt,
+            tools: timedTools,
+            maxSteps: MESSAGING_MAX_STEPS,
+            maxToolCallsTotal: MESSAGING_MAX_TOOL_CALLS_TOTAL,
+            maxToolCallsPerTool: MESSAGING_TOOL_BUDGETS_BASE,
+            deadlineMs: MESSAGING_DEADLINE_MS,
+            stopWhen: stopConditions,
+            temperature: 0.7,
+            op: `${resolvedChannel}.executive`,
+            concurrency: { key: `${resolvedChannel}.executive`, maxConcurrency: 4 },
+            retry: { maxAttempts: 3, baseDelayMs: 500 },
+            abortSignal: toolAbortSignal,
+            providerOptions,
+          });
+
+      const { text, toolCalls, toolResults, steps, toolBudget } = exec;
+      const steerMetadata =
+        exec && typeof exec === 'object' && 'steer' in exec ? (exec as any).steer : null;
 
       const toolNames = collectToolNamesFromExecution({ toolCalls, toolResults, steps });
       logger.info(`[executiveAgent] Tools used: ${Array.from(toolNames).join(', ') || '(none)'}`);
@@ -226,6 +277,7 @@ export class ExecutiveAgent {
                   droppedMessages: input.runContext.droppedSummary ?? [],
                 }
               : null,
+          steer: steerMetadata,
         } as Prisma.InputJsonValue;
       }
 
