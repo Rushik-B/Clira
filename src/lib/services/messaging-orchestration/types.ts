@@ -20,10 +20,28 @@ export type RelevanceClassification = {
   latestIntentText: string;
 };
 
+export type RunPhase = 'running' | 'commit_boundary' | 'completed';
+
+export type SteerEvent = {
+  seq: number;
+  revision: number;
+  receivedAt: number;
+  text: string;
+  decision: RelevanceDecision;
+  confidence: number;
+};
+
+export type ConsumeSteerEventsResult = {
+  events: SteerEvent[];
+  nextSeq: number;
+  droppedSummary: string[];
+};
+
 export type BurstState = {
   burstId: string;
   activeRunId: string | null;
   activeRevision: number | null;
+  activeRunPhase: RunPhase;
   revision: number;
   windowEndsAt: number;
   pendingCount: number;
@@ -32,6 +50,9 @@ export type BurstState = {
   classifierDecision: RelevanceDecision | null;
   queuedIntentText: string | null;
   queuedRevision: number | null;
+  steerSeq: number;
+  steerMailbox: SteerEvent[];
+  steerDroppedSummary: string[];
   updatedAt: number;
 };
 
@@ -48,6 +69,10 @@ export type RunContext = {
   isRunCurrent: () => Promise<boolean>;
   isBurstStable: () => boolean;
   canEmitProgress: () => boolean;
+  consumeSteerEvents: (afterSeq: number) => Promise<ConsumeSteerEventsResult>;
+  hasPendingSteer: (afterSeq: number) => Promise<boolean>;
+  markRunPhase: (phase: RunPhase) => Promise<void>;
+  getRunPhase: () => Promise<RunPhase>;
 };
 
 export type RunStart = {
@@ -57,7 +82,10 @@ export type RunStart = {
   classifierDecision?: RelevanceClassification;
 };
 
-export type RunSkipReason = 'queued_followup' | 'superseded_by_newer_message';
+export type RunSkipReason =
+  | 'queued_followup'
+  | 'steered_in_run'
+  | 'superseded_by_newer_message';
 
 export type RunSkip = {
   kind: 'skip';
