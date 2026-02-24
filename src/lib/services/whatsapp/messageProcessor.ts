@@ -31,6 +31,8 @@ import {
   buildOrchestrationMessageMetadata,
   emitOrchestratorEvent,
   getMessagingOrchestrator,
+  isDuplicateInboundFromAdapter,
+  type ChannelAdapter,
   type RunContext,
 } from '@/lib/services/messaging-orchestration';
 
@@ -68,17 +70,6 @@ function isVoiceMemoNoContent(transcript: string): boolean {
   if (!t) return true;
   return VOICE_MEMO_NO_CONTENT_PHRASES.some((phrase) => t === phrase || t.startsWith(phrase));
 }
-
-/**
- * In-flight run tracker: per-conversation abort controller and run id.
- * When a new message arrives, we abort the previous run so only the latest run can send.
- * Prevents "double texting" (e.g. user asks something then says "nvm" but both answers get sent).
- */
-const inFlightRuns = new Map<
-  string,
-  { abortController: AbortController; runId: number }
->();
-let runIdCounter = 0;
 
 function isAbortError(e: unknown): boolean {
   if (e && typeof e === 'object') {
@@ -299,20 +290,50 @@ export async function processWhatsAppMessage(
   const { waId, messageId, senderName } = message;
   const conversationManager = getConversationManager();
   const whatsappClient = getWhatsAppClient();
+  let activeConversationId = '';
+  let effectiveText = message.text;
+  let inboundMetadata: Prisma.InputJsonObject = { senderName };
+
+  const adapter: ChannelAdapter = {
+    channel: 'whatsapp',
+    conversationId: () => activeConversationId,
+    messageIdForDedupe: () => messageId ?? null,
+    persistInbound: async () => {
+      if (!activeConversationId) {
+        throw new Error('whatsapp_inbound_persist_missing_conversation_id');
+      }
+      await conversationManager.addMessage(activeConversationId, {
+        content: effectiveText,
+        role: 'USER',
+        direction: 'INBOUND',
+        waMessageId: messageId,
+        metadata: inboundMetadata,
+      });
+    },
+    sendFinal: async (text: string) => {
+      const { messageId: externalId } = await whatsappClient.sendMessage(waId, text);
+      return { externalId };
+    },
+    sendProgress: async (text: string) => {
+      const { messageId: externalId } = await whatsappClient.sendMessage(waId, text);
+      return { externalId };
+    },
+  };
 
   logger.info(
     `[messageProcessor] Processing message: waId=${waId.slice(0, 4)}**** ${message.audioMediaId ? 'voice memo' : message.imageMediaId ? 'image' : `text=\"${message.text.slice(0, 50)}...\"`}`,
   );
 
-  if (messageId) {
-    const isDuplicate = await conversationManager.hasInboundMessageWithWaMessageId(messageId);
-    if (isDuplicate) {
-      logger.info('[messageProcessor] Duplicate inbound WhatsApp message detected, skipping', {
-        waId: `${waId.slice(0, 4)}****`,
-        messageId,
-      });
-      return { success: true, response: '' };
-    }
+  const dedupe = await isDuplicateInboundFromAdapter(
+    adapter,
+    (id) => conversationManager.hasInboundMessageWithWaMessageId(id),
+  );
+  if (dedupe.isDuplicate) {
+    logger.info('[messageProcessor] Duplicate inbound WhatsApp message detected, skipping', {
+      waId: `${waId.slice(0, 4)}****`,
+      messageId: dedupe.messageId,
+    });
+    return { success: true, response: '' };
   }
 
   // ⚡️ INSTANTLY show typing indicator (The "Human" Touch)
@@ -382,28 +403,16 @@ export async function processWhatsAppMessage(
 
   // Step 3: Get or create conversation
   const conversation = await conversationManager.getOrCreateConversation(userId, waId);
+  activeConversationId = conversation.id;
 
   // Resolve effective text: for voice memos transcribe, for images describe, and for text use as-is (no media storage).
-  let effectiveText: string;
-  let abortController: AbortController | null = null;
-  let myRunId: number | null = null;
-
   if (message.audioMediaId || message.imageMediaId) {
-    abortController = new AbortController();
-    myRunId = ++runIdCounter;
-    inFlightRuns.set(conversation.id, { abortController, runId: myRunId });
-
     try {
       if (message.audioMediaId) {
         const media = await whatsappClient.getMediaBuffer(message.audioMediaId);
-        effectiveText = await transcribeVoiceMemo(media.data, media.mimeType, {
-          abortSignal: abortController.signal,
-        });
+        effectiveText = await transcribeVoiceMemo(media.data, media.mimeType);
 
         if (!effectiveText.trim() || isVoiceMemoNoContent(effectiveText)) {
-          if (inFlightRuns.get(conversation.id)?.runId === myRunId) {
-            inFlightRuns.delete(conversation.id);
-          }
           logger.info('[messageProcessor] Voice memo had no content, fast fallback', {
             waId: `${waId.slice(0, 4)}****`,
             transcript: effectiveText.slice(0, 60),
@@ -423,15 +432,15 @@ export async function processWhatsAppMessage(
           };
         }
 
+        inboundMetadata = { senderName, fromVoiceMemo: true };
+
         logger.info('[messageProcessor] Voice memo transcribed', {
           waId: `${waId.slice(0, 4)}****`,
           transcriptLength: effectiveText.length,
         });
       } else {
         const media = await whatsappClient.getMediaBuffer(message.imageMediaId!);
-        const description = await describeIncomingImage(media.data, media.mimeType, {
-          abortSignal: abortController.signal,
-        });
+        const description = await describeIncomingImage(media.data, media.mimeType);
         const caption = message.imageCaption?.trim();
         effectiveText = [
           'User sent an image on WhatsApp.',
@@ -441,6 +450,7 @@ export async function processWhatsAppMessage(
         ]
           .filter(Boolean)
           .join('\n\n');
+        inboundMetadata = { senderName, fromImage: true, imageCaption: message.imageCaption ?? null };
 
         logger.info('[messageProcessor] Image described', {
           waId: `${waId.slice(0, 4)}****`,
@@ -449,10 +459,6 @@ export async function processWhatsAppMessage(
         });
       }
     } catch (e) {
-      if (inFlightRuns.get(conversation.id)?.runId === myRunId) {
-        inFlightRuns.delete(conversation.id);
-      }
-
       if (isAbortError(e)) {
         logger.debug(
           message.audioMediaId
@@ -496,34 +502,21 @@ export async function processWhatsAppMessage(
     }
   } else {
     effectiveText = message.text;
+    inboundMetadata = { senderName };
   }
 
   // Step 4: Add user message to the conversation (transcript for voice, text for text)
-  await conversationManager.addMessage(conversation.id, {
-    content: effectiveText,
-    role: 'USER',
-    direction: 'INBOUND',
-    waMessageId: messageId,
-    metadata: message.audioMediaId
-      ? { senderName, fromVoiceMemo: true }
-      : message.imageMediaId
-        ? { senderName, fromImage: true, imageCaption: message.imageCaption ?? null }
-        : { senderName },
-  });
+  await adapter.persistInbound();
 
   // Step 5: Detect and handle commands
   let activeCommand: Command = detectCommand(effectiveText);
   if (activeCommand) {
     logger.info(`[messageProcessor] Detected command: ${activeCommand}`);
   }
-  if (myRunId !== null && inFlightRuns.get(conversation.id)?.runId === myRunId) {
-    inFlightRuns.delete(conversation.id);
-  }
 
   const orchestrator = getMessagingOrchestrator();
-  const orchestrationDecision = await orchestrator.prepareRun({
-    channel: 'whatsapp',
-    conversationId: conversation.id,
+  const orchestrationDecision = await orchestrator.prepareRunWithAdapter({
+    adapter,
     userRequest: effectiveText,
     isCommand: Boolean(activeCommand),
   });
@@ -539,9 +532,8 @@ export async function processWhatsAppMessage(
   while (runContext) {
     const progressContext = buildProgressContext({
       conversationId: conversation.id,
-      waId,
       conversationManager,
-      whatsappClient,
+      adapter,
       canEmitProgress: runContext.canEmitProgress,
     });
 
@@ -584,7 +576,7 @@ export async function processWhatsAppMessage(
 
     if (result.response && await runContext.isRunCurrent()) {
       try {
-        const { messageId: waResponseId } = await whatsappClient.sendMessage(waId, result.response);
+        const { externalId: waResponseId } = await adapter.sendFinal(result.response);
         const outboundMetadata = buildOrchestrationMessageMetadata(
           runContext,
           result.metadata != null && typeof result.metadata === 'object' && !Array.isArray(result.metadata)
@@ -714,15 +706,13 @@ async function runExecutiveAgent(
 
 function buildProgressContext({
   conversationId,
-  waId,
   conversationManager,
-  whatsappClient,
+  adapter,
   canEmitProgress,
 }: {
   conversationId: string;
-  waId: string;
   conversationManager: ReturnType<typeof getConversationManager>;
-  whatsappClient: ReturnType<typeof getWhatsAppClient>;
+  adapter: Pick<ChannelAdapter, 'sendProgress'>;
   canEmitProgress?: () => boolean;
 }): ProgressUpdateContext {
   return {
@@ -730,10 +720,7 @@ function buildProgressContext({
     requestId: crypto.randomUUID(),
     conversationId,
     canEmitProgress,
-    sendMessage: async (text) => {
-      const { messageId } = await whatsappClient.sendMessage(waId, text);
-      return { externalId: messageId };
-    },
+    sendMessage: adapter.sendProgress,
     persistMessage: async ({ content, metadata, externalId }) => {
       await conversationManager.addMessage(conversationId, {
         content,
@@ -750,12 +737,14 @@ function buildWebProgressContext({
   conversationId,
   conversationManager,
   emitWebProgress,
+  adapter,
   requestId,
   canEmitProgress,
 }: {
   conversationId: string;
   conversationManager: ReturnType<typeof getConversationManager>;
   emitWebProgress: (event: ProgressUpdateEvent) => Promise<void> | void;
+  adapter: Pick<ChannelAdapter, 'sendProgress'>;
   requestId?: string;
   canEmitProgress?: () => boolean;
 }): ProgressUpdateContext {
@@ -764,6 +753,7 @@ function buildWebProgressContext({
     requestId: requestId ?? crypto.randomUUID(),
     conversationId,
     canEmitProgress,
+    sendMessage: adapter.sendProgress,
     emitWebProgress,
     persistMessage: async ({ content, metadata }) => {
       await conversationManager.addMessage(conversationId, {
@@ -799,18 +789,34 @@ export async function processWebChatMessage(
 
   // Use a synthetic waId for web chat conversations
   const webWaId = 'web-test';
+  let activeConversationId = '';
+
+  const adapter: ChannelAdapter = {
+    channel: 'web',
+    conversationId: () => activeConversationId,
+    messageIdForDedupe: () => null,
+    persistInbound: async () => {
+      if (!activeConversationId) {
+        throw new Error('web_inbound_persist_missing_conversation_id');
+      }
+      await conversationManager.addMessage(activeConversationId, {
+        content: message,
+        role: 'USER',
+        direction: 'INBOUND',
+      });
+    },
+    sendFinal: async () => ({}),
+    sendProgress: async () => ({}),
+  };
 
   logger.info(`[messageProcessor] Processing web chat: userId=${userId.slice(0, 8)}...`);
 
   // Get or create conversation
   const conversation = await conversationManager.getOrCreateConversation(userId, webWaId);
+  activeConversationId = conversation.id;
 
   // Add user message to the conversation
-  await conversationManager.addMessage(conversation.id, {
-    content: message,
-    role: 'USER',
-    direction: 'INBOUND',
-  });
+  await adapter.persistInbound();
 
   let activeCommand: Command = detectCommand(message);
   if (activeCommand) {
@@ -818,9 +824,8 @@ export async function processWebChatMessage(
   }
 
   const orchestrator = getMessagingOrchestrator();
-  const orchestrationDecision = await orchestrator.prepareRun({
-    channel: 'web',
-    conversationId: conversation.id,
+  const orchestrationDecision = await orchestrator.prepareRunWithAdapter({
+    adapter,
     userRequest: message,
     isCommand: Boolean(activeCommand),
   });
@@ -839,6 +844,7 @@ export async function processWebChatMessage(
           conversationId: conversation.id,
           conversationManager,
           emitWebProgress: options.onProgress,
+          adapter,
           requestId: options.requestId,
           canEmitProgress: runContext.canEmitProgress,
         })
@@ -881,6 +887,7 @@ export async function processWebChatMessage(
     }
 
     if (result.response && await runContext.isRunCurrent()) {
+      await adapter.sendFinal(result.response);
       const outboundMetadata = buildOrchestrationMessageMetadata(
         runContext,
         result.metadata != null && typeof result.metadata === 'object' && !Array.isArray(result.metadata)
