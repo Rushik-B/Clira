@@ -6,6 +6,10 @@ import type {
   ConversationMessageDTO,
 } from '@/lib/ai/schemas/executiveAgentSchemas';
 import type { Prisma, PendingCalendarChangeStatus } from '@prisma/client';
+import type {
+  ConsumeSteerEventsResult,
+  RunPhase,
+} from '@/lib/services/messaging-orchestration/types';
 
 export interface ExecutiveAgentInput {
   userId: string;
@@ -23,6 +27,10 @@ export interface ExecutiveAgentInput {
     droppedSummary?: string[];
     isRunCurrent: () => Promise<boolean>;
     isBurstStable: () => boolean;
+    consumeSteerEvents?: (afterSeq: number) => Promise<ConsumeSteerEventsResult>;
+    hasPendingSteer?: (afterSeq: number) => Promise<boolean>;
+    markRunPhase?: (phase: RunPhase) => Promise<void>;
+    getRunPhase?: () => Promise<RunPhase>;
   };
 }
 
