@@ -75,11 +75,12 @@ docker compose up -d db redis
 npm run migrate:deploy
 ```
 
-5. Start app and worker (separate terminals)
+5. Start app, worker, and local cron (separate terminals)
 
 ```bash
 npm run dev
 npm run start:worker
+npm run start:cron
 ```
 
 6. Open the app
@@ -92,7 +93,7 @@ npm run start:worker
 docker compose up --build
 ```
 
-This starts `app`, `worker`, `db`, and `redis` using the production image build.
+This starts `app`, `worker`, `cron`, `db`, and `redis` using the production image build.
 
 ## Required Environment Variables
 
@@ -121,6 +122,7 @@ This starts `app`, `worker`, `db`, and `redis` using the production image build.
 | --- | --- |
 | `npm run dev` | Start Next.js app |
 | `npm run start:worker` | Start BullMQ worker process |
+| `npm run start:cron` | Start local cron scheduler that triggers `/api/cron/*` |
 | `npm run build` | Build app + worker bundle |
 | `npm run lint` | Run lint checks |
 | `npm test` | Run Jest tests |

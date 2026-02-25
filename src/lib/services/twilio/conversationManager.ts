@@ -215,22 +215,79 @@ export class ConversationManager {
       ? sanitizeMetadataForPrisma(params.metadata)
       : undefined;
 
-    const message = await prisma.twilioMessage.create({
-      data: {
-        conversationId,
-        content: params.content,
-        role: params.role,
-        direction: params.direction,
-        twilioSid: params.twilioSid,
-        metadata: sanitizedMetadata,
+    try {
+      const message = await prisma.twilioMessage.create({
+        data: {
+          conversationId,
+          content: params.content,
+          role: params.role,
+          direction: params.direction,
+          twilioSid: params.twilioSid,
+          metadata: sanitizedMetadata,
+        },
+      });
+
+      logger.debug(
+        `[ConversationManager] addMessage: conversationId=${conversationId} role=${params.role} direction=${params.direction} id=${message.id}`,
+      );
+
+      return message;
+    } catch (error) {
+      if (
+        params.twilioSid &&
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002'
+      ) {
+        const duplicate = await prisma.twilioMessage.findFirst({
+          where: {
+            twilioSid: params.twilioSid,
+            direction: params.direction,
+          },
+          orderBy: { createdAt: 'desc' },
+        });
+
+        if (duplicate) {
+          if (duplicate.conversationId === conversationId) {
+            logger.info('[ConversationManager] addMessage duplicate ignored via unique constraint', {
+              conversationId,
+              direction: params.direction,
+              twilioSid: params.twilioSid,
+              messageId: duplicate.id,
+            });
+            return duplicate;
+          }
+
+          logger.error(
+            '[ConversationManager] addMessage duplicate conflict across conversations',
+            {
+              conversationId,
+              duplicateConversationId: duplicate.conversationId,
+              direction: params.direction,
+              twilioSid: params.twilioSid,
+              messageId: duplicate.id,
+            },
+          );
+        }
+      }
+
+      throw error;
+    }
+  }
+
+  /**
+   * Checks if an inbound message with the given Twilio SID already exists.
+   * Advisory pre-check only; addMessage enforces idempotency at the DB write boundary.
+   */
+  async hasInboundMessageWithTwilioSid(twilioSid: string): Promise<boolean> {
+    const existing = await prisma.twilioMessage.findFirst({
+      where: {
+        twilioSid,
+        direction: 'INBOUND',
       },
+      select: { id: true },
     });
 
-    logger.debug(
-      `[ConversationManager] addMessage: conversationId=${conversationId} role=${params.role} direction=${params.direction} id=${message.id}`,
-    );
-
-    return message;
+    return !!existing;
   }
 
   /**

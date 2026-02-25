@@ -23,7 +23,12 @@ export function buildExecutiveAgentTools(context: ExecutiveRuntimeContext): Reco
   };
 
   if (context.input.progressContext) {
-    tools.send_progress_update = createSendProgressUpdateTool(context.input.progressContext);
+    tools.send_progress_update = createSendProgressUpdateTool({
+      ...context.input.progressContext,
+      canEmitProgress:
+        context.input.progressContext.canEmitProgress ??
+        (() => context.isBurstStable()),
+    });
   }
 
   return tools;

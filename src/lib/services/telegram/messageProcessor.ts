@@ -24,6 +24,14 @@ import {
   getTelegramClient,
   type TelegramInboundMessage,
 } from '@/lib/services/telegram';
+import {
+  buildOrchestrationMessageMetadata,
+  emitOrchestratorEvent,
+  getMessagingOrchestrator,
+  isDuplicateInboundFromAdapter,
+  type ChannelAdapter,
+  type RunContext,
+} from '@/lib/services/messaging-orchestration';
 
 export interface ProcessMessageResult {
   success: boolean;
@@ -46,97 +54,6 @@ const VOICE_MEMO_NO_CONTENT_PHRASES = [
   'silence',
   'inaudible',
 ];
-
-const DEFAULT_IN_FLIGHT_RUN_TTL_MS = 120_000;
-const parsedInFlightRunTtlMs = Number.parseInt(
-  process.env.TELEGRAM_IN_FLIGHT_RUN_TTL_MS ?? '',
-  10,
-);
-const IN_FLIGHT_RUN_TTL_MS =
-  Number.isFinite(parsedInFlightRunTtlMs) && parsedInFlightRunTtlMs > 0
-    ? parsedInFlightRunTtlMs
-    : DEFAULT_IN_FLIGHT_RUN_TTL_MS;
-const IN_FLIGHT_RUN_SWEEP_INTERVAL_MS = Math.min(60_000, IN_FLIGHT_RUN_TTL_MS);
-
-type InFlightRun = {
-  abortController: AbortController;
-  runId: number;
-  startedAt: number;
-  timeoutHandle: ReturnType<typeof setTimeout>;
-};
-
-const inFlightRuns = new Map<string, InFlightRun>();
-let runIdCounter = 0;
-
-function clearInFlightRun(conversationId: string, runId?: number): void {
-  const existing = inFlightRuns.get(conversationId);
-  if (!existing) return;
-  if (runId != null && existing.runId !== runId) return;
-
-  clearTimeout(existing.timeoutHandle);
-  inFlightRuns.delete(conversationId);
-}
-
-function abortAndClearInFlightRun(
-  conversationId: string,
-  reason: string,
-  runId?: number,
-): void {
-  const existing = inFlightRuns.get(conversationId);
-  if (!existing) return;
-  if (runId != null && existing.runId !== runId) return;
-
-  existing.abortController.abort(reason);
-  clearInFlightRun(conversationId, existing.runId);
-}
-
-function registerInFlightRun(
-  conversationId: string,
-  abortController: AbortController,
-  runId: number,
-): void {
-  abortAndClearInFlightRun(conversationId, 'superseded_by_new_run');
-
-  const timeoutHandle = setTimeout(() => {
-    const active = inFlightRuns.get(conversationId);
-    if (!active || active.runId !== runId) return;
-
-    logger.warn('[telegramProcessor] Aborting stale in-flight run due to TTL', {
-      conversationId,
-      runId,
-      ttlMs: IN_FLIGHT_RUN_TTL_MS,
-    });
-    abortAndClearInFlightRun(conversationId, 'in_flight_run_ttl_expired', runId);
-  }, IN_FLIGHT_RUN_TTL_MS);
-
-  inFlightRuns.set(conversationId, {
-    abortController,
-    runId,
-    startedAt: Date.now(),
-    timeoutHandle,
-  });
-}
-
-function sweepInFlightRuns(): void {
-  const now = Date.now();
-
-  for (const [conversationId, active] of inFlightRuns.entries()) {
-    if (now - active.startedAt < IN_FLIGHT_RUN_TTL_MS) {
-      continue;
-    }
-
-    logger.warn('[telegramProcessor] Sweeping stale in-flight run', {
-      conversationId,
-      runId: active.runId,
-      ttlMs: IN_FLIGHT_RUN_TTL_MS,
-      ageMs: now - active.startedAt,
-    });
-    abortAndClearInFlightRun(conversationId, 'in_flight_run_sweep_expired', active.runId);
-  }
-}
-
-const inFlightSweepTimer = setInterval(sweepInFlightRuns, IN_FLIGHT_RUN_SWEEP_INTERVAL_MS);
-inFlightSweepTimer.unref?.();
 
 function isVoiceMemoNoContent(transcript: string): boolean {
   const t = transcript.trim().toLowerCase();
@@ -221,18 +138,26 @@ async function handleSendCommand(
   userId: string,
   userEmail: string,
   conversationId: string,
-  progressContext?: ProgressUpdateContext,
+  options?: {
+    progressContext?: ProgressUpdateContext;
+    runContext?: RunContext;
+    abortSignal?: AbortSignal;
+  },
 ): Promise<ProcessMessageResult> {
-  return runExecutiveAgent(userId, userEmail, conversationId, 'send', { progressContext });
+  return runExecutiveAgent(userId, userEmail, conversationId, 'send', options);
 }
 
 async function handleSaveCommand(
   userId: string,
   userEmail: string,
   conversationId: string,
-  progressContext?: ProgressUpdateContext,
+  options?: {
+    progressContext?: ProgressUpdateContext;
+    runContext?: RunContext;
+    abortSignal?: AbortSignal;
+  },
 ): Promise<ProcessMessageResult> {
-  return runExecutiveAgent(userId, userEmail, conversationId, 'save to drafts', { progressContext });
+  return runExecutiveAgent(userId, userEmail, conversationId, 'save to drafts', options);
 }
 
 async function clearConversationAndCancelPending(conversationId: string): Promise<void> {
@@ -300,6 +225,36 @@ export async function processTelegramMessage(
   const telegramClient = getTelegramClient();
   const pairingManager = getPairingManager();
   const conversationManager = getConversationManager();
+  let activeConversationId = '';
+  let effectiveText = message.text;
+  let inboundMetadata: Prisma.InputJsonObject = { senderName };
+
+  const adapter: ChannelAdapter = {
+    channel: 'telegram',
+    conversationId: () => activeConversationId,
+    messageIdForDedupe: () => (messageId != null ? String(messageId) : null),
+    persistInbound: async () => {
+      if (!activeConversationId) {
+        throw new Error('telegram_inbound_persist_missing_conversation_id');
+      }
+      await conversationManager.addMessage(activeConversationId, {
+        content: effectiveText,
+        role: 'USER',
+        direction: 'INBOUND',
+        telegramMessageId: messageId,
+        telegramUpdateId: updateId,
+        metadata: inboundMetadata,
+      });
+    },
+    sendFinal: async (text: string) => {
+      const { messageId: externalId } = await telegramClient.sendMessage(chatId, text);
+      return { externalId };
+    },
+    sendProgress: async (text: string) => {
+      const { messageId: externalId } = await telegramClient.sendMessage(chatId, text);
+      return { externalId };
+    },
+  };
 
   logger.info(
     `[telegramProcessor] Processing message: chatId=${chatId} telegramUserId=${telegramUserId} ${message.voiceFileId ? 'voice' : message.imageFileId ? 'image' : `text="${message.text.slice(0, 50)}..."`}`,
@@ -314,16 +269,16 @@ export async function processTelegramMessage(
     return { success: true, response: '' };
   }
 
-  if (messageId) {
-    const isDuplicateByMessageId =
-      await conversationManager.hasInboundMessageWithTelegramMessageId(messageId);
-    if (isDuplicateByMessageId) {
-      logger.info('[telegramProcessor] Duplicate inbound Telegram message ID detected, skipping', {
-        chatId,
-        messageId,
-      });
-      return { success: true, response: '' };
-    }
+  const dedupe = await isDuplicateInboundFromAdapter(
+    adapter,
+    (id) => conversationManager.hasInboundMessageWithTelegramMessageId(id),
+  );
+  if (dedupe.isDuplicate) {
+    logger.info('[telegramProcessor] Duplicate inbound Telegram message ID detected, skipping', {
+      chatId,
+      messageId: dedupe.messageId,
+    });
+    return { success: true, response: '' };
   }
 
   const link = await pairingManager.findActiveLinkByTelegramUserId(telegramUserId);
@@ -371,25 +326,15 @@ export async function processTelegramMessage(
     chatId,
     telegramUserId,
   );
-
-  let effectiveText: string;
-  let abortController: AbortController | null = null;
-  let myRunId: number | null = null;
+  activeConversationId = conversation.id;
 
   if (message.voiceFileId || message.imageFileId) {
-    abortController = new AbortController();
-    myRunId = ++runIdCounter;
-    registerInFlightRun(conversation.id, abortController, myRunId);
-
     try {
       if (message.voiceFileId) {
         const media = await telegramClient.getFileBuffer(message.voiceFileId);
-        effectiveText = await transcribeVoiceMemo(media.data, message.voiceMimeType ?? media.mimeType, {
-          abortSignal: abortController.signal,
-        });
+        effectiveText = await transcribeVoiceMemo(media.data, message.voiceMimeType ?? media.mimeType);
 
         if (!effectiveText.trim() || isVoiceMemoNoContent(effectiveText)) {
-          clearInFlightRun(conversation.id, myRunId ?? undefined);
           await telegramClient.sendMessage(
             chatId,
             "I couldn't make that out. Can you repeat it?",
@@ -400,11 +345,10 @@ export async function processTelegramMessage(
             error: 'Voice memo transcription empty',
           };
         }
+        inboundMetadata = { senderName, fromVoiceMemo: true };
       } else {
         const media = await telegramClient.getFileBuffer(message.imageFileId!);
-        const description = await describeIncomingImage(media.data, message.imageMimeType ?? media.mimeType, {
-          abortSignal: abortController.signal,
-        });
+        const description = await describeIncomingImage(media.data, message.imageMimeType ?? media.mimeType);
         const caption = message.imageCaption?.trim();
         effectiveText = [
           'User sent an image on Telegram.',
@@ -414,10 +358,9 @@ export async function processTelegramMessage(
         ]
           .filter(Boolean)
           .join('\n\n');
+        inboundMetadata = { senderName, fromImage: true, imageCaption: message.imageCaption ?? null };
       }
     } catch (error) {
-      clearInFlightRun(conversation.id, myRunId ?? undefined);
-
       if (isAbortError(error)) {
         logger.debug('[telegramProcessor] Media processing superseded by newer message');
         return { success: true, response: '' };
@@ -435,8 +378,11 @@ export async function processTelegramMessage(
             ? "I couldn't process that voice memo. Please try again or send text."
             : "I couldn't process that image. Please try again or send text.",
         );
-      } catch {
-        // no-op
+      } catch (sendError) {
+        logger.error('[telegramProcessor] Failed to send media processing error message', {
+          chatId,
+          error: sendError instanceof Error ? sendError.message : String(sendError),
+        });
       }
 
       return {
@@ -447,113 +393,113 @@ export async function processTelegramMessage(
     }
   } else {
     effectiveText = message.text;
+    inboundMetadata = { senderName };
   }
 
-  await conversationManager.addMessage(conversation.id, {
-    content: effectiveText,
-    role: 'USER',
-    direction: 'INBOUND',
-    telegramMessageId: messageId,
-    telegramUpdateId: updateId,
-    metadata: message.voiceFileId
-      ? { senderName, fromVoiceMemo: true }
-      : message.imageFileId
-        ? { senderName, fromImage: true, imageCaption: message.imageCaption ?? null }
-        : { senderName },
+  await adapter.persistInbound();
+
+  let activeCommand: Command = detectCommand(effectiveText);
+
+  const orchestrator = getMessagingOrchestrator();
+  const orchestrationDecision = await orchestrator.prepareRunWithAdapter({
+    adapter,
+    userRequest: effectiveText,
+    isCommand: Boolean(activeCommand),
   });
 
-  const command = detectCommand(effectiveText);
-  let result: ProcessMessageResult;
+  if (orchestrationDecision.kind === 'skip') {
+    return { success: true, response: '' };
+  }
 
-  if (command) {
-    if (myRunId !== null) {
-      clearInFlightRun(conversation.id, myRunId);
-    }
+  let runContext = orchestrationDecision.runContext;
+  let activeRequest = orchestrationDecision.userRequest;
+  let result: ProcessMessageResult = { success: true, response: '' };
 
-    switch (command) {
-      case 'send':
-        result = await handleSendCommand(
-          link.userId,
-          user.email,
-          conversation.id,
-          buildProgressContext({
-            conversationId: conversation.id,
-            chatId,
-            conversationManager,
-            telegramClient,
-          }),
-        );
-        break;
-      case 'save':
-        result = await handleSaveCommand(
-          link.userId,
-          user.email,
-          conversation.id,
-          buildProgressContext({
-            conversationId: conversation.id,
-            chatId,
-            conversationManager,
-            telegramClient,
-          }),
-        );
-        break;
-      case 'clear':
-        result = await handleClearCommand(conversation.id);
-        break;
-      case 'cancel':
-        result = await handleCancelCommand(conversation.id);
-        break;
-      case 'help':
-        result = handleHelpCommand();
-        break;
-      default:
-        result = { success: false, response: 'Unknown command' };
-    }
-  } else {
-    if (!abortController) {
-      abortAndClearInFlightRun(conversation.id, 'superseded_by_new_message');
-      abortController = new AbortController();
-      myRunId = ++runIdCounter;
-      registerInFlightRun(conversation.id, abortController, myRunId);
-    }
+  while (runContext) {
+    const progressContext = buildProgressContext({
+      conversationId: conversation.id,
+      conversationManager,
+      adapter,
+      canEmitProgress: runContext.canEmitProgress,
+    });
 
     try {
-      result = await runExecutiveAgent(link.userId, user.email, conversation.id, effectiveText, {
-        progressContext: buildProgressContext({
-          conversationId: conversation.id,
-          chatId,
-          conversationManager,
-          telegramClient,
-        }),
-        abortSignal: abortController.signal,
-      });
+      if (activeCommand === 'send') {
+        result = await handleSendCommand(link.userId, user.email, conversation.id, {
+          progressContext,
+          runContext,
+          abortSignal: runContext.abortSignal,
+        });
+      } else if (activeCommand === 'save') {
+        result = await handleSaveCommand(link.userId, user.email, conversation.id, {
+          progressContext,
+          runContext,
+          abortSignal: runContext.abortSignal,
+        });
+      } else if (activeCommand === 'clear') {
+        result = await handleClearCommand(conversation.id);
+      } else if (activeCommand === 'cancel') {
+        result = await handleCancelCommand(conversation.id);
+      } else if (activeCommand === 'help') {
+        result = handleHelpCommand();
+      } else {
+        result = await runExecutiveAgent(link.userId, user.email, conversation.id, activeRequest, {
+          progressContext,
+          runContext,
+          abortSignal: runContext.abortSignal,
+        });
+      }
     } catch (error) {
       if (isAbortError(error)) {
         return { success: true, response: '' };
       }
       throw error;
-    } finally {
-      clearInFlightRun(conversation.id, myRunId ?? undefined);
     }
-  }
 
-  if (result.response) {
-    try {
-      const { messageId: telegramResponseId } = await telegramClient.sendMessage(chatId, result.response);
-      await conversationManager.addMessage(conversation.id, {
-        content: result.response,
-        role: 'ASSISTANT',
-        direction: 'OUTBOUND',
-        telegramMessageId: telegramResponseId,
-        metadata: result.metadata,
-      });
-    } catch (error) {
-      logger.error('[telegramProcessor] Failed sending Telegram response', {
-        chatId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      result.error = 'Failed to send Telegram response';
+    if (result.response && await runContext.isRunCurrent()) {
+      try {
+        const { externalId: telegramResponseId } = await adapter.sendFinal(result.response);
+        const outboundMetadata = buildOrchestrationMessageMetadata(
+          runContext,
+          result.metadata != null && typeof result.metadata === 'object' && !Array.isArray(result.metadata)
+            ? (result.metadata as Record<string, unknown>)
+            : null,
+        );
+
+        await conversationManager.addMessage(conversation.id, {
+          content: result.response,
+          role: 'ASSISTANT',
+          direction: 'OUTBOUND',
+          telegramMessageId: telegramResponseId,
+          metadata: outboundMetadata as Prisma.InputJsonObject,
+        });
+
+        emitOrchestratorEvent('orchestrator.final.sent', {
+          channel: 'telegram',
+          conversationId: conversation.id,
+          runId: runContext.runId,
+          burstId: runContext.burstId,
+          classifierDecision: runContext.classifierDecision,
+          droppedCount: runContext.droppedSummary.length,
+          externalId: telegramResponseId,
+        });
+      } catch (error) {
+        logger.error('[telegramProcessor] Failed sending Telegram response', {
+          chatId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        result.error = 'Failed to send Telegram response';
+      }
     }
+
+    const finalized = await orchestrator.finalizeRun({ runContext });
+    if (!finalized.nextRun) {
+      break;
+    }
+
+    runContext = finalized.nextRun.runContext;
+    activeRequest = finalized.nextRun.userRequest;
+    activeCommand = null;
   }
 
   return result;
@@ -567,6 +513,7 @@ async function runExecutiveAgent(
   options?: {
     progressContext?: ProgressUpdateContext;
     abortSignal?: AbortSignal;
+    runContext?: RunContext;
   },
 ): Promise<ProcessMessageResult> {
   const conversationManager = getConversationManager();
@@ -590,9 +537,24 @@ async function runExecutiveAgent(
       userEmail,
       userRequest,
       conversationId,
+      channel: 'telegram',
       conversationHistory,
       progressContext: options?.progressContext,
       abortSignal: options?.abortSignal,
+      runContext: options?.runContext
+        ? {
+            runId: options.runContext.runId,
+            burstId: options.runContext.burstId,
+            classifierDecision: options.runContext.classifierDecision,
+            droppedSummary: options.runContext.droppedSummary,
+            isRunCurrent: options.runContext.isRunCurrent,
+            isBurstStable: options.runContext.isBurstStable,
+            consumeSteerEvents: options.runContext.consumeSteerEvents,
+            hasPendingSteer: options.runContext.hasPendingSteer,
+            markRunPhase: options.runContext.markRunPhase,
+            getRunPhase: options.runContext.getRunPhase,
+          }
+        : undefined,
     });
 
     return {
@@ -619,23 +581,21 @@ async function runExecutiveAgent(
 
 function buildProgressContext({
   conversationId,
-  chatId,
   conversationManager,
-  telegramClient,
+  adapter,
+  canEmitProgress,
 }: {
   conversationId: string;
-  chatId: string;
   conversationManager: ReturnType<typeof getConversationManager>;
-  telegramClient: ReturnType<typeof getTelegramClient>;
+  adapter: Pick<ChannelAdapter, 'sendProgress'>;
+  canEmitProgress?: () => boolean;
 }): ProgressUpdateContext {
   return {
     channel: 'telegram',
     requestId: crypto.randomUUID(),
     conversationId,
-    sendMessage: async (text) => {
-      const { messageId } = await telegramClient.sendMessage(chatId, text);
-      return { externalId: messageId };
-    },
+    canEmitProgress,
+    sendMessage: adapter.sendProgress,
     persistMessage: async ({ content, metadata, externalId }) => {
       await conversationManager.addMessage(conversationId, {
         content,

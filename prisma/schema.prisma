@@ -412,6 +412,7 @@ model TwilioMessage {
   createdAt      DateTime               @default(now())
   conversation   TwilioConversation     @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 
+  @@unique([twilioSid, direction])
   @@index([conversationId])
   @@index([conversationId, createdAt])
 }

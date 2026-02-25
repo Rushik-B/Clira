@@ -1,6 +1,6 @@
 # Setup Guide
 
-This guide gets Clira running locally with the same app/worker topology used in production.
+This guide gets Clira running locally with the same app/worker/cron topology used in production.
 
 ## Prerequisites
 
@@ -31,7 +31,7 @@ docker compose up -d db redis
 npm run migrate:deploy
 ```
 
-## 4) Start app and worker
+## 4) Start app, worker, and cron
 
 Terminal A:
 
@@ -45,11 +45,18 @@ Terminal B:
 npm run start:worker
 ```
 
+Terminal C:
+
+```bash
+npm run start:cron
+```
+
 ## 5) Validate
 
 - App loads at `http://localhost:3000`
 - Health endpoint: `GET /api/health` returns `healthy`
 - Worker logs show startup and queue readiness
+- Cron logs show scheduled triggers for `/api/cron/reminders`, `/api/cron/sort`, and `/api/cron/renew-gmail-watches`
 
 ## 6) Configure Gmail push
 
@@ -69,15 +76,15 @@ TELEGRAM_BOT_TOKEN=your_botfather_token
 TELEGRAM_ENABLED=true
 ```
 
-1. Restart app + worker so both processes load new env values.
+1. Restart app + worker + cron so all processes load new env values.
 
 If running full Docker stack:
 
 ```bash
-docker compose up -d --force-recreate app worker
+docker compose up -d --force-recreate app worker cron
 ```
 
-If running local `npm run dev` + `npm run start:worker`, restart both terminals.
+If running local `npm run dev` + `npm run start:worker` + `npm run start:cron`, restart all three terminals.
 
 ### User pairing flow (per user)
 

@@ -52,6 +52,7 @@ import {
   startTelegramMonitor,
   stopTelegramMonitor,
   processTelegramMessage,
+  type TelegramInboundMessage,
   writeTelegramWorkerHeartbeat,
 } from '@/lib/services/telegram';
 
@@ -68,6 +69,98 @@ console.log(`  - NODE_ENV: ${process.env.NODE_ENV}`);
 const workers: Worker[] = [];
 let heartbeatInterval: NodeJS.Timeout | null = null;
 let telegramMonitorStarted = false;
+const DEFAULT_TELEGRAM_PROCESS_CONCURRENCY = 7;
+const TELEGRAM_SHUTDOWN_DRAIN_TIMEOUT_MS = 10_000;
+const TELEGRAM_SHUTDOWN_DRAIN_POLL_MS = 50;
+const telegramMessageQueue: TelegramInboundMessage[] = [];
+const telegramInFlightTasks = new Set<Promise<void>>();
+let telegramInFlightCount = 0;
+
+function parsePositiveIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return parsed;
+}
+
+const telegramProcessConcurrency = Math.min(
+  parsePositiveIntEnv('TELEGRAM_PROCESS_CONCURRENCY', DEFAULT_TELEGRAM_PROCESS_CONCURRENCY),
+  16,
+);
+
+function trackTelegramTask(task: Promise<void>): void {
+  telegramInFlightTasks.add(task);
+  task.finally(() => {
+    telegramInFlightTasks.delete(task);
+  });
+}
+
+function dispatchQueuedTelegramMessages(): void {
+  while (
+    telegramInFlightCount < telegramProcessConcurrency &&
+    telegramMessageQueue.length > 0
+  ) {
+    const message = telegramMessageQueue.shift();
+    if (!message) continue;
+    telegramInFlightCount += 1;
+
+    const task = (async () => {
+      try {
+        await processTelegramMessage(message);
+      } catch (error) {
+        logger.error('Error processing Telegram message', {
+          message_id: message.messageId,
+          telegram_user_id: message.telegramUserId,
+          telegram_username: message.telegramUsername,
+          chat_id: message.chatId,
+          date: message.timestamp,
+          has_text: Boolean(message.text),
+          text_length: message.text ? message.text.length : 0,
+          error,
+        });
+      } finally {
+        telegramInFlightCount = Math.max(0, telegramInFlightCount - 1);
+        dispatchQueuedTelegramMessages();
+      }
+    })();
+
+    trackTelegramTask(task);
+  }
+}
+
+function enqueueTelegramMessageForProcessing(message: TelegramInboundMessage): void {
+  telegramMessageQueue.push(message);
+  dispatchQueuedTelegramMessages();
+}
+
+async function drainTelegramProcessingQueue(params?: { timeoutMs?: number }): Promise<void> {
+  const timeoutMs = params?.timeoutMs ?? TELEGRAM_SHUTDOWN_DRAIN_TIMEOUT_MS;
+  const deadline = Date.now() + timeoutMs;
+
+  while (
+    (telegramMessageQueue.length > 0 || telegramInFlightCount > 0 || telegramInFlightTasks.size > 0) &&
+    Date.now() < deadline
+  ) {
+    if (telegramInFlightTasks.size > 0) {
+      await Promise.race([
+        Promise.allSettled(Array.from(telegramInFlightTasks)),
+        new Promise((resolve) => setTimeout(resolve, TELEGRAM_SHUTDOWN_DRAIN_POLL_MS)),
+      ]);
+    } else {
+      await new Promise((resolve) => setTimeout(resolve, TELEGRAM_SHUTDOWN_DRAIN_POLL_MS));
+    }
+  }
+
+  if (telegramMessageQueue.length > 0 || telegramInFlightCount > 0) {
+    logger.warn('[Telegram] Drain timeout during shutdown; dropping pending work', {
+      queued: telegramMessageQueue.length,
+      inFlight: telegramInFlightCount,
+      timeoutMs,
+    });
+    telegramMessageQueue.length = 0;
+  }
+}
 
 // --- Onboarding Worker ---
 // IMPORTANT: Queue name must match the producer in queues.ts ('user-onboarding')
@@ -863,6 +956,16 @@ const modelRetrainWorker = new Worker<ModelRetrainJobData>('model-retrain', asyn
 
 const fastOnboardingService = new FastOnboardingService();
 
+const SUPERMEMORY_BOOTSTRAP_LOCK_TTL_SECONDS = 2 * 60 * 60; // 2 hours
+const SUPERMEMORY_BOOTSTRAP_LOCK_REFRESH_MS = 60_000; // refresh every minute
+const SUPERMEMORY_BOOTSTRAP_COMPLETED_TTL_SECONDS = 12 * 60 * 60; // 12 hours
+
+const getSupermemoryBootstrapLockKey = (userId: string) =>
+  `supermemory-bootstrap:lock:${userId}`;
+
+const getSupermemoryBootstrapCompletedKey = (userId: string) =>
+  `supermemory-bootstrap:completed:${userId}`;
+
 // --- Worker for Fast Onboarding Proposal Generation ---
 const fastOnboardingWorker = new Worker<FastOnboardingProposalJobData>('fast-onboarding-proposal', async (job: any) => {
   const { userId, options } = job.data;
@@ -1028,12 +1131,59 @@ const supermemoryBootstrapWorker = new Worker<SupermemoryBootstrapJobData>(
   'supermemory-bootstrap',
   async (job: Job<SupermemoryBootstrapJobData>) => {
     const { userId, maxSentEmails, budgetTokens, dryRun } = job.data;
+    const lockKey = getSupermemoryBootstrapLockKey(userId);
+    const completedKey = getSupermemoryBootstrapCompletedKey(userId);
+    const lockToken = `${job.id}-${Date.now()}`;
+    let refreshHandle: ReturnType<typeof setInterval> | undefined;
 
     logger.info(
       `[MEMORY BOOTSTRAP START] Building memory graph for user: ${userId} (Job ID: ${job.id})`,
     );
 
     try {
+      const completedAtIso = await redisConnection.get(completedKey);
+      if (completedAtIso) {
+        logger.info(
+          `[MEMORY BOOTSTRAP] Skipping user ${userId} - bootstrap already completed recently at ${completedAtIso}`,
+        );
+        job.updateProgress(100);
+        return {
+          skipped: true,
+          reason: 'Bootstrap already completed recently',
+          completedAt: completedAtIso,
+        };
+      }
+
+      const lockAcquired = await redisConnection.set(
+        lockKey,
+        lockToken,
+        'EX',
+        SUPERMEMORY_BOOTSTRAP_LOCK_TTL_SECONDS,
+        'NX',
+      );
+
+      if (!lockAcquired) {
+        logger.info(
+          `[MEMORY BOOTSTRAP] Skipping user ${userId} - another bootstrap run is already in progress`,
+        );
+        job.updateProgress(100);
+        return {
+          skipped: true,
+          reason: 'Another bootstrap run is already in progress',
+        };
+      }
+
+      refreshHandle = setInterval(async () => {
+        try {
+          const currentLockValue = await redisConnection.get(lockKey);
+          if (currentLockValue === lockToken) {
+            await redisConnection.expire(lockKey, SUPERMEMORY_BOOTSTRAP_LOCK_TTL_SECONDS);
+          }
+        } catch (error) {
+          logger.warn(`[MEMORY BOOTSTRAP] Lock keepalive failed for user ${userId}:`, error);
+        }
+      }, SUPERMEMORY_BOOTSTRAP_LOCK_REFRESH_MS);
+
       // Check if Supermemory is configured
       if (!dryRun && !isSupermemoryConfigured()) {
         logger.warn(
@@ -1061,10 +1211,36 @@ const supermemoryBootstrapWorker = new Worker<SupermemoryBootstrapJobData>(
         `[MEMORY BOOTSTRAP COMPLETE] ✅ User ${userId}: ${result.episodesIngested} episodes, ${result.estimatedTokensUsed} tokens, ${result.durationMs}ms`,
       );
 
+      // Mark successful non-dry-run completion so stalled retries don't rerun immediately.
+      if (!dryRun) {
+        await redisConnection.set(
+          completedKey,
+          new Date().toISOString(),
+          'EX',
+          SUPERMEMORY_BOOTSTRAP_COMPLETED_TTL_SECONDS,
+        );
+      }
+
       return result;
     } catch (error) {
       logger.error(`[MEMORY BOOTSTRAP FAILED] Bootstrap failed for user ${userId}:`, error);
       throw error;
+    } finally {
+      if (refreshHandle) {
+        clearInterval(refreshHandle);
+      }
+
+      try {
+        const currentLockValue = await redisConnection.get(lockKey);
+        if (currentLockValue === lockToken) {
+          await redisConnection.del(lockKey);
+        }
+      } catch (lockCleanupError) {
+        logger.warn(
+          `[MEMORY BOOTSTRAP] Failed to clean up bootstrap lock for user ${userId}:`,
+          lockCleanupError,
+        );
+      }
     }
   },
   {
@@ -1120,6 +1296,8 @@ async function gracefulShutdown(signal: string) {
       await stopTelegramMonitor();
       telegramMonitorStarted = false;
     }
+
+    await drainTelegramProcessingQueue();
 
     // Close all workers
     console.log('📦 Closing all workers...');
@@ -1193,14 +1371,7 @@ heartbeatInterval = setInterval(() => {
 if (isTelegramEnabled()) {
   startTelegramMonitor({
     onMessage: async (message) => {
-      try {
-        await processTelegramMessage(message);
-      } catch (error) {
-        logger.error('Error processing Telegram message', {
-          message,
-          error,
-        });
-      }
+      enqueueTelegramMessageForProcessing(message);
     },
   })
     .then(() => {
@@ -1227,3 +1398,4 @@ console.log('  - Email Mapping: concurrency 3');
 console.log('  - Email Learning: concurrency 4');
 console.log('  - Email Categorization: concurrency 1');
 console.log('  - Supermemory Bootstrap: concurrency 1');
+console.log(`  - Telegram message processing: concurrency ${telegramProcessConcurrency}`);

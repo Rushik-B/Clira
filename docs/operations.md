@@ -1,11 +1,12 @@
 # Operations Runbook
 
-Operational baseline for running Clira in a stable app + worker topology.
+Operational baseline for running Clira in a stable app + worker + cron topology.
 
 ## Service Topology
 
 - `app`: Next.js server (`npm run start`)
 - `worker`: BullMQ worker (`npm run start:worker`)
+- `cron`: Local scheduler (`npm run start:cron`) that triggers cron endpoints
 - `db`: Postgres
 - `redis`: Redis
 

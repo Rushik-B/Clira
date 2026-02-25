@@ -5,6 +5,14 @@ import {
 import { LlmError } from '@/lib/ai/errors';
 import { models } from '@/lib/ai/models';
 import {
+  isNativeSteeringEnabled,
+  requireNativeSteeringRuntime,
+  resolveNativeSteeringRuntime,
+} from '@/lib/ai/runtime/steeringRuntime';
+import {
+  isCooperativeSteeringEnabled,
+} from '@/lib/services/messaging-orchestration/steeringConfig';
+import {
   type Prisma,
   PendingCalendarChangeStatus,
 } from '@prisma/client';
@@ -28,6 +36,7 @@ import {
   wrapToolsWithTimingMetadata,
 } from './helpers';
 import { buildExecutiveAgentPrompt } from './prompt';
+import { runSteerableTextWithTools, type SteerRunContext } from './steerableLoop';
 import { buildExecutiveAgentTools } from './tools';
 import type {
   ExecutiveAgentInput,
@@ -38,8 +47,16 @@ import type {
 export class ExecutiveAgent {
   async process(input: ExecutiveAgentInput): Promise<ExecutiveAgentOutput> {
     let memoryStored = false;
-    const resolvedChannel = resolveProgressChannel(input);
+    const resolvedChannel = input.channel ?? resolveProgressChannel(input);
     const retrievalProfile = resolveRetrievalProfile(resolvedChannel);
+    const isRunCurrent = async () => {
+      if (!input.runContext?.isRunCurrent) return true;
+      return input.runContext.isRunCurrent();
+    };
+    const isBurstStable = () => {
+      if (!input.runContext?.isBurstStable) return true;
+      return input.runContext.isBurstStable();
+    };
 
     let toolAbort: ReturnType<typeof createDeadlineController> | undefined;
 
@@ -88,6 +105,8 @@ export class ExecutiveAgent {
         dayOfWeek,
         toolAbort,
         toolAbortSignal,
+        isRunCurrent,
+        isBurstStable,
         onMemoryStored: () => {
           memoryStored = true;
         },
@@ -95,6 +114,11 @@ export class ExecutiveAgent {
 
       const startTime = Date.now();
       let lastProgressSentAt = 0;
+
+      const hasPendingSteer = async () => {
+        if (typeof input.runContext?.hasPendingSteer !== 'function') return false;
+        return input.runContext.hasPendingSteer(0);
+      };
 
       const timedTools = wrapToolsWithTimingMetadata({
         tools,
@@ -104,6 +128,8 @@ export class ExecutiveAgent {
         setLastProgressSentAt: (sentAt: number) => {
           lastProgressSentAt = sentAt;
         },
+        isRunCurrent,
+        hasPendingSteer,
       });
 
       const systemPrompt =
@@ -123,7 +149,6 @@ export class ExecutiveAgent {
         'when you need to dig deeper after a weak first result, ' +
         'when you\'re adding another tool (e.g., checking calendar after inbox), ' +
         'or when the request clearly needs multiple steps. ' +
-        'MANDATORY: On the first call of search_calendar or plan_calendar_change in this turn, call send_progress_update first with one short natural sentence (e.g. "Checking your calendar…"); only once per tool per turn. ' +
         'Tool results include _timing (elapsed_ms, ms_since_last_progress_update, time_left_ms). If ms_since_last_progress_update > 15000 and you plan another tool call, send a quick progress update first. ' +
         'Avoid robotic "starting search" updates and never mention tool names. ' +
         'When drafting emails: gather context first (search_inbox_context, calendar, memory), then propose the draft to the user. ' +
@@ -157,23 +182,59 @@ export class ExecutiveAgent {
         ? { google: { thinkingConfig: { thinkingBudget: 0 } } }
         : undefined;
 
-      const { text, toolCalls, toolResults, steps, toolBudget } = await callTextWithTools({
-        model: models.execAgent(),
-        system: systemPrompt,
-        prompt,
-        tools: timedTools,
-        maxSteps: MESSAGING_MAX_STEPS,
-        maxToolCallsTotal: MESSAGING_MAX_TOOL_CALLS_TOTAL,
-        maxToolCallsPerTool: MESSAGING_TOOL_BUDGETS_BASE,
-        deadlineMs: MESSAGING_DEADLINE_MS,
-        stopWhen: stopConditions,
-        temperature: 0.7,
-        op: `${resolvedChannel}.executive`,
-        concurrency: { key: `${resolvedChannel}.executive`, maxConcurrency: 4 },
-        retry: { maxAttempts: 3, baseDelayMs: 500 },
-        abortSignal: toolAbortSignal,
-        providerOptions,
-      });
+      const nativeSteerEnabled = isNativeSteeringEnabled(resolvedChannel);
+      if (nativeSteerEnabled) {
+        requireNativeSteeringRuntime(resolveNativeSteeringRuntime(), {
+          op: `${resolvedChannel}.executive`,
+        });
+      }
+
+      const canCooperativeSteer =
+        typeof input.runContext?.consumeSteerEvents === 'function' &&
+        typeof input.runContext?.markRunPhase === 'function' &&
+        isCooperativeSteeringEnabled(resolvedChannel);
+
+      const exec = canCooperativeSteer
+        ? await runSteerableTextWithTools({
+            model: models.execAgent(),
+            system: systemPrompt,
+            prompt,
+            tools: timedTools,
+            timeLeftMs: () => toolAbort!.timeLeftMs(),
+            maxSteps: MESSAGING_MAX_STEPS,
+            maxToolCallsTotal: MESSAGING_MAX_TOOL_CALLS_TOTAL,
+            maxToolCallsPerTool: MESSAGING_TOOL_BUDGETS_BASE,
+            deadlineMs: MESSAGING_DEADLINE_MS,
+            stopWhen: stopConditions,
+            temperature: 0.7,
+            op: `${resolvedChannel}.executive`,
+            concurrency: { key: `${resolvedChannel}.executive`, maxConcurrency: 4 },
+            retry: { maxAttempts: 3, baseDelayMs: 500 },
+            abortSignal: toolAbortSignal,
+            providerOptions,
+            runContext: input.runContext as unknown as SteerRunContext,
+          })
+        : await callTextWithTools({
+            model: models.execAgent(),
+            system: systemPrompt,
+            prompt,
+            tools: timedTools,
+            maxSteps: MESSAGING_MAX_STEPS,
+            maxToolCallsTotal: MESSAGING_MAX_TOOL_CALLS_TOTAL,
+            maxToolCallsPerTool: MESSAGING_TOOL_BUDGETS_BASE,
+            deadlineMs: MESSAGING_DEADLINE_MS,
+            stopWhen: stopConditions,
+            temperature: 0.7,
+            op: `${resolvedChannel}.executive`,
+            concurrency: { key: `${resolvedChannel}.executive`, maxConcurrency: 4 },
+            retry: { maxAttempts: 3, baseDelayMs: 500 },
+            abortSignal: toolAbortSignal,
+            providerOptions,
+          });
+
+      const { text, toolCalls, toolResults, steps, toolBudget } = exec;
+      const steerMetadata =
+        exec && typeof exec === 'object' && 'steer' in exec ? (exec as any).steer : null;
 
       const toolNames = collectToolNamesFromExecution({ toolCalls, toolResults, steps });
       logger.info(`[executiveAgent] Tools used: ${Array.from(toolNames).join(', ') || '(none)'}`);
@@ -185,6 +246,10 @@ export class ExecutiveAgent {
       if (!response) {
         response = buildTerminalFallbackResponse(toolResults);
         logger.info(`[executiveAgent] Empty model text, using fallback: ${response}`);
+      }
+
+      if (!(await isRunCurrent())) {
+        throw new Error('superseded_by_newer_message');
       }
 
       const metadata: Record<string, Prisma.InputJsonValue> = {};
@@ -199,6 +264,21 @@ export class ExecutiveAgent {
       }
       if (toolBudget) {
         metadata.toolBudget = toolBudget as Prisma.InputJsonValue;
+      }
+      if (input.runContext) {
+        metadata.orchestration = {
+          runId: input.runContext.runId,
+          burstId: input.runContext.burstId,
+          classifierDecision: input.runContext.classifierDecision ?? null,
+          queueOverflowSummary:
+            (input.runContext.droppedSummary ?? []).length > 0
+              ? {
+                  droppedCount: (input.runContext.droppedSummary ?? []).length,
+                  droppedMessages: input.runContext.droppedSummary ?? [],
+                }
+              : null,
+          steer: steerMetadata,
+        } as Prisma.InputJsonValue;
       }
 
       return {

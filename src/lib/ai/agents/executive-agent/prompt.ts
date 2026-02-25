@@ -14,6 +14,7 @@ import type { ProgressUpdateChannel } from '@/lib/ai/progressTypes';
 import type { ExecutiveAgentInput, PromptContext } from './types';
 import { getDateOnlyInTimezone } from '@/lib/utils/timezone';
 import { logger } from '@/lib/logger';
+import { buildRunContextPromptFragment } from '@/lib/services/messaging-orchestration';
 
 export async function buildExecutiveAgentPrompt(
   input: ExecutiveAgentInput,
@@ -120,8 +121,13 @@ export async function buildExecutiveAgentPrompt(
     .replace('{conversationHistory}', formatConversationHistory(input.conversationHistory, now, userTimezone))
     .replace('{memoryContext}', memoryContext);
 
+  const runContextFragment = buildRunContextPromptFragment({
+    classifierDecision: input.runContext?.classifierDecision,
+    droppedSummary: input.runContext?.droppedSummary,
+  });
+
   return {
-    prompt,
+    prompt: `${prompt}\n\n${runContextFragment}`,
     userTimezone,
     currentTimeUtc,
     currentTimeUserTz,

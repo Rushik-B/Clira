@@ -33,6 +33,19 @@ export function buildMessagingTools({
   });
   const reminderClosedStatuses = new Set(['DISMISSED', 'COMPLETED', 'MISSED', 'CANCELLED']);
   const reminderNonCancelableStatuses = new Set(['DELIVERED', 'DISMISSED', 'COMPLETED', 'MISSED', 'CANCELLED']);
+  const ensureCurrentRun = async (toolName: string) => {
+    if (await context.isRunCurrent()) {
+      return null;
+    }
+
+    logger.info(`[executiveAgent] ${toolName} deferred due to stale run`);
+    return {
+      success: false,
+      status: 'deferred',
+      error: 'superseded_by_newer_message',
+      message: 'A newer user message arrived, so this action was deferred.',
+    };
+  };
 
   return {
       // Tool 7: Append to Memory
@@ -100,6 +113,9 @@ export function buildMessagingTools({
             .describe('What emails to alert on (natural language)'),
         }),
         execute: async (args: { description: string }) => {
+          const stale = await ensureCurrentRun('add_email_alert');
+          if (stale) return stale;
+
           const description = args.description.trim();
           if (description.length < 5) {
             return { success: false, message: 'Please provide a longer alert description.' };
@@ -136,6 +152,9 @@ export function buildMessagingTools({
           descriptionMatch: z.string().optional().describe('Find alert by partial description match'),
         }),
         execute: async (args: { alertId?: string; descriptionMatch?: string }) => {
+          const stale = await ensureCurrentRun('remove_email_alert');
+          if (stale) return stale;
+
           if (!args.alertId && !args.descriptionMatch) {
             return { success: false, message: 'Provide an alertId or descriptionMatch.' };
           }
@@ -221,6 +240,9 @@ export function buildMessagingTools({
           linkedEmailId?: string;
           linkedEventId?: string;
         }) => {
+          const stale = await ensureCurrentRun('add_reminder');
+          if (stale) return stale;
+
           const title = args.title.trim();
           if (!title) {
             return { success: false, message: 'Reminder title is required.' };
@@ -336,6 +358,9 @@ export function buildMessagingTools({
           snoozeUntil: z.string().min(1).max(200).describe('Snooze until (ISO UTC or natural language)'),
         }),
         execute: async (args: { reminderId: string; snoozeUntil: string }) => {
+          const stale = await ensureCurrentRun('snooze_reminder');
+          if (stale) return stale;
+
           const now = new Date();
           const parsed = parseReminderTime(args.snoozeUntil, { now, timeZone: userTimezone });
           if (!parsed || Number.isNaN(parsed.date.getTime())) {
@@ -402,6 +427,9 @@ export function buildMessagingTools({
           markCompleted: z.boolean().optional(),
         }),
         execute: async (args: { reminderId: string; markCompleted?: boolean }) => {
+          const stale = await ensureCurrentRun('dismiss_reminder');
+          if (stale) return stale;
+
           const reminder = await prisma.reminder.findFirst({
             where: { id: args.reminderId, userId: input.userId },
             select: { id: true, title: true, status: true },
@@ -457,6 +485,9 @@ export function buildMessagingTools({
           reminderId: z.string().min(1),
         }),
         execute: async (args: { reminderId: string }) => {
+          const stale = await ensureCurrentRun('cancel_reminder');
+          if (stale) return stale;
+
           const reminder = await prisma.reminder.findFirst({
             where: { id: args.reminderId, userId: input.userId },
             select: { id: true, title: true, status: true },
@@ -516,12 +547,20 @@ export function buildMessagingTools({
           threadId?: string;
           confirmed: boolean;
         }) => {
+          const stale = await ensureCurrentRun('send_email');
+          if (stale) return stale;
+
           if (!args.confirmed) {
             return {
               success: false,
               message: 'Email not sent. Explicit user approval is required before sending. Show the draft to the user and wait for them to confirm.',
             };
           }
+
+          await context.input.runContext?.markRunPhase?.('commit_boundary');
+
+          const staleAfterBoundary = await ensureCurrentRun('send_email');
+          if (staleAfterBoundary) return staleAfterBoundary;
 
           logger.info(`[executiveAgent] send_email: to=${args.to} subject="${truncate(args.subject, 30)}"`);
 

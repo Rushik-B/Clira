@@ -6,15 +6,32 @@ import type {
   ConversationMessageDTO,
 } from '@/lib/ai/schemas/executiveAgentSchemas';
 import type { Prisma, PendingCalendarChangeStatus } from '@prisma/client';
+import type {
+  ConsumeSteerEventsResult,
+  RunPhase,
+} from '@/lib/services/messaging-orchestration/types';
 
 export interface ExecutiveAgentInput {
   userId: string;
   userEmail: string;
   userRequest: string;
   conversationId: string;
+  channel: ProgressUpdateChannel;
   conversationHistory: ConversationMessageDTO[];
   abortSignal?: AbortSignal;
   progressContext?: ProgressUpdateContext;
+  runContext?: {
+    runId: string;
+    burstId: string;
+    classifierDecision?: 'supersede' | 'followup' | 'ambiguous' | null;
+    droppedSummary?: string[];
+    isRunCurrent: () => Promise<boolean>;
+    isBurstStable: () => boolean;
+    consumeSteerEvents?: (afterSeq: number) => Promise<ConsumeSteerEventsResult>;
+    hasPendingSteer?: (afterSeq: number) => Promise<boolean>;
+    markRunPhase?: (phase: RunPhase) => Promise<void>;
+    getRunPhase?: () => Promise<RunPhase>;
+  };
 }
 
 export interface ExecutiveAgentOutput {
@@ -76,5 +93,7 @@ export type ExecutiveRuntimeContext = {
     timeLeftMs: () => number | null;
   };
   toolAbortSignal?: AbortSignal;
+  isRunCurrent: () => Promise<boolean>;
+  isBurstStable: () => boolean;
   onMemoryStored: () => void;
 };

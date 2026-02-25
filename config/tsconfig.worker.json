@@ -21,6 +21,7 @@
     }
   },
   "include": [
+    "../src/cron.ts",
     "../src/worker.ts",
     "../src/lib/**/*",
     "../src/types/**/*"

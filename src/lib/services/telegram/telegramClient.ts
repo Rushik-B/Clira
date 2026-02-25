@@ -10,6 +10,7 @@ import { sequentialize } from '@grammyjs/runner';
 import type { UserFromGetMe } from '@grammyjs/types/manage';
 import { prisma } from '@/lib/prisma';
 import { logger } from '@/lib/logger';
+import { normalizeMarkdownForTelegram } from './messageFormatting';
 
 const DEFAULT_POLL_TIMEOUT_SECONDS = 30;
 const DEFAULT_POLL_RETRY_MAX_MS = 15_000;
@@ -249,7 +250,9 @@ export class TelegramClient {
   }
 
   async sendMessage(chatId: string, text: string): Promise<TelegramSendMessageResponse> {
-    const sent = await this.bot.api.sendMessage(toTelegramChatId(chatId), text, {
+    const normalizedText = normalizeMarkdownForTelegram(text);
+    const sent = await this.bot.api.sendMessage(toTelegramChatId(chatId), normalizedText, {
+      parse_mode: 'HTML',
       link_preview_options: { is_disabled: true },
     });
     return { messageId: String(sent.message_id) };

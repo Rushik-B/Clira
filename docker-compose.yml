@@ -35,6 +35,19 @@ services:
       redis:
         condition: service_started
 
+  cron:
+    build: .
+    command: sh -c "npm run start:cron"
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      CRON_TARGET_BASE_URL: http://app:3000
+      CRON_TIMEZONE: UTC
+    depends_on:
+      app:
+        condition: service_started
+
   db:
     image: postgres:16-alpine
     restart: unless-stopped
