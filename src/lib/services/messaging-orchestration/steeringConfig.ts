@@ -4,7 +4,7 @@ import type {
   RunPhase,
 } from './types';
 
-const AMBIGUOUS_STEER_CONFIDENCE_MIN = 0.97;
+const AMBIGUOUS_STEER_CONFIDENCE_MIN =0.30;
 const DEFAULT_STEER_MAILBOX_CAP = 8;
 
 function parsePositiveInt(value: string | undefined): number | null {
