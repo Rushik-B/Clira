@@ -688,6 +688,9 @@ export function buildCalendarMutationTools({
 
           const now = new Date();
           const expiresAt = new Date(now.getTime() + PENDING_CALENDAR_CHANGE_TTL_MS);
+          const staleBeforePendingCancel = await ensureCurrentRun('plan_calendar_change');
+          if (staleBeforePendingCancel) return staleBeforePendingCancel;
+
           await prisma.pendingCalendarChange.updateMany({
             where: {
               userId: input.userId,
@@ -703,6 +706,9 @@ export function buildCalendarMutationTools({
           const resolvedTargetPayload = resolvedTargets?.length
             ? resolvedTargets
             : resolvedTarget ?? null;
+
+          const staleBeforePendingWrite = await ensureCurrentRun('plan_calendar_change');
+          if (staleBeforePendingWrite) return staleBeforePendingWrite;
 
           const pendingRecord = await prisma.pendingCalendarChange.create({
             data: {
