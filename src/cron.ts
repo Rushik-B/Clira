@@ -25,6 +25,9 @@ const CRON_STARTUP_WAIT_TIMEOUT_MS = Number.parseInt(
   10,
 );
 const CRON_STARTUP_RETRY_INTERVAL_MS = 2_000;
+const CRON_INTERNAL_PROXY_HEADERS = {
+  'x-forwarded-proto': 'https',
+} as const;
 
 const cronJobs: CronJobConfig[] = [
   {
@@ -66,6 +69,7 @@ async function triggerCronJob(job: CronJobConfig): Promise<void> {
     const response = await fetch(endpoint, {
       method: job.method,
       headers: {
+        ...CRON_INTERNAL_PROXY_HEADERS,
         Authorization: `Bearer ${CRON_SECRET}`,
         'Content-Type': 'application/json',
       },
@@ -111,6 +115,7 @@ async function waitForCronTargetReachable(): Promise<void> {
     try {
       const response = await fetch(CRON_BASE_URL, {
         method: 'GET',
+        headers: CRON_INTERNAL_PROXY_HEADERS,
         signal: AbortSignal.timeout(5_000),
       });
       console.log(`[LOCAL CRON] Cron target reachable (${response.status})`);
