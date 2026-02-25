@@ -88,6 +88,9 @@ export class ExecutiveAgent {
       const pendingCalendarInstruction = pendingRecordForPrompt && pendingPayloadForPrompt
         ? `Active pending calendar change exists (pendingId=${pendingRecordForPrompt.id}, action=${pendingPayloadForPrompt.plan.action}, expiresAt=${pendingRecordForPrompt.expiresAt.toISOString()}).`
         : 'No active pending calendar change exists.';
+      const promptWithRuntimeState =
+        `${prompt}\n\n` +
+        `Runtime calendar state (for this turn): ${pendingCalendarInstruction}`;
 
       toolAbort = createDeadlineController({
         abortSignal: input.abortSignal,
@@ -154,7 +157,7 @@ export class ExecutiveAgent {
         'When drafting emails: gather context first (search_inbox_context, calendar, memory), then propose the draft to the user. ' +
         'For analytical or quantitative questions over emails (totals, counts, patterns, aggregations), use search_inbox_context with mode=deep, then analyze the evidence and report. ' +
         'ONLY call send_email after the user explicitly says "yes", "send it", "go ahead", or similar clear approval. NEVER assume permission. The email will be SENT IMMEDIATELY. ' +
-        `Pending calendar state: ${pendingCalendarInstruction} ` +
+        'Pending calendar state is provided in the user prompt for this turn. ' +
         'Calendar change workflow: ' +
         '(1) If no pending change exists: call plan_calendar_change to create one. For move/reschedule requests, call plan_calendar_change ONCE with the complete plan (all events and new times). Do not call it again to refine unless the user explicitly asks for changes. ' +
         '(2) If a pending change exists and user confirms (approvals: "yes", "yessirr", "yup", "yeah", "sure", "send it", "confirm", "do it", "lock it in", "go ahead"): call commit_calendar_change with decision="confirm". DO NOT call plan_calendar_change again. ' +
@@ -198,7 +201,7 @@ export class ExecutiveAgent {
         ? await runSteerableTextWithTools({
             model: models.execAgent(),
             system: systemPrompt,
-            prompt,
+            prompt: promptWithRuntimeState,
             tools: timedTools,
             timeLeftMs: () => toolAbort!.timeLeftMs(),
             maxSteps: MESSAGING_MAX_STEPS,
@@ -217,7 +220,7 @@ export class ExecutiveAgent {
         : await callTextWithTools({
             model: models.execAgent(),
             system: systemPrompt,
-            prompt,
+            prompt: promptWithRuntimeState,
             tools: timedTools,
             maxSteps: MESSAGING_MAX_STEPS,
             maxToolCallsTotal: MESSAGING_MAX_TOOL_CALLS_TOTAL,
