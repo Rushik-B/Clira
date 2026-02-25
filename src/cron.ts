@@ -17,8 +17,14 @@ type CronJobConfig = {
 const CRON_SECRET = process.env.CRON_SECRET;
 const DEFAULT_BASE_URL = process.env.NEXTAUTH_URL || 'http://localhost:3000';
 const CRON_BASE_URL = (process.env.CRON_TARGET_BASE_URL || DEFAULT_BASE_URL).replace(/\/+$/, '');
+const NEXTAUTH_URL = process.env.NEXTAUTH_URL;
 const CRON_TIMEZONE = process.env.CRON_TIMEZONE || 'UTC';
 const CRON_TRIGGER_TIMEOUT_MS = 60_000;
+const CRON_STARTUP_WAIT_TIMEOUT_MS = Number.parseInt(
+  process.env.CRON_STARTUP_WAIT_TIMEOUT_MS || '120000',
+  10,
+);
+const CRON_STARTUP_RETRY_INTERVAL_MS = 2_000;
 
 const cronJobs: CronJobConfig[] = [
   {
@@ -97,12 +103,45 @@ function validateCronConfiguration(): void {
   }
 }
 
-function startCronRunner(): void {
+async function waitForCronTargetReachable(): Promise<void> {
+  const startedAt = Date.now();
+  const deadline = startedAt + CRON_STARTUP_WAIT_TIMEOUT_MS;
+
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(CRON_BASE_URL, {
+        method: 'GET',
+        signal: AbortSignal.timeout(5_000),
+      });
+      console.log(`[LOCAL CRON] Cron target reachable (${response.status})`);
+      return;
+    } catch (error) {
+      const remainingMs = Math.max(0, deadline - Date.now());
+      console.log(
+        `[LOCAL CRON] Waiting for app target ${CRON_BASE_URL} (${remainingMs}ms left)`,
+      );
+      await new Promise((resolve) => setTimeout(resolve, CRON_STARTUP_RETRY_INTERVAL_MS));
+    }
+  }
+
+  throw new Error(
+    `Timed out waiting for cron target ${CRON_BASE_URL} after ${CRON_STARTUP_WAIT_TIMEOUT_MS}ms`,
+  );
+}
+
+async function startCronRunner(): Promise<void> {
   validateCronConfiguration();
 
   console.log('[LOCAL CRON] Starting local cron scheduler');
-  console.log(`[LOCAL CRON] Base URL: ${CRON_BASE_URL}`);
+  console.log(`[LOCAL CRON] Cron target URL (internal): ${CRON_BASE_URL}`);
+  if (NEXTAUTH_URL) {
+    console.log(`[LOCAL CRON] App URL (host/browser): ${NEXTAUTH_URL}`);
+  }
+  if (CRON_BASE_URL.includes('app:3000')) {
+    console.log('[LOCAL CRON] Note: Docker internal calls use app:3000; host access still uses localhost:13000');
+  }
   console.log(`[LOCAL CRON] Timezone: ${CRON_TIMEZONE}`);
+  await waitForCronTargetReachable();
 
   for (const job of cronJobs) {
     const task = cron.schedule(
@@ -147,9 +186,11 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   });
 }
 
-try {
-  startCronRunner();
-} catch (error) {
-  console.error('[LOCAL CRON] Failed to start local scheduler', error);
-  process.exit(1);
-}
+void (async () => {
+  try {
+    await startCronRunner();
+  } catch (error) {
+    console.error('[LOCAL CRON] Failed to start local scheduler', error);
+    process.exit(1);
+  }
+})();
