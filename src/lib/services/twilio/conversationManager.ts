@@ -247,13 +247,26 @@ export class ConversationManager {
         });
 
         if (duplicate) {
-          logger.info('[ConversationManager] addMessage duplicate ignored via unique constraint', {
-            conversationId,
-            direction: params.direction,
-            twilioSid: params.twilioSid,
-            messageId: duplicate.id,
-          });
-          return duplicate;
+          if (duplicate.conversationId === conversationId) {
+            logger.info('[ConversationManager] addMessage duplicate ignored via unique constraint', {
+              conversationId,
+              direction: params.direction,
+              twilioSid: params.twilioSid,
+              messageId: duplicate.id,
+            });
+            return duplicate;
+          }
+
+          logger.error(
+            '[ConversationManager] addMessage duplicate conflict across conversations',
+            {
+              conversationId,
+              duplicateConversationId: duplicate.conversationId,
+              direction: params.direction,
+              twilioSid: params.twilioSid,
+              messageId: duplicate.id,
+            },
+          );
         }
       }
 
