@@ -963,7 +963,6 @@ export function buildCalendarMutationTools({
               for (const [index, draft] of drafts.entries()) {
                 const staleInLoop = await ensureCurrentRun('commit_calendar_change');
                 if (staleInLoop) {
-                  await releasePending();
                   return staleInLoop;
                 }
 
@@ -1102,7 +1101,6 @@ export function buildCalendarMutationTools({
                 for (const [index, target] of pendingPayload.resolvedTargets.entries()) {
                   const staleInLoop = await ensureCurrentRun('commit_calendar_change');
                   if (staleInLoop) {
-                    await releasePending();
                     return staleInLoop;
                   }
 
@@ -1390,7 +1388,6 @@ export function buildCalendarMutationTools({
                 for (const [index, target] of pendingPayload.resolvedTargets.entries()) {
                   const staleInLoop = await ensureCurrentRun('commit_calendar_change');
                   if (staleInLoop) {
-                    await releasePending();
                     return staleInLoop;
                   }
 

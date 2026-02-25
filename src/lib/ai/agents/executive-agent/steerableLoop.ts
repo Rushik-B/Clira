@@ -127,61 +127,65 @@ export async function runSteerableTextWithTools(params: {
   };
 
   await params.runContext?.markRunPhase('running');
-  await consumeAndInjectSteer();
+  try {
+    await consumeAndInjectSteer();
 
-  for (let stepIndex = 0; stepIndex < params.maxSteps; stepIndex += 1) {
-    const stepOp = `${params.op}.step.${stepIndex + 1}`;
-    const result = await callTextWithToolsStep({
-      model: params.model,
-      system: params.system,
-      messages,
-      tools: budget.tools,
-      stopWhen: params.stopWhen,
-      temperature: params.temperature,
-      abortSignal: params.abortSignal,
-      op: stepOp,
-      concurrency: params.concurrency,
-      retry: params.retry,
-      providerOptions: params.providerOptions,
-    });
+    for (let stepIndex = 0; stepIndex < params.maxSteps; stepIndex += 1) {
+      const stepOp = `${params.op}.step.${stepIndex + 1}`;
+      const result = await callTextWithToolsStep({
+        model: params.model,
+        system: params.system,
+        messages,
+        tools: budget.tools,
+        stopWhen: params.stopWhen,
+        temperature: params.temperature,
+        abortSignal: params.abortSignal,
+        op: stepOp,
+        concurrency: params.concurrency,
+        retry: params.retry,
+        providerOptions: params.providerOptions,
+      });
 
-    if (Array.isArray(result.responseMessages) && result.responseMessages.length > 0) {
-      messages.push(...result.responseMessages);
-    }
+      if (Array.isArray(result.responseMessages) && result.responseMessages.length > 0) {
+        messages.push(...result.responseMessages);
+      }
 
-    if (Array.isArray(result.toolCalls) && result.toolCalls.length > 0) {
-      toolCalls.push(...result.toolCalls);
-    }
-    if (Array.isArray(result.toolResults) && result.toolResults.length > 0) {
-      toolResults.push(...result.toolResults);
-    }
-    if (Array.isArray(result.steps) && result.steps.length > 0) {
-      steps.push(...result.steps);
-    }
+      if (Array.isArray(result.toolCalls) && result.toolCalls.length > 0) {
+        toolCalls.push(...result.toolCalls);
+      }
+      if (Array.isArray(result.toolResults) && result.toolResults.length > 0) {
+        toolResults.push(...result.toolResults);
+      }
+      if (Array.isArray(result.steps) && result.steps.length > 0) {
+        steps.push(...result.steps);
+      }
 
-    const candidateText = (result.text || '').trim();
-    if (candidateText) {
-      const injected = await consumeAndInjectSteer();
-      if (!injected) {
-        text = candidateText;
+      const candidateText = (result.text || '').trim();
+      if (candidateText) {
+        const injected = await consumeAndInjectSteer();
+        if (!injected) {
+          text = candidateText;
+          break;
+        }
+      }
+
+      if (isTerminalToolStep({ steps: result.steps })) {
+        logger.info(`[steerableLoop] terminal tool stop op=${params.op} step=${stepIndex + 1}`);
         break;
       }
+
+      await consumeAndInjectSteer();
     }
 
-    if (isTerminalToolStep({ steps: result.steps })) {
-      logger.info(`[steerableLoop] terminal tool stop op=${params.op} step=${stepIndex + 1}`);
-      break;
-    }
-
-    await consumeAndInjectSteer();
+    return {
+      text,
+      toolCalls,
+      toolResults,
+      steps,
+      toolBudget: budget.report(),
+      steer: { appliedEvents, appliedDroppedSummary, lastSeq: steerSeq },
+    };
+  } finally {
+    await params.runContext?.markRunPhase('completed');
   }
-
-  return {
-    text,
-    toolCalls,
-    toolResults,
-    steps,
-    toolBudget: budget.report(),
-    steer: { appliedEvents, appliedDroppedSummary, lastSeq: steerSeq },
-  };
 }
