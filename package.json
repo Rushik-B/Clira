@@ -15,11 +15,10 @@
     "postinstall": "prisma generate",
     "migrate:deploy": "prisma migrate deploy",
     "migrate:status": "prisma migrate status",
-    "test": "jest",
-    "test:integration": "node tests/integration/email-sending.test.js",
-    "test:watch": "jest --watch",
-    "test:coverage": "jest --coverage",
-    "test:ci": "jest --coverage --runInBand",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:ci": "vitest run --coverage",
     "setup:google": "bash scripts/setup-google.sh",
     "benchmark": "bash scripts/benchmark.sh",
     "remotion:preview": "remotion studio",
@@ -89,6 +88,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@types/tmp": "^0.2.6",
+    "@vitest/coverage-v8": "^4.0.18",
     "eslint": "^9",
     "eslint-config-next": "15.3.3",
     "prisma": "^7.2.0",
@@ -96,7 +96,8 @@
     "tailwindcss": "^4",
     "tsc-alias": "^1.8.16",
     "tw-animate-css": "^1.3.6",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^4.0.18"
   },
   "resolutions": {
     "@types/react": "17.0.40"
