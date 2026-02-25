@@ -10,6 +10,9 @@ import { isSupermemoryConfigured } from './client';
 import { logger } from '@/lib/logger';
 import redisConnection from '../utils/redis';
 
+const getSupermemoryBootstrapCompletedKey = (userId: string) =>
+  `supermemory-bootstrap:completed:${userId}`;
+
 /**
  * Enqueue a Supermemory bootstrap job for a user
  *
@@ -43,6 +46,7 @@ export async function enqueueSupermemoryBootstrap(
   }
 
   const stableJobId = `supermemory-bootstrap-${userId}`;
+  const completedKey = getSupermemoryBootstrapCompletedKey(userId);
 
   const jobData: SupermemoryBootstrapJobData = {
     userId,
@@ -54,6 +58,18 @@ export async function enqueueSupermemoryBootstrap(
   const delayMs = options?.delayMs ?? 30_000; // Default 30 second delay
 
   try {
+    // If bootstrap completed recently, do not enqueue again.
+    // This pairs with worker-level guard for end-to-end idempotency.
+    if (!jobData.dryRun) {
+      const completedAtIso = await redisConnection.get(completedKey);
+      if (completedAtIso) {
+        logger.info(
+          `[Supermemory] Bootstrap recently completed for user ${userId} at ${completedAtIso}, skipping enqueue`,
+        );
+        return stableJobId;
+      }
+    }
+
     const existingJob = await supermemoryBootstrapQueue.getJob(stableJobId);
     if (existingJob) {
       const state = await existingJob.getState();

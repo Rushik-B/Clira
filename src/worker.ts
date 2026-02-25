@@ -950,6 +950,16 @@ const modelRetrainWorker = new Worker<ModelRetrainJobData>('model-retrain', asyn
 
 const fastOnboardingService = new FastOnboardingService();
 
+const SUPERMEMORY_BOOTSTRAP_LOCK_TTL_SECONDS = 2 * 60 * 60; // 2 hours
+const SUPERMEMORY_BOOTSTRAP_LOCK_REFRESH_MS = 60_000; // refresh every minute
+const SUPERMEMORY_BOOTSTRAP_COMPLETED_TTL_SECONDS = 12 * 60 * 60; // 12 hours
+
+const getSupermemoryBootstrapLockKey = (userId: string) =>
+  `supermemory-bootstrap:lock:${userId}`;
+
+const getSupermemoryBootstrapCompletedKey = (userId: string) =>
+  `supermemory-bootstrap:completed:${userId}`;
+
 // --- Worker for Fast Onboarding Proposal Generation ---
 const fastOnboardingWorker = new Worker<FastOnboardingProposalJobData>('fast-onboarding-proposal', async (job: any) => {
   const { userId, options } = job.data;
@@ -1115,12 +1125,59 @@ const supermemoryBootstrapWorker = new Worker<SupermemoryBootstrapJobData>(
   'supermemory-bootstrap',
   async (job: Job<SupermemoryBootstrapJobData>) => {
     const { userId, maxSentEmails, budgetTokens, dryRun } = job.data;
+    const lockKey = getSupermemoryBootstrapLockKey(userId);
+    const completedKey = getSupermemoryBootstrapCompletedKey(userId);
+    const lockToken = `${job.id}-${Date.now()}`;
+    let refreshHandle: ReturnType<typeof setInterval> | undefined;
 
     logger.info(
       `[MEMORY BOOTSTRAP START] Building memory graph for user: ${userId} (Job ID: ${job.id})`,
     );
 
     try {
+      const completedAtIso = await redisConnection.get(completedKey);
+      if (completedAtIso) {
+        logger.info(
+          `[MEMORY BOOTSTRAP] Skipping user ${userId} - bootstrap already completed recently at ${completedAtIso}`,
+        );
+        job.updateProgress(100);
+        return {
+          skipped: true,
+          reason: 'Bootstrap already completed recently',
+          completedAt: completedAtIso,
+        };
+      }
+
+      const lockAcquired = await redisConnection.set(
+        lockKey,
+        lockToken,
+        'EX',
+        SUPERMEMORY_BOOTSTRAP_LOCK_TTL_SECONDS,
+        'NX',
+      );
+
+      if (!lockAcquired) {
+        logger.info(
+          `[MEMORY BOOTSTRAP] Skipping user ${userId} - another bootstrap run is already in progress`,
+        );
+        job.updateProgress(100);
+        return {
+          skipped: true,
+          reason: 'Another bootstrap run is already in progress',
+        };
+      }
+
+      refreshHandle = setInterval(async () => {
+        try {
+          const currentLockValue = await redisConnection.get(lockKey);
+          if (currentLockValue === lockToken) {
+            await redisConnection.expire(lockKey, SUPERMEMORY_BOOTSTRAP_LOCK_TTL_SECONDS);
+          }
+        } catch (error) {
+          logger.warn(`[MEMORY BOOTSTRAP] Lock keepalive failed for user ${userId}:`, error);
+        }
+      }, SUPERMEMORY_BOOTSTRAP_LOCK_REFRESH_MS);
+
       // Check if Supermemory is configured
       if (!dryRun && !isSupermemoryConfigured()) {
         logger.warn(
@@ -1148,10 +1205,36 @@ const supermemoryBootstrapWorker = new Worker<SupermemoryBootstrapJobData>(
         `[MEMORY BOOTSTRAP COMPLETE] ✅ User ${userId}: ${result.episodesIngested} episodes, ${result.estimatedTokensUsed} tokens, ${result.durationMs}ms`,
       );
 
+      // Mark successful non-dry-run completion so stalled retries don't rerun immediately.
+      if (!dryRun) {
+        await redisConnection.set(
+          completedKey,
+          new Date().toISOString(),
+          'EX',
+          SUPERMEMORY_BOOTSTRAP_COMPLETED_TTL_SECONDS,
+        );
+      }
+
       return result;
     } catch (error) {
       logger.error(`[MEMORY BOOTSTRAP FAILED] Bootstrap failed for user ${userId}:`, error);
       throw error;
+    } finally {
+      if (refreshHandle) {
+        clearInterval(refreshHandle);
+      }
+
+      try {
+        const currentLockValue = await redisConnection.get(lockKey);
+        if (currentLockValue === lockToken) {
+          await redisConnection.del(lockKey);
+        }
+      } catch (lockCleanupError) {
+        logger.warn(
+          `[MEMORY BOOTSTRAP] Failed to clean up bootstrap lock for user ${userId}:`,
+          lockCleanupError,
+        );
+      }
     }
   },
   {
