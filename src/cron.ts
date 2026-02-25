@@ -32,7 +32,7 @@ const CRON_INTERNAL_PROXY_HEADERS = {
 const cronJobs: CronJobConfig[] = [
   {
     name: 'reminders',
-    schedule: process.env.CRON_REMINDERS_SCHEDULE || '* * * * *',
+    schedule: process.env.CRON_REMINDERS_SCHEDULE || '*/5 * * * * *',
     method: 'POST',
     path: '/api/cron/reminders',
   },
