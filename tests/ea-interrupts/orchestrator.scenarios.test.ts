@@ -49,7 +49,7 @@ describe('MessagingOrchestrator scenarios', () => {
     expect(await second.runContext.isRunCurrent()).toBe(true);
   });
 
-  test('scenario 3: unrelated followup queues until finalize', async () => {
+  test('scenario 3: explicit separate-task followup queues until finalize', async () => {
     const harness = createOrchestratorHarness({
       classify: ({ incomingText }) => ({
         decision: 'followup',
@@ -69,7 +69,7 @@ describe('MessagingOrchestrator scenarios', () => {
     const queued = await harness.orchestrator.prepareRun({
       channel: 'twilio',
       conversationId: 'conv-3',
-      userRequest: 'Also check calendar conflicts',
+      userRequest: 'Separate task: after this, check calendar conflicts',
     });
 
     expect(queued.kind).toBe('skip');
@@ -77,7 +77,7 @@ describe('MessagingOrchestrator scenarios', () => {
 
     const finalized = await harness.orchestrator.finalizeRun({ runContext: first.runContext });
     expect(finalized.nextRun).toBeTruthy();
-    expect(finalized.nextRun?.userRequest).toBe('Also check calendar conflicts');
+    expect(finalized.nextRun?.userRequest).toBe('Separate task: after this, check calendar conflicts');
   });
 
   test('scenario 4: command bypass supersedes active run immediately', async () => {
@@ -165,7 +165,7 @@ describe('MessagingOrchestrator scenarios', () => {
 });
 
 describe('Cooperative steering scenarios', () => {
-  test('scenario 7: cooperative steering enqueues in-run steer event (ambiguous >= 0.65)', async () => {
+  test('scenario 7: cooperative steering enqueues in-run steer event (ambiguous >= threshold)', async () => {
     await withEnv({ EA_STEER_COOPERATIVE: 'true' }, async () => {
       const harness = createOrchestratorHarness({
         classify: ({ incomingText }) => ({
@@ -202,6 +202,42 @@ describe('Cooperative steering scenarios', () => {
       const enqueued = harness.filterEvents('orchestrator.steer.enqueued');
       expect(enqueued).toHaveLength(1);
       expect(enqueued[0]?.payload.runId).toBe(first.runContext.runId);
+    });
+  });
+
+  test('scenario 14: followup constraint steers in-run by default', async () => {
+    await withEnv({ EA_STEER_COOPERATIVE: 'true' }, async () => {
+      const harness = createOrchestratorHarness({
+        classify: ({ incomingText }) => ({
+          decision: 'followup',
+          confidence: 0.9,
+          explanation: 'constraint refinement',
+          latestIntentText: incomingText,
+        }),
+      });
+
+      const first = await harness.orchestrator.prepareRun({
+        channel: 'telegram',
+        conversationId: 'conv-14',
+        userRequest: 'Check my calendar for next Friday and Saturday.',
+      });
+      expect(first.kind).toBe('start');
+
+      const steer = await harness.orchestrator.prepareRun({
+        channel: 'telegram',
+        conversationId: 'conv-14',
+        userRequest: 'Also keep the response under 4 bullets and include timezone.',
+      });
+
+      expect(steer.kind).toBe('skip');
+      expect(steer.reason).toBe('steered_in_run');
+
+      const state = harness.getState('telegram', 'conv-14');
+      expect(state.queuedIntentText).toBeNull();
+      expect(state.steerMailbox).toHaveLength(1);
+      expect(state.steerMailbox[0]?.text).toBe(
+        'Also keep the response under 4 bullets and include timezone.',
+      );
     });
   });
 

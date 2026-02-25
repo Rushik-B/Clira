@@ -105,6 +105,31 @@ function shouldSupersede(decision: RelevanceClassification): boolean {
   return false;
 }
 
+function shouldQueueAsExplicitFollowup(
+  decision: RelevanceClassification,
+  incomingText: string,
+): boolean {
+  if (decision.decision !== 'followup') return false;
+  if (decision.confidence < 0.85) return false;
+
+  const normalized = incomingText.trim().toLowerCase();
+  if (!normalized) return false;
+
+  const explicitSeparateTaskPatterns = [
+    /\bseparately\b/,
+    /\bseparate (task|request|question)\b/,
+    /\bnew (task|request|question)\b/,
+    /\banother (task|request|question)\b/,
+    /\bdifferent (task|request|question|topic)\b/,
+    /\bunrelated\b/,
+    /\bafter (that|this)\b/,
+    /\bonce (that|this) is done\b/,
+    /\bwhen you(?:'re| are) done\b/,
+  ];
+
+  return explicitSeparateTaskPatterns.some((pattern) => pattern.test(normalized));
+}
+
 function isBenignStartConflict(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   return (
@@ -332,8 +357,17 @@ export class MessagingOrchestrator {
       const cooperativeSteeringEnabled = isCooperativeSteeringEnabled(channel);
       const activeRunPhase = stateAfterInbound.activeRunPhase ?? 'running';
       const steerCandidateDecision = shouldSteerInRun(classifierDecision, { runPhase: 'running' });
+      const explicitFollowupQueue = shouldQueueAsExplicitFollowup(
+        classifierDecision,
+        userRequest,
+      );
 
-      if (cooperativeSteeringEnabled && steerCandidateDecision && activeRunPhase === 'commit_boundary') {
+      if (
+        cooperativeSteeringEnabled &&
+        steerCandidateDecision &&
+        !explicitFollowupQueue &&
+        activeRunPhase === 'commit_boundary'
+      ) {
         this.deps.emitEvent('orchestrator.steer.blocked_commit_boundary', {
           channel,
           conversationId,
@@ -391,7 +425,12 @@ export class MessagingOrchestrator {
         };
       }
 
-      if (cooperativeSteeringEnabled && steerCandidateDecision && activeRunPhase === 'running') {
+      if (
+        cooperativeSteeringEnabled &&
+        steerCandidateDecision &&
+        !explicitFollowupQueue &&
+        activeRunPhase === 'running'
+      ) {
         const cap = getSteerMailboxCap();
         const appendedAt = this.deps.now();
         let steerPersisted = false;

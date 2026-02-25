@@ -4,7 +4,7 @@ import type {
   RunPhase,
 } from './types';
 
-const AMBIGUOUS_STEER_CONFIDENCE_MIN =0.30;
+const AMBIGUOUS_STEER_CONFIDENCE_MIN = 0.3;
 const DEFAULT_STEER_MAILBOX_CAP = 8;
 
 function parsePositiveInt(value: string | undefined): number | null {
@@ -34,6 +34,9 @@ export function shouldSteerInRun(
   params: { runPhase: RunPhase },
 ): boolean {
   if (params.runPhase !== 'running') return false;
-  if (decision.decision !== 'ambiguous') return false;
-  return decision.confidence >= AMBIGUOUS_STEER_CONFIDENCE_MIN;
+  if (decision.decision === 'supersede') return false;
+  if (decision.decision === 'ambiguous') {
+    return decision.confidence >= AMBIGUOUS_STEER_CONFIDENCE_MIN;
+  }
+  return true;
 }
