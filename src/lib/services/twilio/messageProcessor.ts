@@ -446,7 +446,7 @@ export async function processTwilioMessage(
 
         runContext = finalized.nextRun.runContext;
         activeRequest = finalized.nextRun.userRequest;
-        activeCommand = null;
+        activeCommand = detectCommand(activeRequest);
         result = { success: true, response: '' };
         continue;
       }
@@ -499,7 +499,7 @@ export async function processTwilioMessage(
 
     runContext = finalized.nextRun.runContext;
     activeRequest = finalized.nextRun.userRequest;
-    activeCommand = null;
+    activeCommand = detectCommand(activeRequest);
   }
 
   return result;
@@ -772,7 +772,7 @@ export async function processWebChatMessage(
 
         runContext = finalized.nextRun.runContext;
         activeRequest = finalized.nextRun.userRequest;
-        activeCommand = null;
+        activeCommand = detectCommand(activeRequest);
         result = { success: true, response: '' };
         continue;
       }
@@ -780,29 +780,36 @@ export async function processWebChatMessage(
     }
 
     if (result.response && await runContext.isRunCurrent()) {
-      await adapter.sendFinal(result.response);
-      const outboundMetadata = buildOrchestrationMessageMetadata(
-        runContext,
-        result.metadata != null && typeof result.metadata === 'object' && !Array.isArray(result.metadata)
-          ? (result.metadata as Record<string, unknown>)
-          : null,
-      );
+      try {
+        await adapter.sendFinal(result.response);
+        const outboundMetadata = buildOrchestrationMessageMetadata(
+          runContext,
+          result.metadata != null && typeof result.metadata === 'object' && !Array.isArray(result.metadata)
+            ? (result.metadata as Record<string, unknown>)
+            : null,
+        );
 
-      await conversationManager.addMessage(conversation.id, {
-        content: result.response,
-        role: 'ASSISTANT',
-        direction: 'OUTBOUND',
-        metadata: outboundMetadata as Prisma.InputJsonObject,
-      });
+        await conversationManager.addMessage(conversation.id, {
+          content: result.response,
+          role: 'ASSISTANT',
+          direction: 'OUTBOUND',
+          metadata: outboundMetadata as Prisma.InputJsonObject,
+        });
 
-      emitOrchestratorEvent('orchestrator.final.sent', {
-        channel: 'web',
-        conversationId: conversation.id,
-        runId: runContext.runId,
-        burstId: runContext.burstId,
-        classifierDecision: runContext.classifierDecision,
-        droppedCount: runContext.droppedSummary.length,
-      });
+        emitOrchestratorEvent('orchestrator.final.sent', {
+          channel: 'web',
+          conversationId: conversation.id,
+          runId: runContext.runId,
+          burstId: runContext.burstId,
+          classifierDecision: runContext.classifierDecision,
+          droppedCount: runContext.droppedSummary.length,
+        });
+      } catch (error) {
+        logger.error(`[messageProcessor] Failed to send web response: ${error}`);
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        result.success = false;
+        result.error = `Failed to send web response: ${errorMessage}`;
+      }
     }
 
     const finalized = await orchestrator.finalizeRun({ runContext });
@@ -812,7 +819,7 @@ export async function processWebChatMessage(
 
     runContext = finalized.nextRun.runContext;
     activeRequest = finalized.nextRun.userRequest;
-    activeCommand = null;
+    activeCommand = detectCommand(activeRequest);
   }
 
   return result;
