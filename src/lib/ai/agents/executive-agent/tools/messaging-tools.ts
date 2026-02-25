@@ -559,6 +559,9 @@ export function buildMessagingTools({
 
           await context.input.runContext?.markRunPhase?.('commit_boundary');
 
+          const staleAfterBoundary = await ensureCurrentRun('send_email');
+          if (staleAfterBoundary) return staleAfterBoundary;
+
           logger.info(`[executiveAgent] send_email: to=${args.to} subject="${truncate(args.subject, 30)}"`);
 
           try {

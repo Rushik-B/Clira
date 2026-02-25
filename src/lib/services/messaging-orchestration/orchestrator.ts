@@ -344,11 +344,57 @@ export class MessagingOrchestrator {
           decision: classifierDecision.decision,
           confidence: classifierDecision.confidence,
         });
+
+        this.deps.emitEvent('orchestrator.run.superseded', {
+          channel,
+          conversationId,
+          conversationKey,
+          supersededRunId: stateAfterInbound.activeRunId,
+          reason: 'steer_blocked_commit_boundary',
+          decision: classifierDecision.decision,
+          confidence: classifierDecision.confidence,
+        });
+        this.abortLocalRun(
+          conversationKey,
+          stateAfterInbound.activeRunId,
+          'superseded_by_newer_message',
+        );
+
+        const start = await this.startRun({
+          channel,
+          conversationId,
+          conversationKey,
+          userRequest,
+          expectedRevision: stateAfterInbound.revision,
+          forceReplace: true,
+          classifierDecision,
+        }).catch((error) => {
+          if (isBenignStartConflict(error)) {
+            return null;
+          }
+          throw error;
+        });
+
+        if (!start) {
+          return {
+            kind: 'skip',
+            reason: 'superseded_by_newer_message',
+            classifierDecision,
+          };
+        }
+
+        return {
+          kind: 'start',
+          runContext: start.runContext,
+          userRequest,
+          classifierDecision,
+        };
       }
 
       if (cooperativeSteeringEnabled && steerCandidateDecision && activeRunPhase === 'running') {
         const cap = getSteerMailboxCap();
         const appendedAt = this.deps.now();
+        let steerPersisted = false;
         const { current } = await this.deps.updateState(conversationKey, (state) => {
           if (state.activeRunId !== stateAfterInbound.activeRunId) {
             return state;
@@ -357,6 +403,7 @@ export class MessagingOrchestrator {
             return state;
           }
 
+          steerPersisted = true;
           const nextSeq = (state.steerSeq ?? 0) + 1;
           const nextEvent: SteerEvent = {
             seq: nextSeq,
@@ -387,24 +434,91 @@ export class MessagingOrchestrator {
           };
         });
 
-        this.deps.emitEvent('orchestrator.steer.enqueued', {
+        if (steerPersisted) {
+          this.deps.emitEvent('orchestrator.steer.enqueued', {
+            channel,
+            conversationId,
+            conversationKey,
+            runId: stateAfterInbound.activeRunId,
+            burstId: current.burstId,
+            runPhase: activeRunPhase,
+            seq: current.steerSeq,
+            cap,
+            mailboxSize: current.steerMailbox.length,
+            droppedSummaryCount: current.steerDroppedSummary.length,
+          });
+
+          this.markLocalRunSteered(conversationKey, stateAfterInbound.activeRunId, stateAfterInbound.windowEndsAt);
+
+          return {
+            kind: 'skip',
+            reason: 'steered_in_run',
+            classifierDecision,
+          };
+        }
+
+        const latestState = await this.deps.readState(conversationKey);
+        if (latestState.revision !== stateAfterInbound.revision) {
+          return {
+            kind: 'skip',
+            reason: 'superseded_by_newer_message',
+            classifierDecision,
+          };
+        }
+
+        if (latestState.activeRunId) {
+          await this.deps.updateState(conversationKey, (state) => {
+            if (state.revision !== stateAfterInbound.revision || !state.activeRunId) {
+              return state;
+            }
+            return {
+              ...state,
+              classifierDecision: classifierDecision.decision,
+              queuedIntentText: userRequest,
+              queuedRevision: state.revision,
+            };
+          });
+
+          this.markLocalRunQueued(
+            conversationKey,
+            latestState.activeRunId,
+            latestState.windowEndsAt,
+          );
+
+          return {
+            kind: 'skip',
+            reason: 'queued_followup',
+            classifierDecision,
+          };
+        }
+
+        const start = await this.startRun({
           channel,
           conversationId,
           conversationKey,
-          runId: stateAfterInbound.activeRunId,
-          burstId: current.burstId,
-          runPhase: activeRunPhase,
-          seq: current.steerSeq,
-          cap,
-          mailboxSize: current.steerMailbox.length,
-          droppedSummaryCount: current.steerDroppedSummary.length,
+          userRequest,
+          expectedRevision: latestState.revision,
+          forceReplace: false,
+          classifierDecision,
+        }).catch((error) => {
+          if (isBenignStartConflict(error)) {
+            return null;
+          }
+          throw error;
         });
 
-        this.markLocalRunSteered(conversationKey, stateAfterInbound.activeRunId, stateAfterInbound.windowEndsAt);
+        if (!start) {
+          return {
+            kind: 'skip',
+            reason: 'superseded_by_newer_message',
+            classifierDecision,
+          };
+        }
 
         return {
-          kind: 'skip',
-          reason: 'steered_in_run',
+          kind: 'start',
+          runContext: start.runContext,
+          userRequest,
           classifierDecision,
         };
       }
