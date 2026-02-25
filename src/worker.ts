@@ -52,6 +52,7 @@ import {
   startTelegramMonitor,
   stopTelegramMonitor,
   processTelegramMessage,
+  type TelegramInboundMessage,
   writeTelegramWorkerHeartbeat,
 } from '@/lib/services/telegram';
 
@@ -68,6 +69,92 @@ console.log(`  - NODE_ENV: ${process.env.NODE_ENV}`);
 const workers: Worker[] = [];
 let heartbeatInterval: NodeJS.Timeout | null = null;
 let telegramMonitorStarted = false;
+const DEFAULT_TELEGRAM_PROCESS_CONCURRENCY = 7;
+const TELEGRAM_SHUTDOWN_DRAIN_TIMEOUT_MS = 10_000;
+const TELEGRAM_SHUTDOWN_DRAIN_POLL_MS = 50;
+const telegramMessageQueue: TelegramInboundMessage[] = [];
+const telegramInFlightTasks = new Set<Promise<void>>();
+let telegramInFlightCount = 0;
+
+function parsePositiveIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return parsed;
+}
+
+const telegramProcessConcurrency = Math.min(
+  parsePositiveIntEnv('TELEGRAM_PROCESS_CONCURRENCY', DEFAULT_TELEGRAM_PROCESS_CONCURRENCY),
+  16,
+);
+
+function trackTelegramTask(task: Promise<void>): void {
+  telegramInFlightTasks.add(task);
+  task.finally(() => {
+    telegramInFlightTasks.delete(task);
+  });
+}
+
+function dispatchQueuedTelegramMessages(): void {
+  while (
+    telegramInFlightCount < telegramProcessConcurrency &&
+    telegramMessageQueue.length > 0
+  ) {
+    const message = telegramMessageQueue.shift();
+    if (!message) continue;
+    telegramInFlightCount += 1;
+
+    const task = (async () => {
+      try {
+        await processTelegramMessage(message);
+      } catch (error) {
+        logger.error('Error processing Telegram message', {
+          message,
+          error,
+        });
+      } finally {
+        telegramInFlightCount = Math.max(0, telegramInFlightCount - 1);
+        dispatchQueuedTelegramMessages();
+      }
+    })();
+
+    trackTelegramTask(task);
+  }
+}
+
+function enqueueTelegramMessageForProcessing(message: TelegramInboundMessage): void {
+  telegramMessageQueue.push(message);
+  dispatchQueuedTelegramMessages();
+}
+
+async function drainTelegramProcessingQueue(params?: { timeoutMs?: number }): Promise<void> {
+  const timeoutMs = params?.timeoutMs ?? TELEGRAM_SHUTDOWN_DRAIN_TIMEOUT_MS;
+  const deadline = Date.now() + timeoutMs;
+
+  while (
+    (telegramMessageQueue.length > 0 || telegramInFlightCount > 0 || telegramInFlightTasks.size > 0) &&
+    Date.now() < deadline
+  ) {
+    if (telegramInFlightTasks.size > 0) {
+      await Promise.race([
+        Promise.allSettled(Array.from(telegramInFlightTasks)),
+        new Promise((resolve) => setTimeout(resolve, TELEGRAM_SHUTDOWN_DRAIN_POLL_MS)),
+      ]);
+    } else {
+      await new Promise((resolve) => setTimeout(resolve, TELEGRAM_SHUTDOWN_DRAIN_POLL_MS));
+    }
+  }
+
+  if (telegramMessageQueue.length > 0 || telegramInFlightCount > 0) {
+    logger.warn('[Telegram] Drain timeout during shutdown; dropping pending work', {
+      queued: telegramMessageQueue.length,
+      inFlight: telegramInFlightCount,
+      timeoutMs,
+    });
+    telegramMessageQueue.length = 0;
+  }
+}
 
 // --- Onboarding Worker ---
 // IMPORTANT: Queue name must match the producer in queues.ts ('user-onboarding')
@@ -1121,6 +1208,8 @@ async function gracefulShutdown(signal: string) {
       telegramMonitorStarted = false;
     }
 
+    await drainTelegramProcessingQueue();
+
     // Close all workers
     console.log('📦 Closing all workers...');
     await Promise.all(workers.map(worker => worker.close()));
@@ -1193,14 +1282,7 @@ heartbeatInterval = setInterval(() => {
 if (isTelegramEnabled()) {
   startTelegramMonitor({
     onMessage: async (message) => {
-      try {
-        await processTelegramMessage(message);
-      } catch (error) {
-        logger.error('Error processing Telegram message', {
-          message,
-          error,
-        });
-      }
+      enqueueTelegramMessageForProcessing(message);
     },
   })
     .then(() => {
@@ -1227,3 +1309,4 @@ console.log('  - Email Mapping: concurrency 3');
 console.log('  - Email Learning: concurrency 4');
 console.log('  - Email Categorization: concurrency 1');
 console.log('  - Supermemory Bootstrap: concurrency 1');
+console.log(`  - Telegram message processing: concurrency ${telegramProcessConcurrency}`);
