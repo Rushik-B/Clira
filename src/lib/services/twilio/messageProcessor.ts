@@ -51,12 +51,20 @@ type Command = 'send' | 'save' | 'clear' | 'cancel' | 'help' | null;
 
 function isAbortError(e: unknown): boolean {
   if (e && typeof e === 'object') {
-    if ((e as { code?: unknown }).code === 'abort') return true;
+    const code = (e as { code?: unknown }).code;
+    if (
+      code === 'abort' ||
+      code === 'ABORT_ERR' ||
+      code === 'ERR_ABORTED' ||
+      code === 'ERR_CANCELED'
+    ) {
+      return true;
+    }
   }
   if (e instanceof Error) {
     return (
       e.name === 'AbortError' ||
-      /abort|aborted|cancel|superseded/i.test(e.message ?? '')
+      /\babort(?:ed)?\b/i.test(e.message ?? '')
     );
   }
   return false;
