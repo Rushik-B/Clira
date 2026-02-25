@@ -110,7 +110,13 @@ function dispatchQueuedTelegramMessages(): void {
         await processTelegramMessage(message);
       } catch (error) {
         logger.error('Error processing Telegram message', {
-          message,
+          message_id: message.messageId,
+          telegram_user_id: message.telegramUserId,
+          telegram_username: message.telegramUsername,
+          chat_id: message.chatId,
+          date: message.timestamp,
+          has_text: Boolean(message.text),
+          text_length: message.text ? message.text.length : 0,
           error,
         });
       } finally {

@@ -431,7 +431,16 @@ export async function processTwilioMessage(
       }
     } catch (error) {
       if (isAbortError(error)) {
-        return { success: true, response: '' };
+        const finalized = await orchestrator.finalizeRun({ runContext });
+        if (!finalized.nextRun) {
+          return { success: true, response: '' };
+        }
+
+        runContext = finalized.nextRun.runContext;
+        activeRequest = finalized.nextRun.userRequest;
+        activeCommand = null;
+        result = { success: true, response: '' };
+        continue;
       }
       throw error;
     }
@@ -469,7 +478,9 @@ export async function processTwilioMessage(
         );
       } catch (error) {
         logger.error(`[messageProcessor] Failed to send Twilio response: ${error}`);
-        result.error = 'Failed to send Twilio response';
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        result.success = false;
+        result.error = `Failed to send Twilio response: ${errorMessage}`;
       }
     }
 
@@ -746,7 +757,16 @@ export async function processWebChatMessage(
       }
     } catch (error) {
       if (isAbortError(error)) {
-        return { success: true, response: '' };
+        const finalized = await orchestrator.finalizeRun({ runContext });
+        if (!finalized.nextRun) {
+          return { success: true, response: '' };
+        }
+
+        runContext = finalized.nextRun.runContext;
+        activeRequest = finalized.nextRun.userRequest;
+        activeCommand = null;
+        result = { success: true, response: '' };
+        continue;
       }
       throw error;
     }
