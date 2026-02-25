@@ -59,6 +59,7 @@ jobs:
       REDIS_URL: redis://localhost:6379
       NEXTAUTH_SECRET: ci-dummy-secret
       NEXTAUTH_URL: http://localhost:3000
+      NODE_OPTIONS: --max-old-space-size=4096
     steps:
       - uses: actions/checkout@v4
 
