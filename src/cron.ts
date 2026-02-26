@@ -28,6 +28,7 @@ const CRON_STARTUP_RETRY_INTERVAL_MS = 2_000;
 const CRON_INTERNAL_PROXY_HEADERS = {
   'x-forwarded-proto': 'https',
 } as const;
+const CRON_VERBOSE = process.env.CRON_VERBOSE === 'true';
 
 const cronJobs: CronJobConfig[] = [
   {
@@ -64,7 +65,9 @@ async function triggerCronJob(job: CronJobConfig): Promise<void> {
   const endpoint = `${CRON_BASE_URL}${job.path}`;
 
   try {
-    console.log(`[LOCAL CRON] Triggering ${job.name}: ${job.method} ${endpoint}`);
+    if (CRON_VERBOSE) {
+      console.log(`[LOCAL CRON] Triggering ${job.name}: ${job.method} ${endpoint}`);
+    }
 
     const response = await fetch(endpoint, {
       method: job.method,
@@ -84,9 +87,11 @@ async function triggerCronJob(job: CronJobConfig): Promise<void> {
       );
     }
 
-    const durationMs = Date.now() - startedAt;
-    const preview = responseText.slice(0, 300).replace(/\s+/g, ' ').trim();
-    console.log(`[LOCAL CRON] ${job.name} succeeded in ${durationMs}ms: ${preview}`);
+    if (CRON_VERBOSE) {
+      const durationMs = Date.now() - startedAt;
+      const preview = responseText.slice(0, 200).replace(/\s+/g, ' ').trim();
+      console.log(`[LOCAL CRON] ${job.name} succeeded in ${durationMs}ms: ${preview}`);
+    }
   } catch (error) {
     const durationMs = Date.now() - startedAt;
     console.error(`[LOCAL CRON] ${job.name} failed in ${durationMs}ms`, error);
