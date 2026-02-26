@@ -10,6 +10,7 @@ import {
   type EmailEvidencePackDTO,
 } from '@/lib/ai/schemas/emailRetrievalSchemas';
 import type { EmailData } from '@/lib/email/gmail';
+import { normalizeWhitespace, stripHtml } from '@/lib/email/text';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Email Retrieval Subagent
@@ -221,10 +222,6 @@ const QUOTED_PHRASE_REGEX = /"([^"]+)"/g;
 const GMAIL_SEARCH_TIMEOUT_MS = 8_000;
 const EARLY_EXIT_BUFFER_MS = 3_000;
 
-function normalizeWhitespace(text: string): string {
-  return text.replace(/\s+/g, ' ').trim();
-}
-
 function isTimeLow(deadlineAt?: number, bufferMs = EARLY_EXIT_BUFFER_MS): boolean {
   return typeof deadlineAt === 'number' && deadlineAt - Date.now() < bufferMs;
 }
@@ -249,10 +246,6 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: str
     throw result.error;
   }
   return result.value;
-}
-
-function stripHtml(input: string): string {
-  return normalizeWhitespace(input.replace(/<[^>]*>/g, ' '));
 }
 
 function extractQuotedPhrases(text: string): string[] {
