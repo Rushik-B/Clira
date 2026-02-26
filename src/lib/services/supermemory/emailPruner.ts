@@ -50,6 +50,15 @@ export function pruneEmailBodyForSummary(
   return text;
 }
 
+export function stripQuotedReplyChainsAndSignatures(body: string): string {
+  if (!body) return '';
+
+  let text = body.trim();
+  text = stripQuotedReplies(text);
+  text = stripSignatures(text);
+  return normalizeWhitespace(text);
+}
+
 /**
  * Strip quoted reply sections from email body
  * Common patterns: "On ... wrote:", "From: ... Sent: ..."
@@ -219,4 +228,3 @@ ${prunedBody}`;
 export function estimateTokensFromChars(chars: number): number {
   return Math.ceil(chars / 4);
 }
-
