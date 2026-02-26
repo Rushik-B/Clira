@@ -415,6 +415,9 @@ export async function processTelegramMessage(
   let activeRequest = orchestrationDecision.userRequest;
   let result: ProcessMessageResult = { success: true, response: '' };
 
+  const stopTyping = telegramClient.startTypingIndicator(chatId);
+  try {
+
   while (runContext) {
     const progressContext = buildProgressContext({
       conversationId: conversation.id,
@@ -500,6 +503,10 @@ export async function processTelegramMessage(
     runContext = finalized.nextRun.runContext;
     activeRequest = finalized.nextRun.userRequest;
     activeCommand = null;
+  }
+
+  } finally {
+    stopTyping();
   }
 
   return result;
