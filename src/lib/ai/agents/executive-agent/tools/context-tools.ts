@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { logger } from '@/lib/logger';
+import { prisma } from '@/lib/prisma';
 import {
   getCalendarSnapshot,
   gatherMemoryContextForReply,
@@ -56,6 +57,43 @@ export function buildContextTools({
   const toolResultCache = createExecutiveToolResultReuseCache({
     conversationHistory: input.conversationHistory,
   });
+  context.registerToolResultCacheStatsReader?.(() => toolResultCache.getStats());
+
+  let inboxMinStoredAtMsPromise: Promise<number | undefined> | null = null;
+  const getInboxMinStoredAtMs = async (): Promise<number | undefined> => {
+    if (!inboxMinStoredAtMsPromise) {
+      inboxMinStoredAtMsPromise = prisma.mailbox.findMany({
+        where: {
+          userId: input.userId,
+          status: 'CONNECTED',
+        },
+        select: {
+          updatedAt: true,
+          gmailHistoryId: true,
+        },
+      }).then((mailboxes) => {
+        const updatedAtValues = mailboxes
+          .map((mailbox) => mailbox.updatedAt?.getTime())
+          .filter((value): value is number => Number.isFinite(value));
+
+        if (updatedAtValues.length === 0) {
+          return undefined;
+        }
+
+        const maxUpdatedAtMs = Math.max(...updatedAtValues);
+        const historyMarkerCount = mailboxes.filter((mailbox) => !!mailbox.gmailHistoryId).length;
+        logger.debug(
+          `[executiveAgent] search_inbox_context freshness marker: connectedMailboxes=${mailboxes.length} historyMarkers=${historyMarkerCount} minStoredAtMs=${maxUpdatedAtMs}`,
+        );
+        return maxUpdatedAtMs;
+      }).catch((error) => {
+        logger.warn('[executiveAgent] Failed to load inbox freshness marker', error);
+        return undefined;
+      });
+    }
+
+    return inboxMinStoredAtMsPromise;
+  };
 
   return {
       // Tool 1: Search Inbox Context
@@ -96,7 +134,10 @@ export function buildContextTools({
             intent,
             constraints: args.constraints,
           };
-          const cachedResult = toolResultCache.get('search_inbox_context', cacheArgs);
+          const inboxMinStoredAtMs = await getInboxMinStoredAtMs();
+          const cachedResult = toolResultCache.get('search_inbox_context', cacheArgs, {
+            minStoredAtMs: inboxMinStoredAtMs,
+          });
           if (cachedResult) {
             logger.info(
               `[executiveAgent] search_inbox_context cache hit: mode=${mode} intent="${truncate(intent, 80)}"`,

@@ -10,6 +10,9 @@ import type {
   ConsumeSteerEventsResult,
   RunPhase,
 } from '@/lib/services/messaging-orchestration/types';
+import type {
+  ExecutiveToolResultCacheStats,
+} from './toolResultReuseCache';
 
 export interface ExecutiveAgentInput {
   userId: string;
@@ -96,4 +99,7 @@ export type ExecutiveRuntimeContext = {
   isRunCurrent: () => Promise<boolean>;
   isBurstStable: () => boolean;
   onMemoryStored: () => void;
+  registerToolResultCacheStatsReader?: (
+    readStats: () => ExecutiveToolResultCacheStats,
+  ) => void;
 };

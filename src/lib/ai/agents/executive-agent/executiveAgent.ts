@@ -38,6 +38,8 @@ import {
 import { buildExecutiveAgentPrompt } from './prompt';
 import { runSteerableTextWithTools, type SteerRunContext } from './steerableLoop';
 import { buildExecutiveAgentTools } from './tools';
+import type { ExecutiveToolResultCacheStats } from './toolResultReuseCache';
+import { stripCacheDebugMetadataForPersistence } from './persistence';
 import type {
   ExecutiveAgentInput,
   ExecutiveAgentOutput,
@@ -47,6 +49,9 @@ import type {
 export class ExecutiveAgent {
   async process(input: ExecutiveAgentInput): Promise<ExecutiveAgentOutput> {
     let memoryStored = false;
+    const toolResultCacheStatsReader: {
+      read?: () => ExecutiveToolResultCacheStats;
+    } = {};
     const resolvedChannel = input.channel ?? resolveProgressChannel(input);
     const retrievalProfile = resolveRetrievalProfile(resolvedChannel);
     const isRunCurrent = async () => {
@@ -112,6 +117,9 @@ export class ExecutiveAgent {
         isBurstStable,
         onMemoryStored: () => {
           memoryStored = true;
+        },
+        registerToolResultCacheStatsReader: (readStats) => {
+          toolResultCacheStatsReader.read = readStats;
         },
       });
 
@@ -244,6 +252,12 @@ export class ExecutiveAgent {
       logger.info(
         `[executiveAgent] Completed in ${Date.now() - startTime}ms totalTools=${toolBudget?.totalCalls ?? 0}`,
       );
+      const toolResultCacheStats = toolResultCacheStatsReader.read
+        ? toolResultCacheStatsReader.read()
+        : undefined;
+      if (toolResultCacheStats) {
+        logger.info(`[executiveAgent] Tool result cache stats: ${JSON.stringify(toolResultCacheStats)}`);
+      }
 
       let response = (text || '').trim();
       if (!response) {
@@ -260,13 +274,16 @@ export class ExecutiveAgent {
         metadata.toolCalls = toolCalls as Prisma.InputJsonValue;
       }
       if (Array.isArray(toolResults) && toolResults.length > 0) {
-        metadata.toolResults = toolResults as Prisma.InputJsonValue;
+        metadata.toolResults = stripCacheDebugMetadataForPersistence(toolResults) as Prisma.InputJsonValue;
       }
       if (Array.isArray(steps) && steps.length > 0) {
-        metadata.steps = steps as Prisma.InputJsonValue;
+        metadata.steps = stripCacheDebugMetadataForPersistence(steps) as Prisma.InputJsonValue;
       }
       if (toolBudget) {
         metadata.toolBudget = toolBudget as Prisma.InputJsonValue;
+      }
+      if (toolResultCacheStats) {
+        metadata.toolResultCacheStats = toolResultCacheStats as Prisma.InputJsonValue;
       }
       if (input.runContext) {
         metadata.orchestration = {
