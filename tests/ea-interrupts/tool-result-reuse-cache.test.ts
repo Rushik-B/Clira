@@ -168,5 +168,178 @@ describe('Executive tool result reuse cache', () => {
     expect(cached).toBeTruthy();
     expect(cached?.count).toBe(1);
     expect((cached?._cache as { source?: string } | undefined)?.source).toBe('runtime');
+    const stats = cache.getStats();
+    expect(stats.search_memory.set_ok).toBe(1);
+    expect(stats.search_memory.runtime_hit).toBe(1);
+  });
+
+  test('invalidates search_memory cache entries older than successful append_to_supermemory', () => {
+    vi.setSystemTime(new Date('2026-02-26T12:00:00.000Z'));
+
+    const history: ConversationMessageDTO[] = [
+      buildAssistantMessage({
+        createdAt: new Date('2026-02-26T11:58:00.000Z'),
+        metadata: {
+          toolCalls: [
+            {
+              toolName: 'search_memory',
+              toolCallId: 'call-memory',
+              args: { query: 'manager', limit: 5 },
+            },
+          ],
+          toolResults: [
+            {
+              toolName: 'search_memory',
+              toolCallId: 'call-memory',
+              result: {
+                query: 'manager',
+                count: 1,
+                memories: [{ content: 'Manager is Priya', relevanceScore: 0.92 }],
+              },
+            },
+          ],
+        },
+      }),
+      buildAssistantMessage({
+        createdAt: new Date('2026-02-26T11:59:00.000Z'),
+        metadata: {
+          toolCalls: [
+            {
+              toolName: 'append_to_supermemory',
+              toolCallId: 'call-append',
+              args: { content: 'Manager is Priya', type: 'relationship_info' },
+            },
+          ],
+          toolResults: [
+            {
+              toolName: 'append_to_supermemory',
+              toolCallId: 'call-append',
+              result: { stored: true, customId: 'memory-1' },
+            },
+          ],
+        },
+      }),
+    ];
+
+    const cache = createExecutiveToolResultReuseCache({ conversationHistory: history });
+    const cached = cache.get('search_memory', { query: 'manager', limit: 5 });
+
+    expect(cached).toBeNull();
+    const stats = cache.getStats();
+    expect(stats.search_memory.miss_invalidated).toBe(1);
+  });
+
+  test('invalidates calendar cache entries older than successful confirm commit_calendar_change', () => {
+    vi.setSystemTime(new Date('2026-02-26T12:00:00.000Z'));
+
+    const history: ConversationMessageDTO[] = [
+      buildAssistantMessage({
+        createdAt: new Date('2026-02-26T11:58:00.000Z'),
+        metadata: {
+          toolCalls: [
+            {
+              toolName: 'search_calendar',
+              toolCallId: 'call-calendar',
+              args: { query: 'team sync', startDate: '2026-02-26', endDate: '2026-02-26' },
+            },
+          ],
+          toolResults: [
+            {
+              toolName: 'search_calendar',
+              toolCallId: 'call-calendar',
+              result: {
+                events: [{ eventId: 'evt-1' }],
+                summary: 'found one',
+              },
+            },
+          ],
+        },
+      }),
+      buildAssistantMessage({
+        createdAt: new Date('2026-02-26T11:59:00.000Z'),
+        metadata: {
+          toolCalls: [
+            {
+              toolName: 'commit_calendar_change',
+              toolCallId: 'call-commit',
+              args: { decision: 'confirm' },
+            },
+          ],
+          toolResults: [
+            {
+              toolName: 'commit_calendar_change',
+              toolCallId: 'call-commit',
+              result: { ok: true, status: 'updated' },
+            },
+          ],
+        },
+      }),
+    ];
+
+    const cache = createExecutiveToolResultReuseCache({ conversationHistory: history });
+    const cached = cache.get('search_calendar', {
+      query: 'team sync',
+      startDate: '2026-02-26',
+      endDate: '2026-02-26',
+    });
+
+    expect(cached).toBeNull();
+    const stats = cache.getStats();
+    expect(stats.search_calendar.miss_invalidated).toBe(1);
+  });
+
+  test('respects per-call minStoredAtMs freshness cutoff', () => {
+    vi.setSystemTime(new Date('2026-02-26T12:00:00.000Z'));
+
+    const history: ConversationMessageDTO[] = [
+      buildAssistantMessage({
+        createdAt: new Date('2026-02-26T11:58:00.000Z'),
+        metadata: {
+          toolCalls: [
+            {
+              toolName: 'search_inbox_context',
+              toolCallId: 'call-inbox',
+              args: { mode: 'quick', intent: 'invoice status' },
+            },
+          ],
+          toolResults: [
+            {
+              toolName: 'search_inbox_context',
+              toolCallId: 'call-inbox',
+              result: { matches: [{ threadId: 't-1' }] },
+            },
+          ],
+        },
+      }),
+    ];
+
+    const cache = createExecutiveToolResultReuseCache({ conversationHistory: history });
+    const minStoredAtMs = new Date('2026-02-26T11:59:00.000Z').getTime();
+    const cached = cache.get(
+      'search_inbox_context',
+      { mode: 'quick', intent: 'invoice status' },
+      { minStoredAtMs },
+    );
+
+    expect(cached).toBeNull();
+    const stats = cache.getStats();
+    expect(stats.search_inbox_context.miss_invalidated).toBe(1);
+  });
+
+  test('tracks set_skipped_non_cacheable for failed runtime writes', () => {
+    vi.setSystemTime(new Date('2026-02-26T12:00:00.000Z'));
+
+    const cache = createExecutiveToolResultReuseCache({ conversationHistory: [] });
+    cache.set('search_inbox_context', { mode: 'deep', intent: 'budget report' }, {
+      ok: false,
+      error: 'tool_budget_exceeded',
+    });
+
+    const cached = cache.get('search_inbox_context', { mode: 'deep', intent: 'budget report' });
+    expect(cached).toBeNull();
+
+    const stats = cache.getStats();
+    expect(stats.search_inbox_context.set_skipped_non_cacheable).toBe(1);
+    expect(stats.search_inbox_context.miss_not_found).toBe(1);
   });
 });
