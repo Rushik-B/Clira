@@ -31,6 +31,14 @@ function buildUnavailableProgressUpdateTool(context: ExecutiveRuntimeContext) {
   };
 }
 
+function orderToolsDeterministically(
+  tools: Record<string, unknown>,
+): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(tools).sort(([left], [right]) => left.localeCompare(right)),
+  );
+}
+
 export function buildExecutiveAgentTools(context: ExecutiveRuntimeContext): Record<string, unknown> {
   let subagentCallIndex = 0;
   const nextSubagentCallIndex = () => {
@@ -54,5 +62,5 @@ export function buildExecutiveAgentTools(context: ExecutiveRuntimeContext): Reco
       })
     : buildUnavailableProgressUpdateTool(context);
 
-  return tools;
+  return orderToolsDeterministically(tools);
 }
