@@ -1,8 +1,8 @@
-import { prisma } from '@/lib/prisma';
 import { logger } from '@/lib/logger';
 import { buildInboxChunks, DEFAULT_CHUNK_OVERLAP_TOKENS, DEFAULT_CHUNK_SIZE_TOKENS } from '@/lib/services/inbox-search/chunker';
 import { computeInboxContentHash } from '@/lib/services/inbox-search/content-hash';
 import { prepareInboxBodyText } from '@/lib/services/inbox-search/text-prep';
+import { runInboxSearchTransaction } from '@/lib/services/inbox-search/tx';
 import type { InboxSearchIndexInput, InboxSearchIndexResult } from '@/lib/services/inbox-search/types';
 
 export type InboxSearchIndexerOptions = {
@@ -30,9 +30,7 @@ export async function indexInboxSearchEmail(
   }
 
   const indexedAt = new Date();
-  const result = await prisma.$transaction(async (tx): Promise<InboxSearchIndexResult> => {
-    await tx.$executeRaw`SELECT set_config('app.current_user_id', ${email.userId}, true)`;
-
+  const result = await runInboxSearchTransaction(email.userId, async (tx): Promise<InboxSearchIndexResult> => {
     const existing = await tx.inboxSearchDocument.findUnique({
       where: {
         InboxSearchDocument_mailboxId_messageId_key: {
