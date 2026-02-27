@@ -51,7 +51,8 @@ function buildSteerInjection(params: {
 export async function runSteerableTextWithTools(params: {
   model: LanguageModel | string;
   system?: string;
-  prompt: string;
+  prompt?: string;
+  messages?: Array<{ role: 'user' | 'assistant'; content: string }>;
   tools: any;
   timeLeftMs: () => number | null;
   maxSteps: number;
@@ -74,7 +75,9 @@ export async function runSteerableTextWithTools(params: {
   toolBudget?: ToolBudgetReport;
   steer: { appliedEvents: number; appliedDroppedSummary: number; lastSeq: number };
 }> {
-  const messages: any[] = [{ role: 'user', content: params.prompt }];
+  const messages: any[] = Array.isArray(params.messages)
+    ? [...params.messages]
+    : [{ role: 'user', content: params.prompt ?? '' }];
 
   const budget = createToolBudgetController({
     tools: params.tools as any,

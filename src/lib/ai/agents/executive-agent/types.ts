@@ -45,6 +45,11 @@ export interface ExecutiveAgentOutput {
   metadata?: Prisma.InputJsonObject;
 }
 
+export type ExecutivePromptMessage = {
+  role: 'user' | 'assistant';
+  content: string;
+};
+
 export type PendingCalendarChangeRecord = {
   id: string;
   plan: Prisma.JsonValue;
@@ -57,7 +62,8 @@ export type PendingCalendarChangeRecord = {
 };
 
 export interface PromptContext {
-  prompt: string;
+  systemPrompt: string;
+  messages: ExecutivePromptMessage[];
   userTimezone: string;
   currentTimeUtc: string;
   currentTimeUserTz: string;

@@ -9,6 +9,9 @@ import type {
 import type {
   CalendarEventDraftDTO,
 } from '@/lib/ai/schemas/calendarCreatorSchemas';
+import type {
+  ExecutivePromptMessage,
+} from './types';
 import {
   MESSAGING_FIRST_TOOL_MAX_BUDGET_MS,
   MESSAGING_MIN_SUBAGENT_BUDGET_MS,
@@ -368,63 +371,45 @@ export function isCalendarScopeError(error: unknown): boolean {
   );
 }
 
+function formatHistoryTimestamp(createdAt: Date): string {
+  return createdAt.toISOString();
+}
+
 /**
- * Formats conversation history for inclusion in the prompt.
- * Includes tool call metadata and timestamps to provide context about past actions and time gaps.
+ * Formats prior conversation turns as deterministic messages so the shared
+ * prefix stays stable across turns and can benefit from prompt caching.
  */
-export function formatConversationHistory(
+export function formatConversationHistoryAsMessages(
   history: ConversationMessageDTO[],
-  currentTime: Date,
-  userTimezone: string,
-): string {
+): ExecutivePromptMessage[] {
   if (!history || history.length === 0) {
-    return '(No prior messages in this conversation)';
+    return [];
   }
 
   return history
-    .slice(-15) // Keep last 15 messages for context
-    .map((msg, idx) => {
-      const role = msg.role === 'USER' ? 'User' : 'Clira';
-      const content = truncate(msg.content, 500);
+    .slice(-15)
+    .map((msg) => {
+      const normalizedRole = msg.role === 'USER'
+        ? 'user'
+        : 'assistant';
+      const timestamp = formatHistoryTimestamp(new Date(msg.createdAt));
+      const contentLines = [
+        `[Timestamp] ${timestamp}`,
+        truncate(msg.content, 500),
+      ];
 
-      // Calculate time since this message
-      const msgTime = new Date(msg.createdAt);
-      const msAgo = currentTime.getTime() - msgTime.getTime();
-      const relativeTime = formatRelativeTime(msAgo);
-
-      // Format absolute time in user's timezone
-      let absoluteTime = '';
-      try {
-        absoluteTime = new Intl.DateTimeFormat('en-US', {
-          month: 'short',
-          day: 'numeric',
-          hour: '2-digit',
-          minute: '2-digit',
-          hour12: true,
-          timeZone: userTimezone,
-        }).format(msgTime);
-      } catch {
-        absoluteTime = msgTime.toLocaleString('en-US', {
-          month: 'short',
-          day: 'numeric',
-          hour: '2-digit',
-          minute: '2-digit',
-          hour12: true,
-        });
-      }
-
-      // Extract tool call context from metadata if available
-      let toolContext = '';
       if (msg.role === 'ASSISTANT' && msg.metadata) {
         const toolCalls = extractToolCallsSummary(msg.metadata);
         if (toolCalls) {
-          toolContext = `\n  └─ Tools used: ${toolCalls}`;
+          contentLines.push('', `[Tool history] ${toolCalls}`);
         }
       }
 
-      return `[${idx + 1}] ${role} (${absoluteTime}, ${relativeTime}): ${content}${toolContext}`;
-    })
-    .join('\n\n');
+      return {
+        role: normalizedRole,
+        content: contentLines.join('\n'),
+      };
+    });
 }
 
 /**

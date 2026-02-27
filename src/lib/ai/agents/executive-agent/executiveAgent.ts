@@ -67,7 +67,14 @@ export class ExecutiveAgent {
 
     try {
       const promptContext = await buildExecutiveAgentPrompt(input, resolvedChannel);
-      const { prompt, userTimezone, currentTimeUtc, currentTimeUserTz, dayOfWeek } = promptContext;
+      const {
+        systemPrompt: promptSystemPrompt,
+        messages: promptMessages,
+        userTimezone,
+        currentTimeUtc,
+        currentTimeUserTz,
+        dayOfWeek,
+      } = promptContext;
       const pendingRecordForPrompt = await prisma.pendingCalendarChange.findFirst({
         where: {
           userId: input.userId,
@@ -93,9 +100,18 @@ export class ExecutiveAgent {
       const pendingCalendarInstruction = pendingRecordForPrompt && pendingPayloadForPrompt
         ? `Active pending calendar change exists (pendingId=${pendingRecordForPrompt.id}, action=${pendingPayloadForPrompt.plan.action}, expiresAt=${pendingRecordForPrompt.expiresAt.toISOString()}).`
         : 'No active pending calendar change exists.';
-      const promptWithRuntimeState =
-        `${prompt}\n\n` +
-        `Runtime calendar state (for this turn): ${pendingCalendarInstruction}`;
+      const messages = promptMessages.map((message) => ({ ...message }));
+      const lastMessage = messages[messages.length - 1];
+      if (lastMessage?.role === 'user') {
+        lastMessage.content =
+          `${lastMessage.content}\n\n` +
+          `## Pending Calendar State\n${pendingCalendarInstruction}`;
+      } else {
+        messages.push({
+          role: 'user',
+          content: `## Pending Calendar State\n${pendingCalendarInstruction}`,
+        });
+      }
 
       toolAbort = createDeadlineController({
         abortSignal: input.abortSignal,
@@ -144,12 +160,13 @@ export class ExecutiveAgent {
       });
 
       const systemPrompt =
+        `${promptSystemPrompt}\n\n` +
         'You are Clira, an Executive AI Agent helping the user over messaging. ' +
         'You are warm, casual, confident, and high-agency (like a top-tier human EA). ' +
         'NEVER sound robotic or use phrases like "as an AI" or "I don\'t have feelings". ' +
         'Keep responses SHORT by default. Ask clarifying questions only when truly needed. ' +
         'Be proactive and decisive ("want me to send it now?"). ' +
-        '**TIME AWARENESS (CRITICAL):** Always be aware of the CURRENT time shown in the prompt context. ' +
+        '**TIME AWARENESS (CRITICAL):** Always be aware of the CURRENT time shown in the latest user message. ' +
         'If the last message was sent hours or days ago, you are responding at a DIFFERENT time. ' +
         'Pay attention to: (1) What time of day it is NOW (morning/afternoon/evening/night), ' +
         '(2) What day it is NOW (today, not yesterday), (3) How much time has passed since the last message. ' +
@@ -165,7 +182,7 @@ export class ExecutiveAgent {
         'When drafting emails: gather context first (search_inbox_context, calendar, memory), then propose the draft to the user. ' +
         'For analytical or quantitative questions over emails (totals, counts, patterns, aggregations), use search_inbox_context with mode=deep, then analyze the evidence and report. ' +
         'ONLY call send_email after the user explicitly says "yes", "send it", "go ahead", or similar clear approval. NEVER assume permission. The email will be SENT IMMEDIATELY. ' +
-        'Pending calendar state is provided in the user prompt for this turn. ' +
+        'Pending calendar state is provided in the latest user message for this turn. ' +
         'Calendar change workflow: ' +
         '(1) If no pending change exists: call plan_calendar_change to create one. For move/reschedule requests, call plan_calendar_change ONCE with the complete plan (all events and new times). Do not call it again to refine unless the user explicitly asks for changes. ' +
         '(2) If a pending change exists and user confirms (approvals: "yes", "yessirr", "yup", "yeah", "sure", "send it", "confirm", "do it", "lock it in", "go ahead"): call commit_calendar_change with decision="confirm". DO NOT call plan_calendar_change again. ' +
@@ -209,7 +226,7 @@ export class ExecutiveAgent {
         ? await runSteerableTextWithTools({
             model: models.execAgent(),
             system: systemPrompt,
-            prompt: promptWithRuntimeState,
+            messages,
             tools: timedTools,
             timeLeftMs: () => toolAbort!.timeLeftMs(),
             maxSteps: MESSAGING_MAX_STEPS,
@@ -228,7 +245,7 @@ export class ExecutiveAgent {
         : await callTextWithTools({
             model: models.execAgent(),
             system: systemPrompt,
-            prompt: promptWithRuntimeState,
+            messages,
             tools: timedTools,
             maxSteps: MESSAGING_MAX_STEPS,
             maxToolCallsTotal: MESSAGING_MAX_TOOL_CALLS_TOTAL,

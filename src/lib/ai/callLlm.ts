@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { generateText, generateObject, LanguageModel, Output, stepCountIs } from 'ai';
 import type { ProviderOptions as AISDKProviderOptions } from '@ai-sdk/provider-utils';
 import { withConcurrency, type ConcurrencyOptions } from './concurrency';
@@ -66,6 +67,76 @@ type ToolBudgetExceededResult = {
   deadlineMs?: number;
   hint: string;
 };
+
+type MessageLike = {
+  role?: unknown;
+  content?: unknown;
+};
+
+function digestForTelemetry(value: string): string {
+  return crypto.createHash('sha1').update(value).digest('hex').slice(0, 12);
+}
+
+function stringifyMessageContent(content: unknown): string {
+  if (typeof content === 'string') {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    return content
+      .map((item) => {
+        if (typeof item === 'string') {
+          return item;
+        }
+        if (item && typeof item === 'object') {
+          return JSON.stringify(item);
+        }
+        return String(item);
+      })
+      .join('\n');
+  }
+  if (content && typeof content === 'object') {
+    return JSON.stringify(content);
+  }
+  return String(content ?? '');
+}
+
+function buildCacheSurfaceLog(params: {
+  op: string;
+  system?: string;
+  prompt?: string;
+  messages?: MessageLike[];
+  tools?: Record<string, ToolDefinition>;
+}): void {
+  const parts = [
+    `[llm] cache-surface op=${params.op}`,
+    `sys=${digestForTelemetry(params.system ?? '')}`,
+  ];
+
+  if (params.tools) {
+    const toolNames = Object.keys(params.tools).sort().join('|');
+    parts.push(`tools=${digestForTelemetry(toolNames)}`);
+    parts.push(`toolCount=${Object.keys(params.tools).length}`);
+  }
+
+  if (Array.isArray(params.messages)) {
+    const normalized = params.messages.map((message) => {
+      const role = typeof message?.role === 'string' ? message.role : 'unknown';
+      const content = stringifyMessageContent(message?.content);
+      return `${role}:${content}`;
+    });
+    const prefix = normalized.slice(0, -1).join('\n\n');
+    const tail = normalized.at(-1) ?? '';
+    parts.push('mode=messages');
+    parts.push(`messages=${normalized.length}`);
+    parts.push(`prefix=${digestForTelemetry(prefix)}`);
+    parts.push(`tail=${digestForTelemetry(tail)}`);
+  } else {
+    parts.push('mode=prompt');
+    parts.push(`prompt=${digestForTelemetry(params.prompt ?? '')}`);
+  }
+
+  logger.info(parts.join(' '));
+}
 
 function makeAbortError(message: string): Error {
   // Ensure downstream sees a standard AbortError shape so we don't retry aborted calls.
@@ -324,6 +395,7 @@ export async function callText({
     logger.info(
       `🚀 [llm] start op=${op} model=${modelLabelStart} prompt=${promptChars} chars sys=${systemChars} temp=${temperature}`,
     );
+    buildCacheSurfaceLog({ op, system, prompt });
     try {
       const result = await generateText({
         model,
@@ -365,6 +437,7 @@ export async function callTextWithTools({
   model,
   system,
   prompt,
+  messages,
   tools,
   maxSteps,
   stopWhen,
@@ -378,7 +451,8 @@ export async function callTextWithTools({
   retry,
   providerOptions,
 }: LlmOptions & {
-  prompt: string;
+  prompt?: string;
+  messages?: MessageLike[];
   tools: any;
   maxSteps?: number;
   stopWhen?: any;
@@ -387,8 +461,13 @@ export async function callTextWithTools({
   deadlineMs?: number;
 }) {
   const exec = async () => {
+    if (!Array.isArray(messages) && typeof prompt !== 'string') {
+      throw new Error('callTextWithTools requires either prompt or messages');
+    }
+
     const start = Date.now();
     const promptChars = prompt?.length ?? 0;
+    const messageCount = Array.isArray(messages) ? messages.length : 0;
     const systemChars = system?.length ?? 0;
     const modelLabelStart = typeof model === 'string' ? model : 'unknown';
     const hasBudgetConfig =
@@ -415,8 +494,15 @@ export async function callTextWithTools({
     });
 
     logger.info(
-      `🚀 [llm] start op=${op} model=${modelLabelStart} prompt=${promptChars} chars sys=${systemChars} temp=${temperature} steps=${maxSteps ?? '-'}`,
+      `🚀 [llm] start op=${op} model=${modelLabelStart} prompt=${promptChars} chars messages=${messageCount} sys=${systemChars} temp=${temperature} steps=${maxSteps ?? '-'}`,
     );
+    buildCacheSurfaceLog({
+      op,
+      system,
+      prompt,
+      messages,
+      tools: toolDefinitions,
+    });
     if (budgetConfig) {
       logger.info(
         `[llm] tool budgets op=${op} total=${budgetConfig.maxToolCallsTotal ?? '-'} deadlineMs=${budgetConfig.deadlineMs ?? '-'} perTool=${budgetConfig.maxToolCallsPerTool ? Object.keys(budgetConfig.maxToolCallsPerTool).length : 0}`,
@@ -432,7 +518,7 @@ export async function callTextWithTools({
       const result = await generateText({
         model,
         system,
-        prompt,
+        ...(Array.isArray(messages) ? { messages } : { prompt }),
         temperature,
         tools: budgetedTools,
         stopWhen: composedStopWhen,
@@ -517,6 +603,12 @@ export async function callTextWithToolsStep({
     logger.info(
       `🚀 [llm] start op=${op} model=${modelLabelStart} messages=${messageCount} sys=${systemChars} temp=${temperature} steps=1`,
     );
+    buildCacheSurfaceLog({
+      op,
+      system,
+      messages,
+      tools: tools as Record<string, ToolDefinition>,
+    });
 
     try {
       const stepCap = stepCountIs(1);
@@ -590,6 +682,7 @@ export async function callObject<T>({
     logger.info(
       `🚀 [llm] start op=${op} model=${modelLabelStart} prompt=${promptChars} chars sys=${systemChars} temp=${temperature}`,
     );
+    buildCacheSurfaceLog({ op, system, prompt });
     try {
       const result = await generateObject({
         model,
@@ -656,6 +749,12 @@ export async function callObjectWithTools<T>({
     logger.info(
       `🚀 [llm] start op=${op} model=${modelLabelStart} prompt=${promptChars} chars sys=${systemChars} temp=${temperature} steps=${maxSteps ?? '-'}`,
     );
+    buildCacheSurfaceLog({
+      op,
+      system,
+      prompt,
+      tools: tools as Record<string, ToolDefinition>,
+    });
 
     try {
       const result = await generateText({
