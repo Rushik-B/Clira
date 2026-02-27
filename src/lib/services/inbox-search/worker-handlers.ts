@@ -75,6 +75,8 @@ export async function processInboxEmbedRetryJob(job: Job<InboxEmbedRetryJobData>
     jobId: job.id,
     ...job.data,
     status: result.status,
+    embeddedCount: result.embeddedCount,
+    documentId: result.documentId,
   });
 
   return result;

@@ -1,6 +1,13 @@
 import { logger } from '@/lib/logger';
 import { buildInboxChunks, DEFAULT_CHUNK_OVERLAP_TOKENS, DEFAULT_CHUNK_SIZE_TOKENS } from '@/lib/services/inbox-search/chunker';
 import { computeInboxContentHash } from '@/lib/services/inbox-search/content-hash';
+import {
+  embedInboxDocumentChunks,
+  getInboxEmbeddingConfig,
+  logInboxEmbeddingFailure,
+  storeInboxChunkEmbeddings,
+} from '@/lib/services/inbox-search/embeddings';
+import { enqueueInboxEmbedRetryJob } from '@/lib/services/inbox-search/queue';
 import { prepareInboxBodyText } from '@/lib/services/inbox-search/text-prep';
 import { runInboxSearchTransaction } from '@/lib/services/inbox-search/tx';
 import type { InboxSearchIndexInput, InboxSearchIndexResult } from '@/lib/services/inbox-search/types';
@@ -29,6 +36,12 @@ export async function indexInboxSearchEmail(
     };
   }
 
+  const bodyText = prepareInboxBodyText(email.body);
+  const chunks = buildInboxChunks({
+    bodyText,
+    chunkSizeTokens: options.chunkSizeTokens ?? DEFAULT_CHUNK_SIZE_TOKENS,
+    overlapTokens: options.overlapTokens ?? DEFAULT_CHUNK_OVERLAP_TOKENS,
+  });
   const indexedAt = new Date();
   const result = await runInboxSearchTransaction(email.userId, async (tx): Promise<InboxSearchIndexResult> => {
     const existing = await tx.inboxSearchDocument.findUnique({
@@ -52,13 +65,6 @@ export async function indexInboxSearchEmail(
         contentHash,
       };
     }
-
-    const bodyText = prepareInboxBodyText(email.body);
-    const chunks = buildInboxChunks({
-      bodyText,
-      chunkSizeTokens: options.chunkSizeTokens ?? DEFAULT_CHUNK_SIZE_TOKENS,
-      overlapTokens: options.overlapTokens ?? DEFAULT_CHUNK_OVERLAP_TOKENS,
-    });
 
     const document = await tx.inboxSearchDocument.upsert({
       where: {
@@ -128,6 +134,48 @@ export async function indexInboxSearchEmail(
 
   if (result.status !== 'indexed') {
     return result;
+  }
+
+  if (chunks.length > 0) {
+    try {
+      const chunkEmbeddings = await embedInboxDocumentChunks({
+        subject: email.subject,
+        chunks: chunks.map((chunk) => ({
+          chunkIndex: chunk.chunkIndex,
+          chunkText: chunk.chunkText,
+        })),
+      });
+
+      await storeInboxChunkEmbeddings({
+        userId: email.userId,
+        documentId: result.documentId,
+        embeddingModel: getInboxEmbeddingConfig().model,
+        records: chunkEmbeddings,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown embedding error';
+      logInboxEmbeddingFailure(message, {
+        mailboxId: email.mailboxId,
+        messageId: email.messageId,
+        documentId: result.documentId,
+      });
+
+      try {
+        await enqueueInboxEmbedRetryJob({
+          userId: email.userId,
+          mailboxId: email.mailboxId,
+          messageId: email.messageId,
+          documentId: result.documentId,
+        });
+      } catch (queueError) {
+        logger.warn('[InboxSearchIndexer] failed to enqueue embedding retry', {
+          mailboxId: email.mailboxId,
+          messageId: email.messageId,
+          documentId: result.documentId,
+          queueError,
+        });
+      }
+    }
   }
 
   logger.info('[InboxSearchIndexer] indexed email', {
