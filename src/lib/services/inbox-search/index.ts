@@ -11,6 +11,13 @@ export {
 } from '@/lib/services/inbox-search/checkpoint';
 export { computeInboxContentHash } from '@/lib/services/inbox-search/content-hash';
 export {
+  embedInboxDocumentChunks,
+  embedInboxQueryText,
+  getInboxEmbeddingConfig,
+  logInboxEmbeddingFailure,
+  storeInboxChunkEmbeddings,
+} from '@/lib/services/inbox-search/embeddings';
+export {
   INBOX_SEARCH_BACKFILL_PAGE_DELAY_MS,
   INBOX_SEARCH_BACKFILL_PAGE_SIZE,
   INBOX_SEARCH_BACKFILL_QUERY,
@@ -24,6 +31,7 @@ export {
   indexStoredInboxEmail,
 } from '@/lib/services/inbox-search/ingestion';
 export { indexInboxSearchEmail } from '@/lib/services/inbox-search/indexer';
+export { searchInboxDocuments, buildInboxSearchPlan } from '@/lib/services/inbox-search/search';
 export {
   enqueueInboxBackfillForConnectedMailboxes,
   enqueueInboxBackfillForMailboxIfReady,
@@ -34,9 +42,18 @@ export {
 export { prepareInboxBodyText } from '@/lib/services/inbox-search/text-prep';
 export { runInboxSearchTransaction } from '@/lib/services/inbox-search/tx';
 export type {
+  InboxSearchCandidate,
   InboxSearchChunkRecord,
+  InboxSearchCoverage,
+  InboxSearchFreshness,
   InboxSearchIndexInput,
   InboxSearchIndexResult,
+  InboxSearchQueryConstraints,
+  InboxSearchQueryMode,
+  InboxSearchRetrievalProfile,
+  InboxSearchScopedMailbox,
+  InboxSearchSearchRequest,
+  InboxSearchSearchResult,
 } from '@/lib/services/inbox-search/types';
 export type {
   InboxBackfillPhase,

@@ -40,13 +40,48 @@ export const EmailEvidenceQuoteSchema = z.object({
 export type EmailEvidenceQuoteDTO = z.infer<typeof EmailEvidenceQuoteSchema>;
 
 export const EmailEvidenceCoverageSchema = z.object({
-  queriesTried: z.array(z.string()).describe('Gmail queries executed during retrieval'),
+  queriesTried: z.array(z.string()).describe('Retrieval queries or search plans executed'),
   threadsScanned: z.number().int().min(0).describe('Number of threads scanned'),
   messagesScanned: z.number().int().min(0).describe('Number of messages scanned'),
   timeWindow: z.string().describe('Human summary of the time window searched'),
-  pagesFetched: z.number().int().min(0).describe('Number of Gmail pages fetched'),
+  pagesFetched: z.number().int().min(0).describe('Number of paginated fetches performed'),
   truncated: z.boolean().describe('True if budgets stopped the search early'),
   budgetNotes: z.array(z.string()).optional().describe('Budget or coverage notes'),
+  engineVersion: z.string().optional().describe('Retrieval engine version'),
+  indexFreshness: z
+    .enum(['fresh', 'lagging', 'stale', 'unknown'])
+    .optional()
+    .describe('Freshness state of the local inbox index'),
+  retrievalLatencyMs: z
+    .number()
+    .int()
+    .min(0)
+    .optional()
+    .describe('End-to-end retrieval latency in milliseconds'),
+  lexicalCandidates: z
+    .number()
+    .int()
+    .min(0)
+    .optional()
+    .describe('Number of lexical candidates considered'),
+  semanticCandidates: z
+    .number()
+    .int()
+    .min(0)
+    .optional()
+    .describe('Number of semantic candidates considered'),
+  fusionMethod: z.string().optional().describe('Ranking or fusion method applied'),
+  indexLag: z
+    .number()
+    .int()
+    .min(0)
+    .nullable()
+    .optional()
+    .describe('Estimated worst-case index lag in minutes'),
+  semanticUnavailable: z
+    .boolean()
+    .optional()
+    .describe('True when semantic retrieval was unavailable and lexical-only search was used'),
 });
 
 export type EmailEvidenceCoverageDTO = z.infer<typeof EmailEvidenceCoverageSchema>;
