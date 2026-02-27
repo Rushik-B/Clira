@@ -6,6 +6,7 @@ import { prisma } from '@/lib/prisma';
 import { encryptToken } from '@/lib/encryption';
 import { checkUserScopes } from '@/lib/auth/scope-utils';
 import { GmailPushService } from '@/lib/email/gmailPushService';
+import { enqueueInboxBackfillForMailboxIfReady } from '@/lib/services/inbox-search';
 import {
   createMailboxConnectAuthUrl,
   getBaseUrl,
@@ -221,6 +222,23 @@ export async function GET(request: NextRequest) {
           mailboxId: mailbox.id,
           topicName,
         });
+      }
+
+      try {
+        const backfillResult = await enqueueInboxBackfillForMailboxIfReady({
+          userId: session.userId,
+          mailboxId: mailbox.id,
+        });
+        if (!backfillResult.enqueued && backfillResult.skippedReason) {
+          console.log(
+            `[MAILBOX_CONNECT] Inbox backfill not enqueued for mailbox ${mailbox.id}: ${backfillResult.skippedReason}`,
+          );
+        }
+      } catch (error) {
+        console.warn(
+          `[MAILBOX_CONNECT] Failed to enqueue inbox backfill for mailbox ${mailbox.id}:`,
+          error,
+        );
       }
     }
 

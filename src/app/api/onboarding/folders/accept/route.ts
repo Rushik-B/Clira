@@ -6,6 +6,7 @@ import { prisma } from '@/lib/prisma';
 import { DEFAULT_CALENDAR_TIMEZONE } from '@/constants/time';
 import { emailQueue } from '@/lib/services/utils/queues';
 import { enqueueSupermemoryBootstrap } from '@/lib/services/supermemory/queueHelpers';
+import { enqueueInboxBackfillForConnectedMailboxes } from '@/lib/services/inbox-search';
 import { logger } from '@/lib/logger';
 
 const folderSchema = z.object({
@@ -84,6 +85,18 @@ export async function POST(request: Request) {
         },
       });
       await upsertUserSettings();
+
+      try {
+        const backfillEnqueue = await enqueueInboxBackfillForConnectedMailboxes(userId);
+        logger.info(
+          `[FAST ONBOARDING] Enqueued inbox backfill for ${backfillEnqueue.enqueuedCount} mailbox(es) ` +
+          `for user ${userId}` +
+          (backfillEnqueue.skippedReason ? ` (${backfillEnqueue.skippedReason})` : ''),
+        );
+      } catch (error) {
+        logger.warn(`[FAST ONBOARDING] Failed to enqueue inbox backfill for user ${userId}:`, error);
+      }
+
       return NextResponse.json({
         success: true,
         skipped: true,
@@ -163,6 +176,17 @@ export async function POST(request: Request) {
     });
 
     await upsertUserSettings();
+
+    try {
+      const backfillEnqueue = await enqueueInboxBackfillForConnectedMailboxes(userId);
+      logger.info(
+        `[FAST ONBOARDING] Enqueued inbox backfill for ${backfillEnqueue.enqueuedCount} mailbox(es) ` +
+        `for user ${userId}` +
+        (backfillEnqueue.skippedReason ? ` (${backfillEnqueue.skippedReason})` : ''),
+      );
+    } catch (error) {
+      logger.warn(`[FAST ONBOARDING] Failed to enqueue inbox backfill for user ${userId}:`, error);
+    }
 
     // Enqueue Supermemory bootstrap job to build user memory graph from historical emails
     if (savedLabels.length > 0 && !shouldSkip) {
