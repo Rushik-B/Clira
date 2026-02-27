@@ -21,6 +21,7 @@
     }
   },
   "include": [
+    "../src/backfill-worker.ts",
     "../src/cron.ts",
     "../src/worker.ts",
     "../src/lib/**/*",

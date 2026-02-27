@@ -11,6 +11,7 @@
     "build": "next build && tsc -p config/tsconfig.worker.json && tsc-alias -p config/tsconfig.worker.json",
     "start": "node server.js",
     "start:worker": "node dist/worker.js",
+    "start:backfill-worker": "node dist/backfill-worker.js",
     "start:cron": "node dist/cron.js",
     "lint": "next lint",
     "postinstall": "prisma generate",
