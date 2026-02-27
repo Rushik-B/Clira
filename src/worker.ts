@@ -24,7 +24,8 @@ import {
   FastOnboardingMappingJobData,
   FastOnboardingProposalJobData,
   SupermemoryBootstrapJobData,
-  ReminderNotificationJobData
+  ReminderNotificationJobData,
+  InboxIndexJobData,
 } from './lib/services/utils/queues';
 import { MasterPromptGeneratorService } from './lib/ml/masterPromptGenerator';
 import { ReplyGeneratorService } from './lib/services/core/replyGenerator';
@@ -55,6 +56,7 @@ import {
   type TelegramInboundMessage,
   writeTelegramWorkerHeartbeat,
 } from '@/lib/services/telegram';
+import { processInboxIndexJob } from '@/lib/services/inbox-search/worker-handlers';
 
 console.log('🚀 Background Worker process started...');
 console.log('🔧 Environment variables loaded:');
@@ -465,6 +467,15 @@ const replyWorker = new Worker<ReplyGenerationJobData>('reply-generation', async
   connection: redisConnection,
   concurrency: 5 // Process up to 5 reply jobs simultaneously
 });
+
+const inboxIndexWorker = new Worker<InboxIndexJobData>(
+  'inbox-index',
+  async (job: Job<InboxIndexJobData>) => processInboxIndexJob(job),
+  {
+    connection: redisConnection,
+    concurrency: 3,
+  },
+);
 
 // --- Worker for Reminder Notifications ---
 const reminderNotificationWorker = new Worker<ReminderNotificationJobData>(
@@ -1268,6 +1279,7 @@ workers.push(
   onboardingWorker, 
   masterPromptWorker, 
   replyWorker,
+  inboxIndexWorker,
   reminderNotificationWorker,
   batchSortWorker, 
   modelRetrainWorker, 
@@ -1332,16 +1344,17 @@ workers.forEach((worker, index) => {
     'onboarding',            // 0: onboardingWorker
     'masterPrompt',          // 1: masterPromptWorker
     'reply',                 // 2: replyWorker
-    'reminderNotification',  // 3: reminderNotificationWorker
-    'batchSort',             // 4: batchSortWorker
-    'modelRetrain',          // 5: modelRetrainWorker
-    'emailJobs',             // 6: emailJobsWorker
-    'fastOnboarding',        // 7: fastOnboardingWorker
-    'folderGeneration',      // 8: folderGenerationWorker
-    'emailMapping',          // 9: emailMappingWorker
-    'emailLearning',         // 10: emailLearningWorker
-    'emailCategorization',   // 11: emailCategorizationWorker
-    'supermemoryBootstrap',  // 12: supermemoryBootstrapWorker
+    'inboxIndex',            // 3: inboxIndexWorker
+    'reminderNotification',  // 4: reminderNotificationWorker
+    'batchSort',             // 5: batchSortWorker
+    'modelRetrain',          // 6: modelRetrainWorker
+    'emailJobs',             // 7: emailJobsWorker
+    'fastOnboarding',        // 8: fastOnboardingWorker
+    'folderGeneration',      // 9: folderGenerationWorker
+    'emailMapping',          // 10: emailMappingWorker
+    'emailLearning',         // 11: emailLearningWorker
+    'emailCategorization',   // 12: emailCategorizationWorker
+    'supermemoryBootstrap',  // 13: supermemoryBootstrapWorker
   ];
   const name = workerNames[index] ?? `unknown-${index}`;
   

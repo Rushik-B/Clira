@@ -9,6 +9,7 @@ import { FeatureFlags } from '@/lib/services/utils/featureFlags';
 import { createGmailServiceForUser } from '@/lib/security/getUserGmailCredentials';
 import { encryptEmailContent, encryptThreadContent, decryptEmailContent, decryptEmails, decryptThreadContent } from '@/lib/security/emailCrypto';
 import { triggerAlertNotification } from '@/lib/services/alertNotificationService';
+import { enqueueInboxIndexJob } from '@/lib/services/inbox-search';
 // AI queue label removed: no longer creating/applying a dedicated Gmail label
 
 export interface PushNotificationPayload {
@@ -526,6 +527,12 @@ export class GmailPushService {
                 });
 
             const savedEmail = await decryptEmailContent({ email: storedEmail, userId: user.id });
+
+            await enqueueInboxIndexJob({
+              userId: user.id,
+              mailboxId: mailbox.id,
+              messageId: savedEmail.messageId,
+            });
 
             console.log(`💾 DEBUG: Successfully stored/updated email with ID: ${savedEmail.id}, messageId: ${savedEmail.messageId}`);
             
