@@ -1,3 +1,4 @@
+import { Prisma } from '@prisma/client';
 import { logger } from '@/lib/logger';
 import {
   embedInboxDocumentChunks,
@@ -38,18 +39,6 @@ export async function retryInboxDocumentEmbeddings(
       select: {
         id: true,
         subject: true,
-        chunks: {
-          where: {
-            embeddedAt: null,
-          },
-          select: {
-            chunkIndex: true,
-            chunkText: true,
-          },
-          orderBy: {
-            chunkIndex: 'asc',
-          },
-        },
       },
     }),
   );
@@ -62,7 +51,23 @@ export async function retryInboxDocumentEmbeddings(
     };
   }
 
-  const pendingChunks = document.chunks.filter((chunk) => chunk.chunkText.trim().length > 0);
+  const pendingChunks = await runInboxSearchTransaction(job.userId, async (tx) =>
+    tx.$queryRaw<Array<{ chunkIndex: number; chunkText: string }>>(Prisma.sql`
+      SELECT
+        c."chunkIndex" AS "chunkIndex",
+        c."chunkText" AS "chunkText"
+      FROM "InboxSearchChunk" c
+      WHERE
+        c."documentId" = ${document.id}
+        AND c."chunkText" <> ''
+        AND (
+          c."embedding" IS NULL
+          OR c."embeddedAt" IS NULL
+        )
+      ORDER BY c."chunkIndex" ASC
+    `),
+  );
+
   if (pendingChunks.length === 0) {
     return {
       status: 'already_embedded',

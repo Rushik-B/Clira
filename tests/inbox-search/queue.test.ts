@@ -27,6 +27,10 @@ const prismaMocks = vi.hoisted(() => ({
   },
 }));
 
+const txMocks = vi.hoisted(() => ({
+  runInboxSearchTransaction: vi.fn(),
+}));
+
 vi.mock('@/lib/services/utils/queues', () => ({
   inboxIndexQueue: queueMocks.inboxIndexQueue,
   inboxBackfillQueue: queueMocks.inboxBackfillQueue,
@@ -37,7 +41,13 @@ vi.mock('@/lib/prisma', () => ({
   prisma: prismaMocks.prisma,
 }));
 
+vi.mock('@/lib/services/inbox-search/tx', () => ({
+  runInboxSearchTransaction: txMocks.runInboxSearchTransaction,
+}));
+
 const {
+  enqueueInboxEmbeddingBackfillSweep,
+  enqueueInboxEmbeddingBackfillSweepPage,
   enqueueInboxBackfillForConnectedMailboxes,
   enqueueInboxBackfillForMailboxIfReady,
 } = await import('@/lib/services/inbox-search/queue');
@@ -50,6 +60,15 @@ describe('inbox-search queue helpers', () => {
     queueMocks.inboxBackfillQueue.add.mockImplementation(async (_name: string, _data: unknown, options: { jobId: string }) => ({
       id: options.jobId,
     }));
+    queueMocks.inboxEmbedRetryQueue.getJob.mockResolvedValue(null);
+    queueMocks.inboxEmbedRetryQueue.add.mockImplementation(async (_name: string, _data: unknown, options: { jobId: string }) => ({
+      id: options.jobId,
+    }));
+    txMocks.runInboxSearchTransaction.mockImplementation(async (_userId: string, fn: (tx: { $queryRaw: () => Promise<unknown> }) => Promise<unknown>) =>
+      fn({
+        $queryRaw: async () => [],
+      }),
+    );
 
     prismaMocks.prisma.user.findUnique.mockResolvedValue({
       id: 'user-1',
@@ -103,5 +122,102 @@ describe('inbox-search queue helpers', () => {
       skippedReason: 'master-prompt-not-generated',
     });
     expect(queueMocks.inboxBackfillQueue.add).not.toHaveBeenCalled();
+  });
+
+  test('sweeps missing chunk embeddings and enqueues retry jobs in stable pages', async () => {
+    txMocks.runInboxSearchTransaction.mockImplementationOnce(
+      async (
+        _userId: string,
+        fn: (tx: { $queryRaw: () => Promise<unknown> }) => Promise<unknown>,
+      ) =>
+        fn({
+          $queryRaw: async () => [
+            {
+              documentId: 'doc-1',
+              mailboxId: 'mailbox-1',
+              messageId: 'msg-1',
+            },
+            {
+              documentId: 'doc-2',
+              mailboxId: 'mailbox-1',
+              messageId: 'msg-2',
+            },
+          ],
+        }),
+    );
+
+    const result = await enqueueInboxEmbeddingBackfillSweepPage({
+      userId: 'user-1',
+      mailboxId: 'mailbox-1',
+      pageSize: 2,
+    });
+
+    expect(result).toEqual({
+      scannedDocuments: 2,
+      enqueuedCount: 2,
+      nextAfterDocumentId: 'doc-2',
+      hasMore: true,
+    });
+    expect(queueMocks.inboxEmbedRetryQueue.add).toHaveBeenNthCalledWith(
+      1,
+      'retry-document-embedding',
+      {
+        userId: 'user-1',
+        mailboxId: 'mailbox-1',
+        messageId: 'msg-1',
+        documentId: 'doc-1',
+      },
+      expect.objectContaining({
+        jobId: 'inbox-embed-retry:doc-1',
+      }),
+    );
+  });
+
+  test('returns resumable sweep metadata when max pages cap is reached', async () => {
+    txMocks.runInboxSearchTransaction
+      .mockImplementationOnce(
+        async (
+          _userId: string,
+          fn: (tx: { $queryRaw: () => Promise<unknown> }) => Promise<unknown>,
+        ) =>
+          fn({
+            $queryRaw: async () => [
+              {
+                documentId: 'doc-1',
+                mailboxId: 'mailbox-1',
+                messageId: 'msg-1',
+              },
+            ],
+          }),
+      )
+      .mockImplementationOnce(
+        async (
+          _userId: string,
+          fn: (tx: { $queryRaw: () => Promise<unknown> }) => Promise<unknown>,
+        ) =>
+          fn({
+            $queryRaw: async () => [
+              {
+                documentId: 'doc-2',
+                mailboxId: 'mailbox-1',
+                messageId: 'msg-2',
+              },
+            ],
+          }),
+      );
+
+    const result = await enqueueInboxEmbeddingBackfillSweep({
+      userId: 'user-1',
+      mailboxId: 'mailbox-1',
+      pageSize: 1,
+      maxPages: 2,
+    });
+
+    expect(result).toEqual({
+      scannedDocuments: 2,
+      enqueuedCount: 2,
+      hasRemaining: true,
+      nextAfterDocumentId: 'doc-2',
+    });
   });
 });

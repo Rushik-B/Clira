@@ -1,6 +1,8 @@
 import type { JobsOptions, Queue } from 'bullmq';
+import { Prisma } from '@prisma/client';
 import { logger } from '@/lib/logger';
 import { prisma } from '@/lib/prisma';
+import { runInboxSearchTransaction } from '@/lib/services/inbox-search/tx';
 import {
   inboxBackfillQueue,
   inboxEmbedRetryQueue,
@@ -11,6 +13,13 @@ import {
 } from '@/lib/services/utils/queues';
 
 const ACTIVE_JOB_STATES = new Set(['waiting', 'delayed', 'active', 'prioritized']);
+const DEFAULT_EMBEDDING_SWEEP_PAGE_SIZE = 100;
+
+type MissingEmbeddingDocumentRow = {
+  documentId: string;
+  mailboxId: string;
+  messageId: string;
+};
 
 async function addStableJob<T>(
   queue: Queue<T, unknown, string>,
@@ -68,6 +77,112 @@ export async function enqueueInboxEmbedRetryJob(
       : `inbox-embed-retry:${data.mailboxId}:${data.messageId}`;
 
   return addStableJob(inboxEmbedRetryQueue, 'retry-document-embedding', data, stableId);
+}
+
+export async function enqueueInboxEmbeddingBackfillSweepPage(params: {
+  userId: string;
+  mailboxId: string;
+  afterDocumentId?: string | null;
+  pageSize?: number;
+}): Promise<{
+  scannedDocuments: number;
+  enqueuedCount: number;
+  nextAfterDocumentId: string | null;
+  hasMore: boolean;
+}> {
+  const pageSize = Math.max(1, Math.min(params.pageSize ?? DEFAULT_EMBEDDING_SWEEP_PAGE_SIZE, 500));
+
+  const rows = await runInboxSearchTransaction(params.userId, async (tx) =>
+    tx.$queryRaw<MissingEmbeddingDocumentRow[]>(Prisma.sql`
+      SELECT
+        d."id" AS "documentId",
+        d."mailboxId" AS "mailboxId",
+        d."messageId" AS "messageId"
+      FROM "InboxSearchChunk" c
+      INNER JOIN "InboxSearchDocument" d
+        ON d."id" = c."documentId"
+      WHERE
+        d."userId" = ${params.userId}
+        AND d."mailboxId" = ${params.mailboxId}
+        AND d."isDeleted" = false
+        AND c."embedding" IS NULL
+        AND c."chunkText" <> ''
+        ${
+          params.afterDocumentId
+            ? Prisma.sql`AND d."id" > ${params.afterDocumentId}`
+            : Prisma.sql``
+        }
+      GROUP BY d."id", d."mailboxId", d."messageId"
+      ORDER BY d."id" ASC
+      LIMIT ${pageSize}
+    `),
+  );
+
+  let enqueuedCount = 0;
+  for (const row of rows) {
+    const result = await enqueueInboxEmbedRetryJob({
+      userId: params.userId,
+      mailboxId: row.mailboxId,
+      messageId: row.messageId,
+      documentId: row.documentId,
+    });
+
+    if (result.enqueued) {
+      enqueuedCount += 1;
+    }
+  }
+
+  return {
+    scannedDocuments: rows.length,
+    enqueuedCount,
+    nextAfterDocumentId: rows.at(-1)?.documentId ?? null,
+    hasMore: rows.length === pageSize,
+  };
+}
+
+export async function enqueueInboxEmbeddingBackfillSweep(params: {
+  userId: string;
+  mailboxId: string;
+  pageSize?: number;
+  maxPages?: number;
+}): Promise<{
+  scannedDocuments: number;
+  enqueuedCount: number;
+  hasRemaining: boolean;
+  nextAfterDocumentId: string | null;
+}> {
+  const maxPages = Math.max(1, params.maxPages ?? 5);
+  let scannedDocuments = 0;
+  let enqueuedCount = 0;
+  let hasRemaining = false;
+  let afterDocumentId: string | null = null;
+
+  for (let page = 0; page < maxPages; page += 1) {
+    const pageResult = await enqueueInboxEmbeddingBackfillSweepPage({
+      userId: params.userId,
+      mailboxId: params.mailboxId,
+      afterDocumentId,
+      pageSize: params.pageSize,
+    });
+
+    scannedDocuments += pageResult.scannedDocuments;
+    enqueuedCount += pageResult.enqueuedCount;
+    afterDocumentId = pageResult.nextAfterDocumentId;
+
+    if (!pageResult.hasMore || !pageResult.nextAfterDocumentId) {
+      hasRemaining = false;
+      break;
+    }
+
+    hasRemaining = true;
+  }
+
+  return {
+    scannedDocuments,
+    enqueuedCount,
+    hasRemaining,
+    nextAfterDocumentId: afterDocumentId,
+  };
 }
 
 export async function enqueueInboxBackfillJob(

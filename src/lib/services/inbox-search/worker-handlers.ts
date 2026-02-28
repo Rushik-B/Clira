@@ -3,6 +3,7 @@ import { logger } from '@/lib/logger';
 import { runInboxMailboxBackfill } from '@/lib/services/inbox-search/backfill';
 import { retryInboxDocumentEmbeddings } from '@/lib/services/inbox-search/embed-retry';
 import { indexStoredInboxEmail } from '@/lib/services/inbox-search/ingestion';
+import { enqueueInboxEmbeddingBackfillSweep } from '@/lib/services/inbox-search/queue';
 import type {
   InboxBackfillJobData,
   InboxEmbedRetryJobData,
@@ -46,6 +47,21 @@ export async function processInboxBackfillJob(job: Job<InboxBackfillJobData>) {
   });
 
   const result = await runInboxMailboxBackfill({ userId, mailboxId });
+  if (result.status === 'complete') {
+    const embeddingSweep = await enqueueInboxEmbeddingBackfillSweep({
+      userId,
+      mailboxId,
+      pageSize: 100,
+      maxPages: 5,
+    });
+
+    logger.info('[InboxSearchBackfillWorker] embedding backfill sweep scheduled', {
+      jobId: job.id,
+      userId,
+      mailboxId,
+      ...embeddingSweep,
+    });
+  }
 
   logger.info('[InboxSearchBackfillWorker] mailbox backfill complete', {
     jobId: job.id,
