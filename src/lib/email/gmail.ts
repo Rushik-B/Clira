@@ -20,6 +20,7 @@ export interface EmailData {
   isSent: boolean
   isDraft: boolean
   date: Date
+  hasAttachments: boolean
   labelIds?: string[] // Gmail label IDs
   gmailCategories?: ('PROMOTIONS'|'SOCIAL'|'UPDATES'|'FORUMS'|'PERSONAL')[] // Gmail's automatic categories
 
@@ -41,8 +42,14 @@ interface GmailMessage {
     body?: { data?: string }
     parts?: Array<{
       mimeType: string
-      body?: { data?: string }
-      parts?: any[]
+      filename?: string
+      body?: { data?: string; attachmentId?: string }
+      parts?: Array<{
+        mimeType: string
+        filename?: string
+        body?: { data?: string; attachmentId?: string }
+        parts?: any[]
+      }>
     }>
   }
   snippet: string
@@ -801,6 +808,7 @@ export class GmailService {
       // Determine if email is sent or received
       const isSent = message.labelIds?.includes('SENT') || false
       const isDraft = message.labelIds?.includes('DRAFT') || false
+      const hasAttachments = this.detectAttachments(message.payload)
 
       return {
         messageId: message.id,
@@ -818,6 +826,7 @@ export class GmailService {
         isSent,
         isDraft,
         date: dateHeader ? new Date(dateHeader) : new Date(),
+        hasAttachments,
         labelIds: message.labelIds,
         gmailCategories: extractGmailCategories(message.labelIds)
       }
@@ -825,6 +834,23 @@ export class GmailService {
       console.error('Error parsing email message:', error)
       return null
     }
+  }
+
+  private detectAttachments(payload: GmailMessage['payload']): boolean {
+    const parts = payload.parts;
+    if (!parts) return false;
+    return parts.some((part) => {
+      if (part.filename && part.filename.length > 0) return true;
+      if (part.body?.attachmentId) return true;
+      if (part.parts) {
+        return part.parts.some(
+          (sub) =>
+            (sub.filename && sub.filename.length > 0) ||
+            !!sub.body?.attachmentId,
+        );
+      }
+      return false;
+    });
   }
 
   /**

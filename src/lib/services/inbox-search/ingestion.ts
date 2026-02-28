@@ -19,11 +19,10 @@ export function buildInboxSearchInputFromParsedEmail(params: {
   threadId: string;
   email: Pick<
     EmailData,
-    'messageId' | 'from' | 'to' | 'cc' | 'subject' | 'snippet' | 'body' | 'date'
+    'messageId' | 'from' | 'to' | 'cc' | 'subject' | 'snippet' | 'body' | 'date' | 'hasAttachments'
   >;
-  hasAttachment?: boolean;
 }): InboxSearchIndexInput {
-  const { userId, mailboxId, threadId, email, hasAttachment = false } = params;
+  const { userId, mailboxId, threadId, email } = params;
 
   return {
     userId,
@@ -37,7 +36,7 @@ export function buildInboxSearchInputFromParsedEmail(params: {
     snippet: email.snippet ?? null,
     body: email.body,
     sentAt: new Date(email.date),
-    hasAttachment,
+    hasAttachment: email.hasAttachments,
   };
 }
 
@@ -48,6 +47,7 @@ export async function indexStoredInboxEmail(params: {
 }): Promise<InboxSearchStoredEmailIndexResult> {
   const { userId, mailboxId, messageId } = params;
 
+  // Email table does not have RLS; ownership is verified in application code below.
   const emailRecord = await prisma.email.findUnique({
     where: {
       mailboxId_messageId: {
@@ -85,6 +85,10 @@ export async function indexStoredInboxEmail(params: {
     );
   }
 
+  // Email.createdAt is set from emailData.date (the actual Gmail send date) at
+  // creation time in gmailPushService, so it reflects the real send timestamp —
+  // not the DB insertion time. This is the best date available on the Email model
+  // since it lacks a dedicated sentAt column.
   const result = await indexInboxSearchEmail({
     userId,
     mailboxId,
@@ -97,6 +101,10 @@ export async function indexStoredInboxEmail(params: {
     snippet: emailRecord.snippet ?? null,
     body: emailRecord.body,
     sentAt: emailRecord.createdAt,
+    // TODO: Email model does not store attachment metadata. The backfill path
+    // derives hasAttachment from EmailData.hasAttachments (Gmail payload), but
+    // the real-time path cannot detect attachments from the stored record alone.
+    // A future migration should add a hasAttachments column to the Email model.
     hasAttachment: false,
   });
 

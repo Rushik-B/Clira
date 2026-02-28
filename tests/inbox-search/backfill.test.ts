@@ -56,6 +56,7 @@ function makeEmail(partial?: Partial<EmailData>): EmailData {
     isSent: partial?.isSent ?? false,
     isDraft: partial?.isDraft ?? false,
     date: partial?.date ?? new Date('2026-02-01T00:00:00.000Z'),
+    hasAttachments: partial?.hasAttachments ?? false,
     gmailThreadId: partial?.gmailThreadId ?? 'thread-1',
     labelIds: partial?.labelIds,
     gmailCategories: partial?.gmailCategories,
