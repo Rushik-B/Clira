@@ -31,6 +31,9 @@ export const INBOX_SEARCH_SEED_QUERY = 'newer_than:30d -in:spam -in:trash';
 export const INBOX_SEARCH_BACKFILL_QUERY = 'newer_than:180d -in:spam -in:trash';
 export const INBOX_SEARCH_BACKFILL_PAGE_SIZE = 20;
 export const INBOX_SEARCH_BACKFILL_PAGE_DELAY_MS = 5_000;
+const BACKFILL_MAX_PAGES = 500;
+const RATE_LIMIT_BASE_DELAY_MS = 30_000;
+const RATE_LIMIT_MAX_RETRIES = 5;
 
 type BackfillPhaseResult = {
   status: 'phase_complete' | 'paused_auth_revoked';
@@ -51,16 +54,31 @@ export type InboxMailboxBackfillResult = {
   backfillState: InboxBackfillState;
 };
 
-export function isGmailAuthRevokedError(error: unknown): boolean {
-  const candidate = error as
-    | { code?: number; status?: number; response?: { status?: number } }
-    | undefined;
+function extractHttpStatus(error: unknown): number | null {
+  if (error == null || typeof error !== 'object') return null;
+  const obj = error as Record<string, unknown>;
+  if (typeof obj.status === 'number') return obj.status;
+  if (typeof obj.code === 'number') return obj.code;
+  if (typeof obj.response === 'object' && obj.response != null) {
+    const resp = obj.response as Record<string, unknown>;
+    if (typeof resp.status === 'number') return resp.status;
+  }
+  if (Array.isArray(obj.errors)) {
+    for (const inner of obj.errors) {
+      if (typeof inner === 'object' && inner != null && typeof (inner as Record<string, unknown>).code === 'number') {
+        return (inner as Record<string, unknown>).code as number;
+      }
+    }
+  }
+  return null;
+}
 
-  return (
-    candidate?.status === 401 ||
-    candidate?.code === 401 ||
-    candidate?.response?.status === 401
-  );
+export function isGmailAuthRevokedError(error: unknown): boolean {
+  return extractHttpStatus(error) === 401;
+}
+
+export function isGmailRateLimitError(error: unknown): boolean {
+  return extractHttpStatus(error) === 429;
 }
 
 async function runBackfillPhase(params: {
@@ -87,8 +105,8 @@ async function runBackfillPhase(params: {
     pageToken: pageToken ?? null,
   });
 
-  while (true) {
-    let page;
+  while (pagesProcessed < BACKFILL_MAX_PAGES) {
+    let page: Awaited<ReturnType<GmailBackfillClient['searchThreadsPaged']>> | null = null;
 
     try {
       page = await gmail.searchThreadsPaged(query, {
@@ -115,7 +133,45 @@ async function runBackfillPhase(params: {
         };
       }
 
-      throw error;
+      if (isGmailRateLimitError(error)) {
+        let retried = false;
+        for (let attempt = 1; attempt <= RATE_LIMIT_MAX_RETRIES; attempt++) {
+          const backoffMs = RATE_LIMIT_BASE_DELAY_MS * attempt;
+          logger.warn('[InboxSearchBackfill] Gmail rate-limited (429), backing off', {
+            userId,
+            mailboxId,
+            phase,
+            attempt,
+            backoffMs,
+          });
+          await sleep(backoffMs);
+          try {
+            page = await gmail.searchThreadsPaged(query, {
+              maxResults: INBOX_SEARCH_BACKFILL_PAGE_SIZE,
+              ...(pageToken ? { pageToken } : {}),
+            });
+            retried = true;
+            break;
+          } catch (retryError) {
+            if (!isGmailRateLimitError(retryError)) {
+              throw retryError;
+            }
+          }
+        }
+        if (!retried) {
+          throw new Error(
+            `Gmail rate limit (429) persisted after ${RATE_LIMIT_MAX_RETRIES} retries for mailbox ${mailboxId}`,
+          );
+        }
+      } else {
+        throw error;
+      }
+    }
+
+    if (!page) {
+      throw new Error(
+        `Inbox backfill failed to fetch a Gmail page for mailbox ${mailboxId}.`,
+      );
     }
 
     pagesProcessed += 1;
@@ -181,6 +237,17 @@ async function runBackfillPhase(params: {
 
     await sleep(INBOX_SEARCH_BACKFILL_PAGE_DELAY_MS);
   }
+
+  logger.warn('[InboxSearchBackfill] hit max-pages safety limit', {
+    userId,
+    mailboxId,
+    phase,
+    maxPages: BACKFILL_MAX_PAGES,
+    pagesProcessed,
+  });
+  throw new Error(
+    `Backfill exceeded max page limit (${BACKFILL_MAX_PAGES}) for mailbox ${mailboxId} phase ${phase}`,
+  );
 }
 
 export async function runInboxMailboxBackfill(
