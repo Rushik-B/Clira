@@ -3,6 +3,10 @@ import type { InboxSearchChunkRecord } from '@/lib/services/inbox-search/types';
 export const DEFAULT_CHUNK_SIZE_TOKENS = 384;
 export const DEFAULT_CHUNK_OVERLAP_TOKENS = 64;
 
+// Whitespace-split approximation of token counting. English averages ~1.3 BPE
+// tokens per word, so 384 "words" ≈ 500 actual Gemini tokens — well within the
+// 2048-token embedding API limit. Non-English text, URLs, and encoded strings
+// may exceed this ratio, but the Gemini API truncates gracefully.
 function tokenize(text: string): string[] {
   const tokens = text.match(/\S+/g);
   return tokens ?? [];
@@ -25,7 +29,7 @@ export function buildInboxChunks(params: {
 
   const trimmedBody = params.bodyText.trim();
   if (!trimmedBody) {
-    return [{ chunkIndex: 0, chunkText: '', tokenCount: 0 }];
+    return [];
   }
 
   const tokens = tokenize(trimmedBody);
