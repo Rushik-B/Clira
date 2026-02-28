@@ -16,8 +16,9 @@ import type {
 } from './lib/services/utils/queues';
 import redisConnection from './lib/services/utils/redis';
 
-console.log('📚 Inbox backfill worker process started...');
-console.log(`  - NODE_ENV: ${process.env.NODE_ENV}`);
+logger.info('[BackfillWorker] process started', {
+  nodeEnv: process.env.NODE_ENV,
+});
 
 const workers: Worker[] = [];
 
@@ -27,7 +28,8 @@ const inboxBackfillWorker = new Worker<InboxBackfillJobData>(
   {
     connection: redisConnection,
     concurrency: 1,
-    lockDuration: 20 * 60 * 1000,
+    lockDuration: 2 * 60 * 60 * 1000, // 2 hours — a full 6-month backfill can exceed 20 min
+    autorun: true,
   },
 );
 
@@ -47,28 +49,33 @@ workers.forEach((worker, index) => {
   const workerName = workerNames[index] ?? `worker-${index}`;
 
   worker.on('completed', (job) => {
-    console.log(`✅ [${workerName}] Job ${job?.id} completed`);
+    logger.info(`[BackfillWorker:${workerName}] job completed`, {
+      jobId: job?.id,
+    });
   });
 
   worker.on('failed', (job, error) => {
-    console.error(`❌ [${workerName}] Job ${job?.id} failed:`, error);
+    logger.error(`[BackfillWorker:${workerName}] job failed`, {
+      jobId: job?.id,
+      error,
+    });
   });
 
   worker.on('error', (error) => {
-    console.error(`🚨 [${workerName}] Worker error:`, error);
+    logger.error(`[BackfillWorker:${workerName}] worker error`, { error });
   });
 });
 
 async function gracefulShutdown(signal: string) {
-  console.log(`\n🛑 Received ${signal}, starting backfill worker shutdown...`);
+  logger.info(`[BackfillWorker] received ${signal}, shutting down...`);
 
   try {
     await Promise.all(workers.map((worker) => worker.close()));
     await redisConnection.quit();
-    console.log('✅ Backfill worker shutdown completed');
+    logger.info('[BackfillWorker] shutdown completed');
     process.exit(0);
   } catch (error) {
-    logger.error('❌ Error during backfill worker shutdown', error);
+    logger.error('[BackfillWorker] error during shutdown', { error });
     process.exit(1);
   }
 }
@@ -76,6 +83,6 @@ async function gracefulShutdown(signal: string) {
 process.on('SIGTERM', () => void gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => void gracefulShutdown('SIGINT'));
 process.on('unhandledRejection', (error) => {
-  console.error('🚨 Backfill worker unhandled promise rejection:', error);
+  logger.error('[BackfillWorker] unhandled promise rejection', { error });
   void gracefulShutdown('unhandledRejection');
 });
