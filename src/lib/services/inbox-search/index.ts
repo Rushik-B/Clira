@@ -15,6 +15,7 @@ export {
   embedInboxQueryText,
   getInboxEmbeddingConfig,
   logInboxEmbeddingFailure,
+  serializeVectorLiteral,
   storeInboxChunkEmbeddings,
 } from '@/lib/services/inbox-search/embeddings';
 export {
@@ -23,6 +24,7 @@ export {
   INBOX_SEARCH_BACKFILL_QUERY,
   INBOX_SEARCH_SEED_QUERY,
   isGmailAuthRevokedError,
+  isGmailRateLimitError,
   runInboxMailboxBackfill,
 } from '@/lib/services/inbox-search/backfill';
 export { retryInboxDocumentEmbeddings } from '@/lib/services/inbox-search/embed-retry';
@@ -35,10 +37,13 @@ export { searchInboxDocuments, buildInboxSearchPlan } from '@/lib/services/inbox
 export {
   enqueueInboxBackfillForConnectedMailboxes,
   enqueueInboxBackfillForMailboxIfReady,
+  enqueueInboxEmbeddingBackfillSweep,
+  enqueueInboxEmbeddingBackfillSweepPage,
   enqueueInboxBackfillJob,
   enqueueInboxEmbedRetryJob,
   enqueueInboxIndexJob,
 } from '@/lib/services/inbox-search/queue';
+export { getInboxRetrievalFeatureFlags } from '@/lib/services/inbox-search/feature-flags';
 export { prepareInboxBodyText } from '@/lib/services/inbox-search/text-prep';
 export { runInboxSearchTransaction } from '@/lib/services/inbox-search/tx';
 export type {

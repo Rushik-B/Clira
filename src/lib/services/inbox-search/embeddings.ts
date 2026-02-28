@@ -62,7 +62,7 @@ function assertValidEmbedding(values: number[], textLabel: string): number[] {
   return values;
 }
 
-function serializeVectorLiteral(values: number[]): string {
+export function serializeVectorLiteral(values: number[]): string {
   return `[${values.map((value) => Number(value).toString()).join(',')}]`;
 }
 

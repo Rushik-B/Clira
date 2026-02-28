@@ -8,6 +8,7 @@ import {
 import { logger } from '@/lib/logger';
 import { readPromptFile } from '@/lib/prompts';
 import {
+  getInboxRetrievalFeatureFlags,
   searchInboxDocuments,
   type InboxSearchCandidate,
   type InboxSearchQueryConstraints,
@@ -245,8 +246,30 @@ export async function runEmailRetrieval(
   const mode: EmailRetrievalMode = request.mode ?? 'quick';
   const profile = normalizeRetrievalProfile(request.profile);
   const budgets = RETRIEVAL_BUDGETS_BY_PROFILE[profile][mode];
+  const featureFlags = getInboxRetrievalFeatureFlags();
+
+  if (!featureFlags.retrievalV2Enabled) {
+    return createEmptyEvidencePack(
+      createEmptyCoverage([
+        'Local inbox retrieval is disabled by INBOX_RETRIEVAL_V2_ENABLED=false.',
+      ], {
+        fusionMethod: 'lexical-only',
+        semanticUnavailable: true,
+      }),
+      ['Inbox retrieval is temporarily disabled. Want to retry after rollout is re-enabled?'],
+    );
+  }
 
   try {
+    logger.info('[emailRetrievalSubagent] retrieval flags', {
+      userId: dependencies.userId,
+      mode,
+      profile,
+      retrievalV2Enabled: featureFlags.retrievalV2Enabled,
+      vectorEnabled: featureFlags.vectorEnabled,
+      llmRerankDeepOnly: featureFlags.llmRerankDeepOnly,
+    });
+
     const scopedMailboxes = await resolveMailboxScope({
       userId: dependencies.userId,
       mailboxId: request.mailboxId,
@@ -295,17 +318,36 @@ export async function runEmailRetrieval(
       ]);
     }
 
-    if (mode === 'quick' || isTimeLow(dependencies.deadlineAt, 5_000)) {
-      const coverage =
-        mode === 'deep' && isTimeLow(dependencies.deadlineAt, 5_000)
-          ? {
-              ...searchResult.coverage,
-              budgetNotes: [
-                ...(searchResult.coverage.budgetNotes ?? []),
-                'Skipped deep LLM compression because the remaining time budget was low.',
-              ],
-            }
-          : searchResult.coverage;
+    if (mode === 'quick') {
+      return createDeterministicEvidencePack(
+        searchResult.candidates,
+        searchResult.coverage,
+        mode,
+      );
+    }
+
+    if (!featureFlags.llmRerankDeepOnly) {
+      return createDeterministicEvidencePack(
+        searchResult.candidates,
+        {
+          ...searchResult.coverage,
+          budgetNotes: [
+            ...(searchResult.coverage.budgetNotes ?? []),
+            'Skipped deep LLM rerank because INBOX_LLM_RERANK_DEEP_ONLY=false.',
+          ],
+        },
+        mode,
+      );
+    }
+
+    if (isTimeLow(dependencies.deadlineAt, 5_000)) {
+      const coverage = {
+        ...searchResult.coverage,
+        budgetNotes: [
+          ...(searchResult.coverage.budgetNotes ?? []),
+          'Skipped deep LLM compression because the remaining time budget was low.',
+        ],
+      };
 
       return createDeterministicEvidencePack(
         searchResult.candidates,

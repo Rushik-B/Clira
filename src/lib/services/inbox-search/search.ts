@@ -1,5 +1,7 @@
 import { InboxBackfillState, Prisma } from '@prisma/client';
-import { embedInboxQueryText } from '@/lib/services/inbox-search/embeddings';
+import { logger } from '@/lib/logger';
+import { embedInboxQueryText, serializeVectorLiteral } from '@/lib/services/inbox-search/embeddings';
+import { getInboxRetrievalFeatureFlags } from '@/lib/services/inbox-search/feature-flags';
 import {
   buildInboxWhyRelevant,
   calculateInboxRecencyBoost,
@@ -87,6 +89,10 @@ const FRESH_INDEX_LAG_MINUTES = 10;
 const LAGGING_INDEX_LAG_MINUTES = 120;
 const RRF_K = 60;
 
+function escapeLikePattern(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
+}
+
 type InboxSearchPlan = {
   lexicalQuery: string | null;
   semanticQueryText: string | null;
@@ -140,6 +146,14 @@ type InboxSearchCheckpointRow = {
   lastIndexedAt: Date | null;
   lagEstimate: number | null;
   backfillState: InboxBackfillState;
+};
+
+type InboxSearchRuntimeDependencies = {
+  fetchLexicalCandidatesAndCheckpoints: typeof fetchLexicalCandidatesAndCheckpoints;
+  fetchSemanticCandidates: typeof fetchSemanticCandidates;
+  embedInboxQueryText: typeof embedInboxQueryText;
+  now: () => Date;
+  isVectorEnabled: () => boolean;
 };
 
 function isTimeLow(deadlineAt?: number, bufferMs = EARLY_EXIT_BUFFER_MS): boolean {
@@ -500,18 +514,20 @@ function buildInboxSearchWhereClauses(params: {
 
   const senderFilter = params.constraints?.sender?.trim();
   if (senderFilter) {
+    const escaped = escapeLikePattern(senderFilter.toLowerCase());
     clauses.push(
-      Prisma.sql`LOWER(d."from") LIKE ${`%${senderFilter.toLowerCase()}%`}`,
+      Prisma.sql`LOWER(d."from") LIKE ${`%${escaped}%`}`,
     );
   }
 
   const recipientFilter = params.constraints?.recipient?.trim();
   if (recipientFilter) {
+    const escaped = escapeLikePattern(recipientFilter.toLowerCase());
     clauses.push(Prisma.sql`
       EXISTS (
         SELECT 1
         FROM unnest(array_cat(d."to", d."cc")) AS recipient
-        WHERE LOWER(recipient) LIKE ${`%${recipientFilter.toLowerCase()}%`}
+        WHERE LOWER(recipient) LIKE ${`%${escaped}%`}
       )
     `);
   }
@@ -629,10 +645,6 @@ async function fetchLexicalCandidatesAndCheckpoints(params: {
   });
 }
 
-function serializeVectorLiteral(values: number[]): string {
-  return `[${values.map((value) => Number(value).toString()).join(',')}]`;
-}
-
 async function fetchSemanticCandidates(params: {
   userId: string;
   queryEmbedding: number[];
@@ -684,6 +696,38 @@ async function fetchSemanticCandidates(params: {
       ORDER BY "semanticDistance" ASC, "sentAt" DESC
       LIMIT ${params.limit}
     `);
+  });
+}
+
+function collapseSemanticRows(rows: InboxSearchSemanticRow[]): InboxSearchSemanticRow[] {
+  const bestRowByDocumentId = new Map<string, InboxSearchSemanticRow>();
+
+  for (const row of rows) {
+    const existing = bestRowByDocumentId.get(row.documentId);
+    if (!existing) {
+      bestRowByDocumentId.set(row.documentId, row);
+      continue;
+    }
+
+    if (row.semanticDistance < existing.semanticDistance) {
+      bestRowByDocumentId.set(row.documentId, row);
+      continue;
+    }
+
+    if (
+      row.semanticDistance === existing.semanticDistance &&
+      row.sentAt.getTime() > existing.sentAt.getTime()
+    ) {
+      bestRowByDocumentId.set(row.documentId, row);
+    }
+  }
+
+  return Array.from(bestRowByDocumentId.values()).sort((left, right) => {
+    if (left.semanticDistance !== right.semanticDistance) {
+      return left.semanticDistance - right.semanticDistance;
+    }
+
+    return right.sentAt.getTime() - left.sentAt.getTime();
   });
 }
 
@@ -832,10 +876,24 @@ function buildSearchSummary(params: {
   return parts.join(' | ');
 }
 
+const DEFAULT_INBOX_SEARCH_RUNTIME_DEPENDENCIES: InboxSearchRuntimeDependencies = {
+  fetchLexicalCandidatesAndCheckpoints,
+  fetchSemanticCandidates,
+  embedInboxQueryText,
+  now: () => new Date(),
+  isVectorEnabled: () => getInboxRetrievalFeatureFlags().vectorEnabled,
+};
+
 export async function searchInboxDocuments(
   params: InboxSearchSearchRequest,
+  dependencies: Partial<InboxSearchRuntimeDependencies> = {},
 ): Promise<InboxSearchSearchResult> {
-  const startedAt = Date.now();
+  const runtime: InboxSearchRuntimeDependencies = {
+    ...DEFAULT_INBOX_SEARCH_RUNTIME_DEPENDENCIES,
+    ...dependencies,
+  };
+  const startedAt = runtime.now().getTime();
+  const vectorEnabled = runtime.isVectorEnabled();
   const plan = buildInboxSearchPlan({
     intent: params.intent,
     constraints: params.constraints,
@@ -870,12 +928,22 @@ export async function searchInboxDocuments(
     semanticUnavailable: false,
   };
 
+  logger.info('[InboxSearchSearch] retrieval stage start', {
+    userId: params.userId,
+    mode: params.mode,
+    profile: params.profile,
+    mailboxCount: scopedMailboxIds.length,
+    lexicalQueryPresent: Boolean(plan.lexicalQuery),
+    semanticRequested: Boolean(plan.semanticQueryText),
+    vectorEnabled,
+  });
+
   if (!plan.lexicalQuery && !plan.allowsFilterOnlySearch) {
     return {
       candidates: [],
       coverage: {
         ...initialCoverage,
-        retrievalLatencyMs: Date.now() - startedAt,
+        retrievalLatencyMs: runtime.now().getTime() - startedAt,
       },
     };
   }
@@ -886,7 +954,7 @@ export async function searchInboxDocuments(
       coverage: {
         ...initialCoverage,
         truncated: true,
-        retrievalLatencyMs: Date.now() - startedAt,
+        retrievalLatencyMs: runtime.now().getTime() - startedAt,
         semanticUnavailable: true,
         fusionMethod: 'lexical-only',
         budgetNotes: [
@@ -906,7 +974,7 @@ export async function searchInboxDocuments(
     params.mode === 'deep' ? 80 : 40,
   );
 
-  const lexicalPromise = fetchLexicalCandidatesAndCheckpoints({
+  const lexicalPromise = runtime.fetchLexicalCandidatesAndCheckpoints({
     userId: params.userId,
     lexicalQuery: plan.lexicalQuery,
     scopedMailboxIds,
@@ -914,18 +982,45 @@ export async function searchInboxDocuments(
     plan,
     limit: lexicalLimit,
   });
+  const semanticQueryText = plan.semanticQueryText;
 
   const semanticQueryPromise =
-    plan.semanticQueryText && !isTimeLow(params.deadlineAt, 1_500)
-      ? embedInboxQueryText({
-          text: plan.semanticQueryText,
-        })
-          .then((embedding) => ({ embedding, errorMessage: null }))
-          .catch((error) => ({
-            embedding: null,
-            errorMessage:
-              error instanceof Error ? error.message : 'Unknown query embedding error',
-          }))
+    semanticQueryText && vectorEnabled && !isTimeLow(params.deadlineAt, 1_500)
+      ? (async () => {
+          const embeddingStartedAt = runtime.now().getTime();
+
+          try {
+            const embedding = await runtime.embedInboxQueryText({
+              text: semanticQueryText,
+            });
+            const latencyMs = runtime.now().getTime() - embeddingStartedAt;
+            logger.info('[InboxSearchSearch] query embedding complete', {
+              userId: params.userId,
+              mode: params.mode,
+              latencyMs,
+            });
+            return {
+              embedding,
+              errorMessage: null,
+            };
+          } catch (error) {
+            const latencyMs = runtime.now().getTime() - embeddingStartedAt;
+            const errorMessage =
+              error instanceof Error ? error.message : 'Unknown query embedding error';
+
+            logger.warn('[InboxSearchSearch] query embedding failed', {
+              userId: params.userId,
+              mode: params.mode,
+              latencyMs,
+              errorMessage,
+            });
+
+            return {
+              embedding: null,
+              errorMessage,
+            };
+          }
+        })()
       : Promise.resolve<{ embedding: number[] | null; errorMessage: string | null }>({
           embedding: null,
           errorMessage: null,
@@ -938,22 +1033,32 @@ export async function searchInboxDocuments(
   let semanticUnavailable = false;
   const budgetNotes = [...initialCoverage.budgetNotes];
 
-  if (plan.semanticQueryText && semanticQueryResult.embedding) {
+  if (semanticQueryText && !vectorEnabled) {
+    semanticUnavailable = true;
+    budgetNotes.push('Semantic retrieval disabled by INBOX_VECTOR_ENABLED=false.');
+  } else if (semanticQueryText && semanticQueryResult.embedding) {
     try {
-      semanticRows = await fetchSemanticCandidates({
-        userId: params.userId,
-        queryEmbedding: semanticQueryResult.embedding,
-        scopedMailboxIds,
-        constraints: params.constraints,
-        plan,
-        limit: semanticLimit,
-      });
+      semanticRows = collapseSemanticRows(
+        await runtime.fetchSemanticCandidates({
+          userId: params.userId,
+          queryEmbedding: semanticQueryResult.embedding,
+          scopedMailboxIds,
+          constraints: params.constraints,
+          plan,
+          limit: semanticLimit,
+        }),
+      );
     } catch (error) {
       semanticUnavailable = true;
       const message = error instanceof Error ? error.message : 'Unknown semantic retrieval error';
       budgetNotes.push(`Semantic retrieval failed; used lexical-only fallback (${message}).`);
+      logger.warn('[InboxSearchSearch] semantic candidate retrieval failed', {
+        userId: params.userId,
+        mode: params.mode,
+        errorMessage: message,
+      });
     }
-  } else if (plan.semanticQueryText && !semanticQueryResult.embedding) {
+  } else if (semanticQueryText && !semanticQueryResult.embedding) {
     semanticUnavailable = true;
     budgetNotes.push(
       semanticQueryResult.errorMessage
@@ -967,6 +1072,7 @@ export async function searchInboxDocuments(
   const freshness = classifyInboxIndexFreshness({
     checkpoints,
     scopedMailboxIds,
+    now: runtime.now(),
   });
 
   const lexicalRankByDocumentId = new Map<string, number>();
@@ -989,6 +1095,7 @@ export async function searchInboxDocuments(
       ...semanticRows.map((row) => row.documentId),
     ]),
   );
+  const rankingNow = runtime.now();
 
   const candidates: InboxSearchCandidate[] = documentIds
     .map((documentId) => {
@@ -1018,7 +1125,7 @@ export async function searchInboxDocuments(
         baseRow.subject,
         plan.exactSubjectTerms,
       );
-      const recencyBoost = calculateInboxRecencyBoost(baseRow.sentAt);
+      const recencyBoost = calculateInboxRecencyBoost(baseRow.sentAt, rankingNow);
       const exactSenderBoost = exactSenderMatch ? 3 : 0;
       const exactSubjectBoost = exactSubjectMatch ? 2 : 0;
       const lexicalRank = lexicalRankByDocumentId.get(documentId) ?? 0;
@@ -1083,6 +1190,19 @@ export async function searchInboxDocuments(
     .slice(0, params.maxCandidates);
 
   const uniqueThreadIds = new Set(candidates.map((candidate) => candidate.threadId));
+  const fusionMethod: InboxSearchCoverage['fusionMethod'] =
+    semanticUnavailable || semanticRows.length === 0 ? 'lexical-only' : 'rrf_k60';
+  const retrievalLatencyMs = runtime.now().getTime() - startedAt;
+
+  logger.info('[InboxSearchSearch] retrieval stage complete', {
+    userId: params.userId,
+    mode: params.mode,
+    lexicalCandidates: lexicalRows.length,
+    semanticCandidates: semanticRows.length,
+    fusionMethod,
+    semanticUnavailable,
+    retrievalLatencyMs,
+  });
 
   return {
     candidates,
@@ -1096,11 +1216,10 @@ export async function searchInboxDocuments(
         isTimeLow(params.deadlineAt, 1_500),
       budgetNotes: [...budgetNotes, ...freshness.notes],
       indexFreshness: freshness.freshness,
-      retrievalLatencyMs: Date.now() - startedAt,
+      retrievalLatencyMs,
       lexicalCandidates: lexicalRows.length,
       semanticCandidates: semanticRows.length,
-      fusionMethod:
-        semanticUnavailable || semanticRows.length === 0 ? 'lexical-only' : 'rrf_k60',
+      fusionMethod,
       indexLag: freshness.indexLag,
       semanticUnavailable,
     },
