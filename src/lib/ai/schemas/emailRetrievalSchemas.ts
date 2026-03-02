@@ -86,11 +86,25 @@ export const EmailEvidenceCoverageSchema = z.object({
 
 export type EmailEvidenceCoverageDTO = z.infer<typeof EmailEvidenceCoverageSchema>;
 
+export const EmailEvidenceMetadataSchema = z.object({
+  cached: z
+    .boolean()
+    .optional()
+    .describe('True when this evidence pack was reused from per-run memoization'),
+  escalation: z
+    .enum(['quick_to_deep'])
+    .optional()
+    .describe('Internal retrieval escalation that happened before returning the evidence pack'),
+});
+
+export type EmailEvidenceMetadataDTO = z.infer<typeof EmailEvidenceMetadataSchema>;
+
 export const EmailEvidencePackSchema = z.object({
   matches: z.array(EmailEvidenceMatchSchema).describe('Ranked best matches'),
   quotes: z.array(EmailEvidenceQuoteSchema).describe('Supporting quotes from matches'),
   coverage: EmailEvidenceCoverageSchema.describe('Coverage metadata for the search'),
   confidence: z.enum(['low', 'medium', 'high']).describe('Overall confidence in the matches'),
+  metadata: EmailEvidenceMetadataSchema.optional().describe('Additive retrieval metadata'),
   followUpQuestions: z
     .array(z.string())
     .describe('Clarifying questions if the request is ambiguous or results are weak'),

@@ -61,6 +61,10 @@ export type {
   InboxSearchSearchResult,
 } from '@/lib/services/inbox-search/types';
 export type {
+  InboxIndexService,
+  InboxSearchService,
+} from '@/lib/services/inbox-search/interfaces';
+export type {
   InboxBackfillPhase,
   InboxSearchCheckpointRecord,
 } from '@/lib/services/inbox-search/checkpoint';
