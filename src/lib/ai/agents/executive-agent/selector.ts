@@ -67,9 +67,19 @@ function detectDraftCandidate(history: ConversationMessageDTO[]): {
   hasRecentSendSuccess: boolean;
 } {
   const assistantMessages = getRecentAssistantMessages(history, 6);
-  const latestSendSuccessIndex = assistantMessages.findLastIndex((message) =>
-    hasToolResult(message, 'send_email', (result) => result.success === true),
-  );
+  let latestSendSuccessIndex = -1;
+  for (let index = assistantMessages.length - 1; index >= 0; index -= 1) {
+    if (
+      hasToolResult(
+        assistantMessages[index],
+        'send_email',
+        (result) => result.success === true,
+      )
+    ) {
+      latestSendSuccessIndex = index;
+      break;
+    }
+  }
 
   for (let index = assistantMessages.length - 1; index >= 0; index -= 1) {
     const message = assistantMessages[index];
