@@ -18,6 +18,8 @@ import { getDateOnlyInTimezone } from '@/lib/utils/timezone';
 import { logger } from '@/lib/logger';
 import { buildRunContextPromptFragment } from '@/lib/services/messaging-orchestration';
 
+export const EXECUTIVE_AGENT_PROMPT_VERSION = 'ea-prompt-v1';
+
 function buildCurrentTurnMessage(params: {
   input: ExecutiveAgentInput;
   channel: ProgressUpdateChannel;
@@ -29,6 +31,8 @@ function buildCurrentTurnMessage(params: {
   timeSinceLastMessage: string;
   memoryContext: string;
   runContextFragment: string;
+  pendingCalendarInstruction: string;
+  harnessReminders: string[];
 }): string {
   const sections = [
     '## Current Turn Context',
@@ -42,6 +46,16 @@ function buildCurrentTurnMessage(params: {
     '',
     params.runContextFragment,
     '',
+    '## Pending Calendar State',
+    params.pendingCalendarInstruction,
+    '',
+    ...(params.harnessReminders.length > 0
+      ? [
+          '## Harness Reminders',
+          ...params.harnessReminders.map((reminder) => `- ${reminder}`),
+          '',
+        ]
+      : []),
     '## User Memory Snapshot',
     params.memoryContext,
     '',
@@ -55,6 +69,10 @@ function buildCurrentTurnMessage(params: {
 export async function buildExecutiveAgentPrompt(
   input: ExecutiveAgentInput,
   channel: ProgressUpdateChannel,
+  options?: {
+    pendingCalendarInstruction?: string;
+    harnessReminders?: string[];
+  },
 ): Promise<PromptContext> {
   const systemPrompt = readPromptFile('whatsapp/executiveAgentPrompt.md');
 
@@ -162,6 +180,9 @@ export async function buildExecutiveAgentPrompt(
           timeSinceLastMessage,
           memoryContext,
           runContextFragment,
+          pendingCalendarInstruction:
+            options?.pendingCalendarInstruction ?? 'No active pending calendar change exists.',
+          harnessReminders: options?.harnessReminders ?? [],
         }),
       },
     ],
