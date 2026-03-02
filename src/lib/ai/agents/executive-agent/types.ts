@@ -65,6 +65,8 @@ export interface PromptContext {
 export type SearchInboxContextArgs = {
   mode?: 'quick' | 'deep';
   intent: string;
+  mailboxId?: string;
+  mailboxEmail?: string;
   constraints?: {
     sender?: string;
     recipient?: string;

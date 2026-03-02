@@ -1,5 +1,7 @@
+import { createHash } from 'crypto';
 import { z } from 'zod';
 import { logger } from '@/lib/logger';
+import type { EmailEvidencePackDTO } from '@/lib/ai/schemas/emailRetrievalSchemas';
 import {
   getCalendarSnapshot,
   gatherMemoryContextForReply,
@@ -30,6 +32,96 @@ import type {
   SearchInboxContextArgs,
 } from '../types';
 
+function normalizeSearchInboxText(value?: string): string | null {
+  if (!value) {
+    return null;
+  }
+
+  const normalized = value.trim().replace(/\s+/g, ' ').toLowerCase();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function normalizeSearchInboxConstraints(
+  constraints?: SearchInboxContextArgs['constraints'],
+): Record<string, unknown> | null {
+  if (!constraints) {
+    return null;
+  }
+
+  const normalizedKeywords = Array.from(
+    new Set(
+      (constraints.keywords ?? [])
+        .map((keyword) => normalizeSearchInboxText(keyword))
+        .filter((keyword): keyword is string => Boolean(keyword)),
+    ),
+  ).sort();
+
+  const normalized = {
+    sender: normalizeSearchInboxText(constraints.sender),
+    recipient: normalizeSearchInboxText(constraints.recipient),
+    keywords: normalizedKeywords.length > 0 ? normalizedKeywords : null,
+    subject: normalizeSearchInboxText(constraints.subject),
+    timeWindow: constraints.timeWindow ?? null,
+    startDate: constraints.startDate?.trim() || null,
+    endDate: constraints.endDate?.trim() || null,
+    hasAttachment:
+      typeof constraints.hasAttachment === 'boolean'
+        ? constraints.hasAttachment
+        : null,
+  };
+
+  return Object.values(normalized).some((value) => value !== null) ? normalized : null;
+}
+
+function buildSearchInboxFingerprint(
+  args: SearchInboxContextArgs,
+  fallbackIntent: string,
+): string {
+  const normalizedPayload = {
+    mode: args.mode ?? 'quick',
+    intent:
+      normalizeSearchInboxText(args.intent) ??
+      normalizeSearchInboxText(fallbackIntent) ??
+      '',
+    constraints: normalizeSearchInboxConstraints(args.constraints),
+    mailbox: {
+      mailboxId: normalizeSearchInboxText(args.mailboxId),
+      mailboxEmail: normalizeSearchInboxText(args.mailboxEmail),
+    },
+  };
+
+  return createHash('sha256')
+    .update(JSON.stringify(normalizedPayload))
+    .digest('hex');
+}
+
+function isEmailEvidencePackResult(value: unknown): value is EmailEvidencePackDTO {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  const record = value as Record<string, unknown>;
+  return (
+    Array.isArray(record.matches) &&
+    Array.isArray(record.quotes) &&
+    typeof record.coverage === 'object' &&
+    typeof record.confidence === 'string' &&
+    Array.isArray(record.followUpQuestions)
+  );
+}
+
+function markSearchInboxResultCached(
+  result: EmailEvidencePackDTO,
+): EmailEvidencePackDTO {
+  return {
+    ...result,
+    metadata: {
+      ...(result.metadata ?? {}),
+      cached: true,
+    },
+  };
+}
+
 export function buildContextTools({
   context,
   nextSubagentCallIndex,
@@ -52,6 +144,7 @@ export function buildContextTools({
     quickCalls: 0,
     deepCalls: 0,
   };
+  const inboxResultMemo = new Map<string, EmailEvidencePackDTO>();
 
   return {
       // Tool 1: Search Inbox Context
@@ -68,6 +161,14 @@ export function buildContextTools({
               .min(1)
               .max(500)
               .describe('Natural language description of the email to find'),
+            mailboxId: z
+              .string()
+              .optional()
+              .describe('Optional mailbox ID to restrict local retrieval to one connected mailbox'),
+            mailboxEmail: z
+              .string()
+              .optional()
+              .describe('Optional mailbox email to restrict local retrieval to one connected mailbox'),
             constraints: z
               .object({
                 sender: z.string().optional().describe('Sender email or name'),
@@ -87,6 +188,19 @@ export function buildContextTools({
         execute: async (args: SearchInboxContextArgs) => {
           const mode = args.mode ?? 'quick';
           const intent = args.intent?.trim() || input.userRequest;
+          const fingerprint = buildSearchInboxFingerprint(
+            { ...args, mode, intent },
+            input.userRequest,
+          );
+          const memoizedResult = inboxResultMemo.get(fingerprint);
+
+          if (memoizedResult) {
+            logger.info(
+              `[executiveAgent] search_inbox_context cache hit: mode=${mode} intent="${truncate(intent, 80)}"`,
+            );
+            return markSearchInboxResultCached(memoizedResult);
+          }
+
           const totalCalls = inboxCallTracker.quickCalls + inboxCallTracker.deepCalls;
           const modeCalls = mode === 'deep' ? inboxCallTracker.deepCalls : inboxCallTracker.quickCalls;
           const modeLimit = MESSAGING_INBOX_CALL_LIMITS[mode];
@@ -114,7 +228,7 @@ export function buildContextTools({
 
           const toolCallIndex = nextSubagentCallIndex();
 
-          return runWithSubagentBudget({
+          const result = await runWithSubagentBudget({
             toolName: 'search_inbox_context',
             counts: { total: totalCalls, tool: modeCalls },
             timeLeftMs: toolAbort.timeLeftMs(),
@@ -125,6 +239,8 @@ export function buildContextTools({
                 {
                   intent,
                   mode,
+                  mailboxId: args.mailboxId,
+                  mailboxEmail: args.mailboxEmail,
                   constraints: args.constraints,
                   profile: retrievalProfile,
                 },
@@ -135,6 +251,12 @@ export function buildContextTools({
                 },
               ),
           });
+
+          if (isEmailEvidencePackResult(result)) {
+            inboxResultMemo.set(fingerprint, result);
+          }
+
+          return result;
         },
       },
 
