@@ -45,6 +45,76 @@ export interface ExecutiveAgentOutput {
   metadata?: Prisma.InputJsonObject;
 }
 
+export type ToolPackId =
+  | 'core_recall_pack'
+  | 'inbox_context_pack'
+  | 'calendar_query_pack'
+  | 'calendar_mutation_pack'
+  | 'reminder_alert_pack'
+  | 'email_send_pack';
+
+export type ExecutiveWorkingStatePhase =
+  | 'understand'
+  | 'retrieve'
+  | 'clarify'
+  | 'draft'
+  | 'await_approval'
+  | 'act'
+  | 'complete'
+  | 'failed';
+
+export type ExecutivePrimaryDomain =
+  | 'memory'
+  | 'inbox'
+  | 'calendar'
+  | 'reminder'
+  | 'email_send';
+
+export interface ExecutiveWorkingState {
+  goal: string;
+  selectedPack: ToolPackId;
+  phase: ExecutiveWorkingStatePhase;
+  primaryDomain: ExecutivePrimaryDomain;
+  completedSteps: string[];
+  nextStep: string | null;
+  factsLearned: string[];
+  artifacts: {
+    pendingCalendarChangeId?: string;
+    lastTool?: string;
+    lastToolSummary?: string;
+    draftCandidatePresent?: boolean;
+  };
+}
+
+export interface ExecutiveTurnFeatures {
+  explicitSendApproval: boolean;
+  explicitSendDecline: boolean;
+  draftCandidatePresent: boolean;
+  pendingCalendarChangePresent: boolean;
+  calendarMutationIntent: boolean;
+  calendarQueryIntent: boolean;
+  emailIntent: boolean;
+  reminderIntent: boolean;
+  alertIntent: boolean;
+  recallIntent: boolean;
+  classifierDecision: 'supersede' | 'followup' | 'ambiguous' | null;
+  channel: ProgressUpdateChannel;
+  hasRecentSendSuccess: boolean;
+  hasRecentPendingCalendarPreview: boolean;
+  pendingCalendarConfirmIntent: boolean;
+  pendingCalendarCancelIntent: boolean;
+  pendingCalendarModifyIntent: boolean;
+  ambiguousCalendarLike: boolean;
+  ambiguousEmailLike: boolean;
+  draftCandidateReason: string | null;
+}
+
+export interface PackSelection {
+  packId: ToolPackId;
+  reasons: string[];
+  reminders: string[];
+}
+
 export type ExecutivePromptMessage = {
   role: 'user' | 'assistant';
   content: string;
@@ -92,6 +162,9 @@ export type ExecutiveRuntimeContext = {
   input: ExecutiveAgentInput;
   channel: ProgressUpdateChannel;
   retrievalProfile: RetrievalProfile;
+  selectedPack: ToolPackId;
+  selectorReasons: string[];
+  turnFeatures: ExecutiveTurnFeatures;
   userTimezone: string;
   currentTimeUtc: string;
   currentTimeUserTz: string;
@@ -105,6 +178,7 @@ export type ExecutiveRuntimeContext = {
   isRunCurrent: () => Promise<boolean>;
   isBurstStable: () => boolean;
   onMemoryStored: () => void;
+  onToolResult?: (toolName: string, result: unknown) => void;
   registerToolResultCacheStatsReader?: (
     readStats: () => ExecutiveToolResultCacheStats,
   ) => void;
