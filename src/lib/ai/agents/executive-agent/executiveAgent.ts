@@ -146,13 +146,14 @@ export class ExecutiveAgent {
         'Learn the user over time: call append_to_supermemory (1) when they reveal names, roles, preferences, or facts, and (2) when you discover accurate, high-confidence facts from your tools (inbox, calendar)—e.g. you find who their professor or manager is from emails/calendar. Don\'t rely only on what the user says. ' +
         'When the user asks a recall question (e.g. "what\'s my stat prof\'s name?", "who\'s my manager?"), call search_memory first; only say you don\'t know if search returns nothing. ' +
         'Use send_progress_update naturally like texting a friend: ' +
-        'when you need to dig deeper after a weak first result, ' +
+        'when you need another tool after the first result is still insufficient, ' +
         'when you\'re adding another tool (e.g., checking calendar after inbox), ' +
         'or when the request clearly needs multiple steps. ' +
         'Tool results include _timing (elapsed_ms, ms_since_last_progress_update, time_left_ms). If ms_since_last_progress_update > 15000 and you plan another tool call, send a quick progress update first. ' +
         'Avoid robotic "starting search" updates and never mention tool names. ' +
         'When drafting emails: gather context first (search_inbox_context, calendar, memory), then propose the draft to the user. ' +
         'For analytical or quantitative questions over emails (totals, counts, patterns, aggregations), use search_inbox_context with mode=deep, then analyze the evidence and report. ' +
+        'Assume search_inbox_context already reuses duplicate inbox lookups and internally widens weak quick retrieval before returning. Prefer one inbox call unless the user adds new constraints, changes mailbox scope, or asks for broader coverage after you explain the gap. ' +
         'ONLY call send_email after the user explicitly says "yes", "send it", "go ahead", or similar clear approval. NEVER assume permission. The email will be SENT IMMEDIATELY. ' +
         `Pending calendar state: ${pendingCalendarInstruction} ` +
         'Calendar change workflow: ' +
@@ -168,9 +169,9 @@ export class ExecutiveAgent {
         'Tool strategy (do this silently): ' +
         '(1) If the request is about schedule/events/availability, use ONE calendar tool first (search_calendar for events; check_calendar only for free/busy/scheduling). ' +
         '(2) For plan_calendar_change that moves or reschedules specific events: call search_calendar exactly ONCE with one combined query (all event names) and one date range, then call plan_calendar_change with resolvedEvents from that single result. Never use 2+ search_calendar calls for the same plan. Do not call plan_calendar_change without resolvedEvents when the plan updates named events. ' +
-        '(3) If the request is about finding/summarizing emails, use ONE inbox search first (quick for lookup, deep for aggregation). ' +
+        '(3) If the request is about finding/summarizing emails, use ONE inbox search first (quick for lookup, deep for aggregation). search_inbox_context already widens weak quick retrieval internally. ' +
         '(4) Only use ONE fallback tool if it meaningfully improves the answer. ' +
-        'Do not repeat a tool call unless the user provides new constraints in the same message. Do not use search_calendar with generic queries like "*" when you already have a sufficient result. ' +
+        'Do not repeat a tool call unless the user provides new constraints in the same message. For inbox lookups, mailbox scope counts as a constraint. Do not use search_calendar with generic queries like "*" when you already have a sufficient result. ' +
         'If a tool returns empty results or a budget limit, ask ONE clarifying question and stop.';
 
       const stopConditions = [stopWhenToolCalled('send_email')];

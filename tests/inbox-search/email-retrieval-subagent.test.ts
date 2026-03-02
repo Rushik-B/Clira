@@ -139,6 +139,95 @@ describe('runEmailRetrieval', () => {
     expect(EmailEvidencePackSchema.parse(result)).toBeTruthy();
   });
 
+  test('escalates weak quick retrieval internally before returning', async () => {
+    inboxSearchMocks.searchInboxDocuments
+      .mockResolvedValueOnce({
+        candidates: [],
+        coverage: {
+          queriesTried: ['fts=invoice'],
+          threadsScanned: 0,
+          messagesScanned: 0,
+          timeWindow: 'last 180 days',
+          pagesFetched: 0,
+          truncated: false,
+          budgetNotes: [],
+          engineVersion: 'inbox-search-v2-hybrid',
+          indexFreshness: 'unknown',
+          retrievalLatencyMs: 90,
+          lexicalCandidates: 0,
+          semanticCandidates: 0,
+          fusionMethod: 'rrf_k60',
+          indexLag: null,
+          semanticUnavailable: false,
+        },
+      })
+      .mockResolvedValueOnce({
+        candidates: [
+          {
+            documentId: 'doc-2',
+            threadId: 'thread-2',
+            messageId: 'msg-2',
+            mailboxId: 'mailbox-1',
+            mailboxEmail: 'user@example.com',
+            date: '2026-02-20T00:00:00.000Z',
+            from: 'Bob <bob@example.com>',
+            subject: 'Invoice attached',
+            snippet: 'Here is the invoice you asked for.',
+            matchedTerms: ['invoice'],
+            whyRelevant: 'Subject phrase matched. Matched terms: invoice.',
+            lexicalRank: 1,
+            lexicalScore: 0.8,
+            semanticScore: 0.7,
+            semanticRank: 1,
+            rrfScore: 0.03,
+            recencyBoost: 0.9,
+            exactSenderBoost: 0,
+            exactSubjectBoost: 2,
+            totalScore: 4.2,
+            semanticUnavailable: false,
+          },
+        ],
+        coverage: {
+          queriesTried: ['fts=invoice | escalated=deep'],
+          threadsScanned: 1,
+          messagesScanned: 1,
+          timeWindow: 'all time',
+          pagesFetched: 0,
+          truncated: false,
+          budgetNotes: [],
+          engineVersion: 'inbox-search-v2-hybrid',
+          indexFreshness: 'fresh',
+          retrievalLatencyMs: 160,
+          lexicalCandidates: 1,
+          semanticCandidates: 1,
+          fusionMethod: 'rrf_k60',
+          indexLag: 2,
+          semanticUnavailable: false,
+        },
+      });
+
+    const result = await runEmailRetrieval(
+      {
+        intent: 'Find the invoice email',
+        mode: 'quick',
+      },
+      {
+        userId: 'user-1',
+      },
+    );
+
+    expect(inboxSearchMocks.searchInboxDocuments).toHaveBeenCalledTimes(2);
+    expect(inboxSearchMocks.searchInboxDocuments.mock.calls[0]?.[0]?.mode).toBe('quick');
+    expect(inboxSearchMocks.searchInboxDocuments.mock.calls[1]?.[0]?.mode).toBe('deep');
+    expect(llmMocks.callObject).not.toHaveBeenCalled();
+    expect(result.metadata?.escalation).toBe('quick_to_deep');
+    expect(result.coverage.budgetNotes?.join(' ')).toContain(
+      'Escalated from quick to deep local retrieval',
+    );
+    expect(result.matches[0]?.threadId).toBe('thread-2');
+    expect(EmailEvidencePackSchema.parse(result)).toBeTruthy();
+  });
+
   test('uses deep LLM compression over local candidates when enabled', async () => {
     inboxSearchMocks.searchInboxDocuments.mockResolvedValue({
       candidates: [
