@@ -9,6 +9,10 @@ import type {
 import { buildContextTools } from './tools/context-tools';
 import { buildCalendarMutationTools } from './tools/calendar-mutation-tools';
 import { buildMessagingTools } from './tools/messaging-tools';
+import {
+  buildPackToolAllowlist,
+  type ExecutiveToolName,
+} from './toolPacks';
 
 const progressUpdateInputSchema = z.object({
   kind: z.enum(progressUpdateKinds).describe('Progress update category'),
@@ -47,13 +51,13 @@ export function buildExecutiveAgentTools(context: ExecutiveRuntimeContext): Reco
     return index;
   };
 
-  const tools: Record<string, unknown> = {
+  const allTools: Record<string, unknown> = {
     ...buildContextTools({ context, nextSubagentCallIndex }),
     ...buildCalendarMutationTools({ context, nextSubagentCallIndex }),
     ...buildMessagingTools({ context }),
   };
 
-  tools.send_progress_update = context.input.progressContext
+  allTools.send_progress_update = context.input.progressContext
     ? createSendProgressUpdateTool({
         ...context.input.progressContext,
         canEmitProgress:
@@ -62,5 +66,13 @@ export function buildExecutiveAgentTools(context: ExecutiveRuntimeContext): Reco
       })
     : buildUnavailableProgressUpdateTool(context);
 
-  return orderToolsDeterministically(tools);
+  const allowlist = new Set(
+    buildPackToolAllowlist(context.selectedPack, context.turnFeatures),
+  );
+
+  const filteredTools = Object.fromEntries(
+    Object.entries(allTools).filter(([toolName]) => allowlist.has(toolName as ExecutiveToolName)),
+  );
+
+  return orderToolsDeterministically(filteredTools);
 }
