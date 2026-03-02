@@ -2,7 +2,7 @@ import { callObject } from '@/lib/ai/callLlm';
 import { models } from '@/lib/ai/models';
 import {
   EmailEvidencePackSchema,
-  type EmailEvidenceCoverageDTO,
+  type EmailEvidenceMetadataDTO,
   type EmailEvidencePackDTO,
 } from '@/lib/ai/schemas/emailRetrievalSchemas';
 import { logger } from '@/lib/logger';
@@ -11,6 +11,7 @@ import {
   getInboxRetrievalFeatureFlags,
   searchInboxDocuments,
   type InboxSearchCandidate,
+  type InboxSearchCoverage,
   type InboxSearchQueryConstraints,
   type InboxSearchQueryMode,
   type InboxSearchRetrievalProfile,
@@ -53,7 +54,8 @@ type RetrievalBudgets = {
   snippetChars: number;
 };
 
-type RetrievalCoverage = EmailEvidenceCoverageDTO;
+type RetrievalCoverage = InboxSearchCoverage;
+type RetrievalMetadata = EmailEvidenceMetadataDTO;
 
 const RETRIEVAL_BUDGETS_BY_PROFILE: Record<
   InboxSearchRetrievalProfile,
@@ -147,12 +149,14 @@ function createEmptyCoverage(
 function createEmptyEvidencePack(
   coverage: RetrievalCoverage,
   followUpQuestions: string[],
+  metadata?: RetrievalMetadata,
 ): EmailEvidencePackDTO {
   return {
     matches: [],
     quotes: [],
     coverage,
     confidence: 'low',
+    metadata,
     followUpQuestions,
   };
 }
@@ -161,6 +165,7 @@ function createDeterministicEvidencePack(
   candidates: InboxSearchCandidate[],
   coverage: RetrievalCoverage,
   mode: EmailRetrievalMode,
+  metadata?: RetrievalMetadata,
 ): EmailEvidencePackDTO {
   const topCandidates = candidates.slice(0, 5);
   const confidence = inferInboxSearchConfidence({
@@ -195,6 +200,7 @@ function createDeterministicEvidencePack(
     })),
     coverage,
     confidence,
+    metadata,
     followUpQuestions:
       confidence === 'low'
         ? [
@@ -231,6 +237,100 @@ async function resolveMailboxScope(params: {
     status: mailbox.status,
     isPrimary: mailbox.isPrimary,
   }));
+}
+
+function shouldEscalateQuickResult(result: EmailEvidencePackDTO): boolean {
+  return result.confidence === 'low' && result.matches.length < 2;
+}
+
+function buildQuickEscalationCoverage(coverage: RetrievalCoverage): RetrievalCoverage {
+  return {
+    ...coverage,
+    budgetNotes: [
+      ...(coverage.budgetNotes ?? []),
+      'Escalated from quick to deep local retrieval because the initial quick result was weak.',
+    ],
+  };
+}
+
+async function runEscalatedQuickSearch(params: {
+  request: EmailRetrievalRequest;
+  userId: string;
+  profile: InboxSearchRetrievalProfile;
+  deadlineAt?: number;
+}): Promise<{
+  result: Awaited<ReturnType<typeof runLocalInboxSearch>>;
+  metadata: RetrievalMetadata;
+}> {
+  logger.info('[emailRetrievalSubagent] escalating weak quick retrieval to deep local search', {
+    userId: params.userId,
+    intent: params.request.intent,
+    mailboxId: params.request.mailboxId ?? null,
+    mailboxEmail: params.request.mailboxEmail ?? null,
+  });
+
+  return {
+    result: await runLocalInboxSearch({
+      request: params.request,
+      userId: params.userId,
+      profile: params.profile,
+      mode: 'deep',
+      budgets: RETRIEVAL_BUDGETS_BY_PROFILE[params.profile].deep,
+      deadlineAt: params.deadlineAt,
+    }),
+    metadata: { escalation: 'quick_to_deep' },
+  };
+}
+
+async function runLocalInboxSearch(params: {
+  request: EmailRetrievalRequest;
+  userId: string;
+  profile: InboxSearchRetrievalProfile;
+  mode: EmailRetrievalMode;
+  budgets: RetrievalBudgets;
+  deadlineAt?: number;
+}): Promise<{
+  scopedMailboxes: InboxSearchScopedMailbox[];
+  searchResult: Awaited<ReturnType<typeof searchInboxDocuments>>;
+}> {
+  const scopedMailboxes = await resolveMailboxScope({
+    userId: params.userId,
+    mailboxId: params.request.mailboxId,
+    mailboxEmail: params.request.mailboxEmail,
+  });
+
+  if (scopedMailboxes.length === 0) {
+    return {
+      scopedMailboxes,
+      searchResult: {
+        candidates: [],
+        coverage: createEmptyCoverage(
+          [
+            params.request.mailboxId || params.request.mailboxEmail
+              ? 'The requested mailbox is not available for local inbox retrieval.'
+              : 'No mailboxes are available for local inbox retrieval.',
+          ],
+        ),
+      },
+    };
+  }
+
+  const searchResult = await searchInboxDocuments({
+    userId: params.userId,
+    intent: params.request.intent,
+    mode: params.mode,
+    profile: params.profile,
+    constraints: params.request.constraints,
+    mailboxes: scopedMailboxes,
+    maxCandidates: params.budgets.maxCandidates,
+    snippetChars: params.budgets.snippetChars,
+    deadlineAt: params.deadlineAt,
+  });
+
+  return {
+    scopedMailboxes,
+    searchResult,
+  };
 }
 
 /**
@@ -270,22 +370,20 @@ export async function runEmailRetrieval(
       llmRerankDeepOnly: featureFlags.llmRerankDeepOnly,
     });
 
-    const scopedMailboxes = await resolveMailboxScope({
+    const {
+      scopedMailboxes,
+      searchResult,
+    } = await runLocalInboxSearch({
+      request,
       userId: dependencies.userId,
-      mailboxId: request.mailboxId,
-      mailboxEmail: request.mailboxEmail,
+      profile,
+      mode,
+      budgets,
+      deadlineAt: dependencies.deadlineAt,
     });
 
     if (scopedMailboxes.length === 0) {
-      const coverage = createEmptyCoverage(
-        [
-          request.mailboxId || request.mailboxEmail
-            ? 'The requested mailbox is not available for local inbox retrieval.'
-            : 'No mailboxes are available for local inbox retrieval.',
-        ],
-      );
-
-      return createEmptyEvidencePack(coverage, [
+      return createEmptyEvidencePack(searchResult.coverage, [
         request.mailboxId || request.mailboxEmail
           ? 'I cannot find that mailbox locally yet. Want to choose another mailbox?'
           : 'I do not have any indexed mailbox data yet. Want to reconnect or wait for indexing?',
@@ -296,34 +394,72 @@ export async function runEmailRetrieval(
       `[emailRetrievalSubagent] local retrieval profile=${profile} mode=${mode} mailboxes=${scopedMailboxes.length}`,
     );
 
-    const searchResult = await searchInboxDocuments({
-      userId: dependencies.userId,
-      intent: request.intent,
-      mode,
-      profile,
-      constraints: request.constraints,
-      mailboxes: scopedMailboxes,
-      maxCandidates: budgets.maxCandidates,
-      snippetChars: budgets.snippetChars,
-      deadlineAt: dependencies.deadlineAt,
-    });
-
     logger.info(
       `[emailRetrievalSubagent] local candidates=${searchResult.candidates.length} scanned=${searchResult.coverage.messagesScanned} freshness=${searchResult.coverage.indexFreshness}`,
     );
+
+    if (mode === 'quick') {
+      if (searchResult.candidates.length === 0) {
+        if (!isTimeLow(dependencies.deadlineAt, 6_000)) {
+          const escalated = await runEscalatedQuickSearch({
+            request,
+            userId: dependencies.userId,
+            profile,
+            deadlineAt: dependencies.deadlineAt,
+          });
+
+          if (escalated.result.searchResult.candidates.length > 0) {
+            return createDeterministicEvidencePack(
+              escalated.result.searchResult.candidates,
+              buildQuickEscalationCoverage(escalated.result.searchResult.coverage),
+              'deep',
+              escalated.metadata,
+            );
+          }
+
+          return createEmptyEvidencePack(
+            buildQuickEscalationCoverage(escalated.result.searchResult.coverage),
+            ['I did not find a local match yet. Can you share a sender, subject, or timeframe?'],
+            escalated.metadata,
+          );
+        }
+
+        return createEmptyEvidencePack(searchResult.coverage, [
+          'I did not find a local match yet. Can you share a sender, subject, or timeframe?',
+        ]);
+      }
+
+      const quickPack = createDeterministicEvidencePack(
+        searchResult.candidates,
+        searchResult.coverage,
+        mode,
+      );
+
+      if (shouldEscalateQuickResult(quickPack) && !isTimeLow(dependencies.deadlineAt, 6_000)) {
+        const escalated = await runEscalatedQuickSearch({
+          request,
+          userId: dependencies.userId,
+          profile,
+          deadlineAt: dependencies.deadlineAt,
+        });
+
+        if (escalated.result.searchResult.candidates.length > 0) {
+          return createDeterministicEvidencePack(
+            escalated.result.searchResult.candidates,
+            buildQuickEscalationCoverage(escalated.result.searchResult.coverage),
+            'deep',
+            escalated.metadata,
+          );
+        }
+      }
+
+      return quickPack;
+    }
 
     if (searchResult.candidates.length === 0) {
       return createEmptyEvidencePack(searchResult.coverage, [
         'I did not find a local match yet. Can you share a sender, subject, or timeframe?',
       ]);
-    }
-
-    if (mode === 'quick') {
-      return createDeterministicEvidencePack(
-        searchResult.candidates,
-        searchResult.coverage,
-        mode,
-      );
     }
 
     if (!featureFlags.llmRerankDeepOnly) {
