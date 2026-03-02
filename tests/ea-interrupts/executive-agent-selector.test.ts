@@ -3,6 +3,7 @@ import type {
   ConversationMessageDTO,
 } from '@/lib/ai/schemas/executiveAgentSchemas';
 import {
+  enforcePackSafety,
   extractExecutiveTurnFeatures,
   selectExecutiveToolPack,
 } from '@/lib/ai/agents/executive-agent/selector';
@@ -135,5 +136,66 @@ describe('Executive agent selector', () => {
 
     expect(features.ambiguousCalendarLike).toBe(true);
     expect(selection.packId).toBe('calendar_query_pack');
+  });
+
+  test('workload overview phrasing routes to calendar_query_pack', () => {
+    const input = buildInput({
+      userRequest: "what's on my plate today?",
+    });
+
+    const features = extractExecutiveTurnFeatures({
+      input,
+      pendingCalendarChangePresent: false,
+    });
+    const selection = selectExecutiveToolPack(features);
+
+    expect(features.workloadOverviewIntent).toBe(true);
+    expect(selection.packId).toBe('calendar_query_pack');
+  });
+
+  test('deadline-oriented phrasing routes to calendar_query_pack', () => {
+    const input = buildInput({
+      userRequest: 'what are my upcoming deadlines this week?',
+    });
+
+    const features = extractExecutiveTurnFeatures({
+      input,
+      pendingCalendarChangePresent: false,
+    });
+    const selection = selectExecutiveToolPack(features);
+
+    expect(features.workloadOverviewIntent).toBe(true);
+    expect(selection.packId).toBe('calendar_query_pack');
+  });
+
+  test('safety guard downgrades unsafe email_send_pack', () => {
+    const input = buildInput({
+      userRequest: 'send it',
+      history: [],
+    });
+    const features = extractExecutiveTurnFeatures({
+      input,
+      pendingCalendarChangePresent: false,
+    });
+
+    expect(features.draftCandidatePresent).toBe(false);
+    expect(
+      enforcePackSafety('email_send_pack', features),
+    ).toBe('inbox_context_pack');
+  });
+
+  test('safety guard downgrades unsafe calendar_mutation_pack', () => {
+    const input = buildInput({
+      userRequest: 'what meetings do i have tomorrow?',
+    });
+    const features = extractExecutiveTurnFeatures({
+      input,
+      pendingCalendarChangePresent: false,
+    });
+
+    expect(features.calendarMutationIntent).toBe(false);
+    expect(
+      enforcePackSafety('calendar_mutation_pack', features),
+    ).toBe('calendar_query_pack');
   });
 });

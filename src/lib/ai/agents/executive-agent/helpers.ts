@@ -458,15 +458,24 @@ export function collectToolNamesFromExecution({
 }): Set<string> {
   const names = new Set<string>();
 
+  const extractToolName = (item: Record<string, unknown>): string | null => {
+    const candidate =
+      item.toolName ??
+      item.name ??
+      item.tool ??
+      (item.function &&
+      typeof item.function === 'object' &&
+      (item.function as Record<string, unknown>).name) ??
+      item.functionName;
+    return typeof candidate === 'string' && candidate.length > 0 ? candidate : null;
+  };
+
   const collectFromArray = (arr: unknown) => {
     if (!Array.isArray(arr)) return;
     for (const item of arr) {
       if (!item || typeof item !== 'object') continue;
-      const candidate =
-        (item as Record<string, unknown>).toolName ??
-        (item as Record<string, unknown>).name ??
-        (item as Record<string, unknown>).tool;
-      if (typeof candidate === 'string' && candidate.length > 0) {
+      const candidate = extractToolName(item as Record<string, unknown>);
+      if (candidate) {
         names.add(candidate);
       }
     }
@@ -483,6 +492,56 @@ export function collectToolNamesFromExecution({
   }
 
   return names;
+}
+
+export function collectExecutedToolNames({
+  toolCalls,
+  toolResults,
+  steps,
+  toolBudget,
+  availableToolNames,
+}: {
+  toolCalls: unknown;
+  toolResults: unknown;
+  steps: unknown;
+  toolBudget?: { perTool?: Record<string, number> };
+  availableToolNames?: readonly string[];
+}): Set<string> {
+  const budgetPerTool = toolBudget?.perTool ?? null;
+  if (budgetPerTool && typeof budgetPerTool === 'object') {
+    const budgetNames = Object.entries(budgetPerTool)
+      .filter(([, count]) => typeof count === 'number' && count > 0)
+      .map(([toolName]) => toolName);
+    if (budgetNames.length > 0) {
+      return new Set(budgetNames);
+    }
+  }
+
+  const observed = collectToolNamesFromExecution({ toolCalls, toolResults, steps });
+  if (!availableToolNames || availableToolNames.length === 0) {
+    return observed;
+  }
+
+  const available = new Set(availableToolNames);
+  return new Set(Array.from(observed).filter((toolName) => available.has(toolName)));
+}
+
+export function collectOutOfPackToolNames({
+  toolCalls,
+  toolResults,
+  steps,
+  availableToolNames,
+}: {
+  toolCalls: unknown;
+  toolResults: unknown;
+  steps: unknown;
+  availableToolNames: readonly string[];
+}): Set<string> {
+  const available = new Set(availableToolNames);
+  const observed = collectToolNamesFromExecution({ toolCalls, toolResults, steps });
+  return new Set(
+    Array.from(observed).filter((toolName) => !available.has(toolName)),
+  );
 }
 
 /**

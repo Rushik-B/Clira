@@ -1,4 +1,5 @@
 import { google } from '@ai-sdk/google';
+import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 
 /**
  * Centralized Google (Gemini) model factory for the AI SDK.
@@ -26,6 +27,45 @@ function getGeminiModelByName(modelName: string) {
   return google(modelName);
 }
 
+const DEFAULT_CEREBRAS_SELECTOR_MODEL = 'llama3.1-8b';
+
+let cerebrasProvider:
+  | ReturnType<typeof createOpenAICompatible>
+  | null = null;
+
+/**
+ * Lazily initializes a shared Cerebras provider for the selector route.
+ *
+ * Required env when enabled:
+ * - EA_SELECTOR_CEREBRAS_ENABLED=true
+ * - CEREBRAS_API_KEY=<key>
+ * Optional:
+ * - EA_SELECTOR_CEREBRAS_MODEL (defaults to llama3.1-8b)
+ */
+function getCerebrasProvider() {
+  if (cerebrasProvider) return cerebrasProvider;
+
+  const apiKey = process.env.CEREBRAS_API_KEY;
+  if (!apiKey) {
+    throw new Error('CEREBRAS_API_KEY is required when EA_SELECTOR_CEREBRAS_ENABLED=true');
+  }
+
+  cerebrasProvider = createOpenAICompatible({
+    name: 'cerebras',
+    apiKey,
+    baseURL: 'https://api.cerebras.ai/v1',
+  });
+  return cerebrasProvider;
+}
+
+/**
+ * Returns the configured chat model used for LLM-based executive pack routing.
+ */
+function getCerebrasSelectorModel() {
+  const modelName = process.env.EA_SELECTOR_CEREBRAS_MODEL ?? DEFAULT_CEREBRAS_SELECTOR_MODEL;
+  return getCerebrasProvider().chatModel(modelName);
+}
+
 export function getGeminiModel(tier: GeminiTier = 'flash') {
   const modelName = resolveGeminiModelName(tier);
   return getGeminiModelByName(modelName);
@@ -42,6 +82,15 @@ export const models = {
   flashLite: () => getGeminiModelByName('gemini-2.5-flash-lite'),
   folderGeneration: () => getGeminiModelByName(folderGenerationModelName),
   execAgent: () => getGeminiModelByName(process.env.EXEC_AGENT_MODEL ?? DEFAULT_MODEL),
+  /**
+   * Selector model can be switched independently from the main executive model.
+   * This allows low-cost/high-throughput routing experiments behind a flag
+   * without changing agent reasoning models.
+   */
+  execSelector: () =>
+    process.env.EA_SELECTOR_CEREBRAS_ENABLED === 'true'
+      ? getCerebrasSelectorModel()
+      : getGeminiModelByName(process.env.EXEC_SELECTOR_MODEL ?? DEFAULT_MODEL),
   calendarSearch: () => getGeminiModelByName(process.env.CALENDAR_SEARCH_MODEL ?? DEFAULT_MODEL),
   emailRetrieval: () => getGeminiModelByName(process.env.EMAIL_RETRIEVAL_MODEL ?? DEFAULT_MODEL),
   replyRouter: () => getGeminiModelByName(process.env.REPLY_ROUTER_MODEL ?? DEFAULT_MODEL),

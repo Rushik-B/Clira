@@ -1,3 +1,7 @@
+import { z } from 'zod';
+import { callObject } from '@/lib/ai/callLlm';
+import { models } from '@/lib/ai/models';
+import { logger } from '@/lib/logger';
 import type {
   ConversationMessageDTO,
 } from '@/lib/ai/schemas/executiveAgentSchemas';
@@ -265,6 +269,24 @@ export function extractExecutiveTurnFeatures(params: {
       latestMessage,
     );
 
+  const workloadOverviewIntent =
+    !calendarMutationIntent &&
+    !emailIntent &&
+    (/\b(?:deadline|deadlines|priority|priorities|due|task|tasks|workload)\b/.test(
+      latestMessage,
+    ) ||
+      hasAnyPhrase(latestMessage, [
+        'on my plate',
+        "what's on my plate",
+        'whats on my plate',
+        'top priority',
+        'top priorities',
+        'focus today',
+        'what should i focus on',
+        'what should i prioritize',
+        'what should i work on',
+      ]));
+
   const recallIntent =
     !emailIntent &&
     !calendarMutationIntent &&
@@ -295,6 +317,7 @@ export function extractExecutiveTurnFeatures(params: {
       calendarMutationIntent ||
       pendingCalendarModifyIntent,
     calendarQueryIntent,
+    workloadOverviewIntent,
     emailIntent,
     reminderIntent,
     alertIntent,
@@ -314,6 +337,143 @@ export function extractExecutiveTurnFeatures(params: {
 
 function buildSelection(packId: ToolPackId, reasons: string[], reminders: string[] = []): PackSelection {
   return { packId, reasons, reminders };
+}
+
+const selectorOutputSchema = z.object({
+  packId: z.enum([
+    'core_recall_pack',
+    'inbox_context_pack',
+    'calendar_query_pack',
+    'calendar_mutation_pack',
+    'reminder_alert_pack',
+    'email_send_pack',
+  ]),
+  reason: z.string().min(1).max(220),
+  confidence: z.number().min(0).max(1),
+});
+
+/**
+ * Enables the optional LLM selector path.
+ *
+ * Flags:
+ * - EA_SELECTOR_CEREBRAS_ENABLED=true|false (global)
+ * - EA_SELECTOR_CEREBRAS_<CHANNEL>=true|false (channel override)
+ *
+ * Channel override wins over global.
+ */
+function isSelectorLlmEnabled(channel: ExecutiveTurnFeatures['channel']): boolean {
+  const globalFlag = process.env.EA_SELECTOR_CEREBRAS_ENABLED;
+  const channelFlag = process.env[`EA_SELECTOR_CEREBRAS_${channel.toUpperCase()}`];
+  if (channelFlag === 'true') return true;
+  if (channelFlag === 'false') return false;
+  return globalFlag === 'true';
+}
+
+/**
+ * Minimum confidence required before accepting the LLM selector output.
+ * Values are clamped to [0, 1]. Invalid input falls back to 0.55.
+ */
+function getSelectorMinConfidence(): number {
+  const raw = Number.parseFloat(process.env.EA_SELECTOR_LLM_MIN_CONFIDENCE ?? '0.55');
+  if (!Number.isFinite(raw)) return 0.55;
+  return Math.max(0, Math.min(1, raw));
+}
+
+/**
+ * Mirrors reminder copy used by deterministic pack selection so LLM-selected
+ * read-only packs preserve the same user-facing constraints.
+ */
+function getDefaultPackReminders(packId: ToolPackId): string[] {
+  if (
+    packId === 'core_recall_pack' ||
+    packId === 'inbox_context_pack' ||
+    packId === 'calendar_query_pack'
+  ) {
+    return ['Only context tools are available this turn.'];
+  }
+  return [];
+}
+
+/**
+ * Bypass LLM routing for flows that are safety-critical or already explicit.
+ * These branches are handled deterministically to avoid accidental escalation.
+ */
+function shouldBypassLlmSelector(features: ExecutiveTurnFeatures): boolean {
+  return (
+    (features.explicitSendApproval && features.draftCandidatePresent) ||
+    (features.pendingCalendarChangePresent &&
+      (features.pendingCalendarConfirmIntent ||
+        features.pendingCalendarCancelIntent ||
+        features.pendingCalendarModifyIntent)) ||
+    features.calendarMutationIntent ||
+    features.reminderIntent ||
+    features.alertIntent
+  );
+}
+
+/**
+ * Final safety firewall for any non-deterministic selector output.
+ * If an unsafe pack is suggested, downgrade to the nearest safe read-only pack.
+ */
+export function enforcePackSafety(
+  packId: ToolPackId,
+  features: ExecutiveTurnFeatures,
+): ToolPackId {
+  if (
+    packId === 'email_send_pack' &&
+    (!features.explicitSendApproval || !features.draftCandidatePresent)
+  ) {
+    return 'inbox_context_pack';
+  }
+
+  if (packId === 'calendar_mutation_pack') {
+    const canMutateCalendar =
+      features.calendarMutationIntent ||
+      (features.pendingCalendarChangePresent &&
+        (features.pendingCalendarConfirmIntent ||
+          features.pendingCalendarCancelIntent ||
+          features.pendingCalendarModifyIntent));
+    if (!canMutateCalendar) {
+      return 'calendar_query_pack';
+    }
+  }
+
+  return packId;
+}
+
+/**
+ * Compact classifier prompt for the optional LLM router.
+ * We provide extracted features as the source of truth to reduce prompt variance
+ * and keep routing decisions deterministic across equivalent paraphrases.
+ */
+function buildSelectorPrompt(params: {
+  userRequest: string;
+  features: ExecutiveTurnFeatures;
+}): string {
+  const { userRequest, features } = params;
+  return [
+    'You route the current user message to exactly one executive tool pack.',
+    'Choose the MINIMUM safe pack that still has enough tools to answer well.',
+    '',
+    'Pack semantics:',
+    '- core_recall_pack: memory recall only',
+    '- inbox_context_pack: email/comms context lookups',
+    '- calendar_query_pack: read-only calendar/inbox context',
+    '- calendar_mutation_pack: planning/committing calendar edits',
+    '- reminder_alert_pack: reminder/alert CRUD actions',
+    '- email_send_pack: send an already approved existing draft',
+    '',
+    'Hard constraints:',
+    '- Never pick email_send_pack without explicit send approval + draft candidate present.',
+    '- Never pick calendar_mutation_pack unless this turn/pending state clearly asks for calendar mutation.',
+    '',
+    `User message: ${userRequest}`,
+    '',
+    'Extracted turn features (truth):',
+    JSON.stringify(features),
+    '',
+    'Return JSON with packId, reason, confidence (0-1).',
+  ].join('\n');
 }
 
 export function selectExecutiveToolPack(
@@ -359,6 +519,14 @@ export function selectExecutiveToolPack(
           ? 'latest turn is reminder-oriented'
           : 'latest turn is alert-oriented',
       ],
+    );
+  }
+
+  if (features.workloadOverviewIntent) {
+    return buildSelection(
+      'calendar_query_pack',
+      ['latest turn asks for workload/deadline overview'],
+      ['Only context tools are available this turn.'],
     );
   }
 
@@ -413,4 +581,72 @@ export function selectExecutiveToolPack(
     ['defaulted to smallest recall pack'],
     ['Only context tools are available this turn.'],
   );
+}
+
+export async function selectExecutiveToolPackForTurn(params: {
+  input: ExecutiveAgentInput;
+  features: ExecutiveTurnFeatures;
+}): Promise<PackSelection> {
+  // Baseline deterministic selector is always available and is used as fallback
+  // for disabled, low-confidence, or failed LLM selector runs.
+  const deterministic = selectExecutiveToolPack(params.features);
+
+  if (!isSelectorLlmEnabled(params.features.channel)) {
+    return deterministic;
+  }
+
+  if (shouldBypassLlmSelector(params.features)) {
+    return deterministic;
+  }
+
+  try {
+    const { object } = await callObject<z.infer<typeof selectorOutputSchema>>({
+      model: models.execSelector(),
+      system:
+        'You are a routing classifier for executive tool packs. Return strict JSON only.',
+      prompt: buildSelectorPrompt({
+        userRequest: params.input.userRequest,
+        features: params.features,
+      }),
+      schema: selectorOutputSchema,
+      temperature: 0,
+      op: `${params.features.channel}.executive.selector`,
+      concurrency: {
+        key: `${params.features.channel}.executive.selector`,
+        maxConcurrency: 4,
+      },
+      retry: { maxAttempts: 2, baseDelayMs: 250 },
+      abortSignal: params.input.abortSignal,
+    });
+
+    if (object.confidence < getSelectorMinConfidence()) {
+      logger.info('[executiveAgent] selector.llm_low_confidence_fallback', {
+        confidence: object.confidence,
+        minConfidence: getSelectorMinConfidence(),
+        llmPack: object.packId,
+      });
+      return deterministic;
+    }
+
+    // Even with high confidence, route through hard safety constraints.
+    const safePack = enforcePackSafety(object.packId, params.features);
+    if (safePack !== object.packId) {
+      logger.warn('[executiveAgent] selector.llm_safety_override', {
+        llmPack: object.packId,
+        safePack,
+        reason: object.reason,
+      });
+    }
+
+    return buildSelection(
+      safePack,
+      [`llm selector: ${object.reason}`],
+      getDefaultPackReminders(safePack),
+    );
+  } catch (error) {
+    logger.warn('[executiveAgent] selector.llm_failed_fallback', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return deterministic;
+  }
 }

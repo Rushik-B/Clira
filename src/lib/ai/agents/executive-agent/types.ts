@@ -93,6 +93,7 @@ export interface ExecutiveTurnFeatures {
   pendingCalendarChangePresent: boolean;
   calendarMutationIntent: boolean;
   calendarQueryIntent: boolean;
+  workloadOverviewIntent: boolean;
   emailIntent: boolean;
   reminderIntent: boolean;
   alertIntent: boolean;

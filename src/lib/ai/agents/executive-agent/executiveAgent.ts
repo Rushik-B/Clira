@@ -29,7 +29,8 @@ import {
 } from './constants';
 import {
   buildTerminalFallbackResponse,
-  collectToolNamesFromExecution,
+  collectExecutedToolNames,
+  collectOutOfPackToolNames,
   resolveProgressChannel,
   resolveRetrievalProfile,
   stripUndefined,
@@ -44,7 +45,7 @@ import { runSteerableTextWithTools, type SteerRunContext } from './steerableLoop
 import { buildExecutiveAgentTools } from './tools';
 import {
   extractExecutiveTurnFeatures,
-  selectExecutiveToolPack,
+  selectExecutiveToolPackForTurn,
 } from './selector';
 import { EXECUTIVE_AGENT_PACK_VERSION } from './toolPacks';
 import type { ExecutiveToolResultCacheStats } from './toolResultReuseCache';
@@ -150,7 +151,13 @@ export class ExecutiveAgent {
         pendingCalendarChangePresent: Boolean(pendingRecord),
       });
       turnFeatures = activeTurnFeatures;
-      const selection = selectExecutiveToolPack(activeTurnFeatures);
+      // Pack selection is deterministic by default and can optionally run an
+      // LLM classifier behind a feature flag. The selector itself enforces
+      // confidence thresholds and safety downgrades before returning.
+      const selection = await selectExecutiveToolPackForTurn({
+        input,
+        features: activeTurnFeatures,
+      });
       const activePack = selection.packId;
       selectedPack = activePack;
       selectorReasons = selection.reasons;
@@ -233,6 +240,7 @@ export class ExecutiveAgent {
         toolCount: Object.keys(tools).length,
         tools: Object.keys(tools),
       });
+      const availableToolNames = Object.keys(tools);
 
       const activeToolBudgets = Object.fromEntries(
         Object.keys(tools).map((toolName) => [
@@ -321,7 +329,26 @@ export class ExecutiveAgent {
           ? ((exec as { steer?: Prisma.InputJsonValue }).steer ?? null)
           : null;
 
-      const toolNames = collectToolNamesFromExecution({ toolCalls, toolResults, steps });
+      const toolNames = collectExecutedToolNames({
+        toolCalls,
+        toolResults,
+        steps,
+        toolBudget,
+        availableToolNames,
+      });
+      const outOfPackToolNames = collectOutOfPackToolNames({
+        toolCalls,
+        toolResults,
+        steps,
+        availableToolNames,
+      });
+      if (outOfPackToolNames.size > 0) {
+        logger.warn('[executiveAgent] Model trace referenced out-of-pack tools', {
+          selectedPack,
+          availableTools: availableToolNames,
+          outOfPackTools: Array.from(outOfPackToolNames),
+        });
+      }
       logger.info(`[executiveAgent] Tools used: ${Array.from(toolNames).join(', ') || '(none)'}`);
       logger.info(
         `[executiveAgent] Completed in ${Date.now() - startTime}ms totalTools=${toolBudget?.totalCalls ?? 0}`,
