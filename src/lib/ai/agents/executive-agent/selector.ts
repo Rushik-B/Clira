@@ -134,6 +134,15 @@ function hasRecentPendingCalendarPreview(history: ConversationMessageDTO[]): boo
   );
 }
 
+function hasRecentCalendarContext(history: ConversationMessageDTO[]): boolean {
+  return getRecentAssistantMessages(history, 4).some(
+    (message) =>
+      hasToolResult(message, 'check_calendar') ||
+      hasToolResult(message, 'search_calendar') ||
+      hasToolResult(message, 'plan_calendar_change'),
+  );
+}
+
 export function extractExecutiveTurnFeatures(params: {
   input: ExecutiveAgentInput;
   pendingCalendarChangePresent: boolean;
@@ -234,13 +243,28 @@ export function extractExecutiveTurnFeatures(params: {
     ]) ||
       /\b(?:move|reschedule|push|change|update|shift)\b/.test(latestMessage));
 
-  const calendarMutationIntent =
-    /\b(?:schedule|reschedule|move|push|shift|cancel|delete|remove|create|book)\b/.test(
-      latestMessage,
-    ) &&
-    /\b(?:meeting|meetings|calendar|event|events|call|calls|1:1|appointment|appointments)\b/.test(
+  const hasCalendarMutationVerb =
+    /\b(?:schedule|reschedule|move|push|shift|cancel|delete|remove|create|book|block(?:\s+out)?|hold|reserve)\b/.test(
       latestMessage,
     );
+
+  const hasCalendarTargetOrContainer =
+    /\b(?:meeting|meetings|calendar|event|events|call|calls|1:1|appointment|appointments|time|slot)\b/.test(
+      latestMessage,
+    );
+
+  const hasDirectTimeWindow =
+    /\b(?:today|tonight|tomorrow|this week|next week|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/.test(
+      latestMessage,
+    ) ||
+    /\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b/.test(latestMessage) ||
+    /\b\d{1,2}(?::\d{2})?\s*-\s*\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b/.test(
+      latestMessage,
+    );
+
+  const calendarMutationIntent =
+    hasCalendarMutationVerb &&
+    (hasCalendarTargetOrContainer || hasDirectTimeWindow);
 
   const mentionsCommunicationContent =
     /\b(?:said|say|told me|mentioned|wrote|emailed|reply|message)\b/.test(
@@ -308,6 +332,29 @@ export function extractExecutiveTurnFeatures(params: {
       latestMessage,
     );
 
+  const followupCalendarApprovalIntent =
+    !params.pendingCalendarChangePresent &&
+    !calendarMutationIntent &&
+    (params.input.runContext?.classifierDecision ?? null) === 'followup' &&
+    isExactShortReply(latestMessage, [
+      'yes',
+      'y',
+      'yeah',
+      'yep',
+      'yup',
+      'sure',
+      'ok',
+      'okay',
+      'confirm',
+      'approved',
+      'approve',
+      'go ahead',
+      'do it',
+      'lock it in',
+      'yea',
+    ]) &&
+    hasRecentCalendarContext(params.input.conversationHistory);
+
   return {
     explicitSendApproval,
     explicitSendDecline,
@@ -315,7 +362,8 @@ export function extractExecutiveTurnFeatures(params: {
     pendingCalendarChangePresent: params.pendingCalendarChangePresent,
     calendarMutationIntent:
       calendarMutationIntent ||
-      pendingCalendarModifyIntent,
+      pendingCalendarModifyIntent ||
+      followupCalendarApprovalIntent,
     calendarQueryIntent,
     workloadOverviewIntent,
     emailIntent,

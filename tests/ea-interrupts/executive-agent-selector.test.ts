@@ -168,6 +168,65 @@ describe('Executive agent selector', () => {
     expect(selection.packId).toBe('calendar_query_pack');
   });
 
+  test('time-window mutation phrasing routes to calendar_mutation_pack', () => {
+    const input = buildInput({
+      userRequest: 'block out tonight 9-10pm',
+    });
+    const features = extractExecutiveTurnFeatures({
+      input,
+      pendingCalendarChangePresent: false,
+    });
+    const selection = selectExecutiveToolPack(features);
+
+    expect(features.calendarMutationIntent).toBe(true);
+    expect(selection.packId).toBe('calendar_mutation_pack');
+  });
+
+  test('short followup approval after calendar context routes to calendar_mutation_pack', () => {
+    const input = buildInput({
+      userRequest: 'yes',
+      classifierDecision: 'followup',
+      history: [
+        buildAssistantMessage({
+          createdAt: '2026-03-02T17:00:00.000Z',
+          content: 'You are free then. Want me to block it?',
+          metadata: {
+            toolResults: [
+              {
+                toolName: 'check_calendar',
+                result: { available: true },
+              },
+            ],
+          },
+        }),
+      ],
+    });
+    const features = extractExecutiveTurnFeatures({
+      input,
+      pendingCalendarChangePresent: false,
+    });
+    const selection = selectExecutiveToolPack(features);
+
+    expect(features.calendarMutationIntent).toBe(true);
+    expect(selection.packId).toBe('calendar_mutation_pack');
+  });
+
+  test('short approval without followup calendar context does not escalate', () => {
+    const input = buildInput({
+      userRequest: 'yes',
+      classifierDecision: 'followup',
+      history: [],
+    });
+    const features = extractExecutiveTurnFeatures({
+      input,
+      pendingCalendarChangePresent: false,
+    });
+    const selection = selectExecutiveToolPack(features);
+
+    expect(features.calendarMutationIntent).toBe(false);
+    expect(selection.packId).toBe('core_recall_pack');
+  });
+
   test('safety guard downgrades unsafe email_send_pack', () => {
     const input = buildInput({
       userRequest: 'send it',
