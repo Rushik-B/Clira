@@ -54,6 +54,10 @@ function getCerebrasProvider() {
     name: 'cerebras',
     apiKey,
     baseURL: 'https://api.cerebras.ai/v1',
+    // Required for AI SDK generateObject() to use JSON-schema response_format.
+    // Without this, object generation downgrades and frequently fails with
+    // AI_NoObjectGeneratedError on selector classification calls.
+    supportsStructuredOutputs: true,
   });
   return cerebrasProvider;
 }
