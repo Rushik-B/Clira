@@ -3,6 +3,11 @@ import { logger } from '@/lib/logger';
 import { embedInboxQueryText, serializeVectorLiteral } from '@/lib/services/inbox-search/embeddings';
 import { getInboxRetrievalFeatureFlags } from '@/lib/services/inbox-search/feature-flags';
 import {
+  addDaysToDateOnly,
+  getDateOnlyInTimezone,
+  startOfDayInTimezone,
+} from '@/lib/utils/timezone';
+import {
   buildInboxWhyRelevant,
   calculateInboxRecencyBoost,
   collectInboxMatchedTerms,
@@ -12,13 +17,18 @@ import {
 } from '@/lib/services/inbox-search/scoring';
 import { runInboxSearchTransaction } from '@/lib/services/inbox-search/tx';
 import type {
+  InboxSearchAction,
+  InboxSearchAggregate,
   InboxSearchCandidate,
   InboxSearchCoverage,
   InboxSearchFreshness,
-  InboxSearchQueryConstraints,
+  InboxSearchFilters,
+  InboxSearchGroupBy,
+  InboxSearchOptions,
   InboxSearchRetrievalProfile,
   InboxSearchSearchRequest,
   InboxSearchSearchResult,
+  InboxSearchSortBy,
 } from '@/lib/services/inbox-search/types';
 
 const STOPWORDS = new Set([
@@ -82,6 +92,29 @@ const STOPWORDS = new Set([
   'would',
 ]);
 
+const GENERIC_INBOX_INTENT_TOKENS = new Set([
+  'email',
+  'emails',
+  'mail',
+  'inbox',
+  'message',
+  'messages',
+  'received',
+  'receive',
+  'sent',
+  'search',
+  'find',
+  'show',
+  'tell',
+  'check',
+  'look',
+  'lookup',
+  'happened',
+]);
+
+const DATE_LIKE_TOKEN_REGEX =
+  /^(?:\d{1,2}(?:st|nd|rd|th)?|\d{4}-\d{2}-\d{2}|jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tomorrow|yesterday|week|month|quarter|year)$/i;
+
 const EMAIL_REGEX = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
 const QUOTED_PHRASE_REGEX = /"([^"]+)"/g;
 const EARLY_EXIT_BUFFER_MS = 3_000;
@@ -94,16 +127,22 @@ function escapeLikePattern(value: string): string {
 }
 
 type InboxSearchPlan = {
+  action: InboxSearchAction;
   lexicalQuery: string | null;
   semanticQueryText: string | null;
   matchTerms: string[];
   exactSenderTerms: string[];
   exactSubjectTerms: string[];
+  appliedFilters: string[];
+  groupBy: InboxSearchGroupBy | null;
+  sortBy: InboxSearchSortBy;
+  limit: number;
+  resultShape: 'matches' | 'summary' | 'count' | 'aggregates';
   timeWindowLabel: string;
   notes: string[];
   startDate: Date | null;
   endDateExclusive: Date | null;
-  allowsFilterOnlySearch: boolean;
+  filterOnly: boolean;
 };
 
 type InboxSearchLexicalRow = {
@@ -151,6 +190,8 @@ type InboxSearchCheckpointRow = {
 type InboxSearchRuntimeDependencies = {
   fetchLexicalCandidatesAndCheckpoints: typeof fetchLexicalCandidatesAndCheckpoints;
   fetchSemanticCandidates: typeof fetchSemanticCandidates;
+  fetchDocumentCount: typeof fetchDocumentCount;
+  fetchAggregateBuckets: typeof fetchAggregateBuckets;
   embedInboxQueryText: typeof embedInboxQueryText;
   now: () => Date;
   isVectorEnabled: () => boolean;
@@ -197,6 +238,20 @@ function extractKeywords(text: string, limit = 6): string[] {
   return Array.from(new Set(tokens)).slice(0, limit);
 }
 
+function extractLexicalKeywords(text: string, limit = 6): string[] {
+  return extractKeywords(text, limit).filter((token) => {
+    if (GENERIC_INBOX_INTENT_TOKENS.has(token)) {
+      return false;
+    }
+
+    if (DATE_LIKE_TOKEN_REGEX.test(token)) {
+      return false;
+    }
+
+    return true;
+  });
+}
+
 function parseDateInput(value?: string): { date: Date | null; isDateOnly: boolean } {
   if (!value) {
     return { date: null, isDateOnly: false };
@@ -223,17 +278,79 @@ function addDays(date: Date, days: number): Date {
   return next;
 }
 
+function resolveRelativeWindow(params: {
+  filters?: InboxSearchFilters;
+  now?: Date;
+  timezone?: string;
+}): Pick<InboxSearchPlan, 'startDate' | 'endDateExclusive' | 'timeWindowLabel'> | null {
+  const relativeWindow = params.filters?.relativeWindow;
+  if (!relativeWindow) {
+    return null;
+  }
+
+  if (relativeWindow === 'all_time') {
+    return {
+      startDate: null,
+      endDateExclusive: null,
+      timeWindowLabel: 'all time',
+    };
+  }
+
+  const now = params.now ?? new Date();
+  const timezone = params.timezone ?? 'UTC';
+  const today = getDateOnlyInTimezone(now, timezone);
+
+  switch (relativeWindow) {
+    case 'today':
+      return {
+        startDate: startOfDayInTimezone(today, timezone),
+        endDateExclusive: startOfDayInTimezone(addDaysToDateOnly(today, 1), timezone),
+        timeWindowLabel: `today (${today})`,
+      };
+    case 'yesterday': {
+      const yesterday = addDaysToDateOnly(today, -1);
+      return {
+        startDate: startOfDayInTimezone(yesterday, timezone),
+        endDateExclusive: startOfDayInTimezone(today, timezone),
+        timeWindowLabel: `yesterday (${yesterday})`,
+      };
+    }
+    case 'last_7_days':
+      return {
+        startDate: startOfDayInTimezone(addDaysToDateOnly(today, -6), timezone),
+        endDateExclusive: startOfDayInTimezone(addDaysToDateOnly(today, 1), timezone),
+        timeWindowLabel: 'last 7 days',
+      };
+    case 'last_30_days':
+      return {
+        startDate: startOfDayInTimezone(addDaysToDateOnly(today, -29), timezone),
+        endDateExclusive: startOfDayInTimezone(addDaysToDateOnly(today, 1), timezone),
+        timeWindowLabel: 'last 30 days',
+      };
+    case 'last_90_days':
+      return {
+        startDate: startOfDayInTimezone(addDaysToDateOnly(today, -89), timezone),
+        endDateExclusive: startOfDayInTimezone(addDaysToDateOnly(today, 1), timezone),
+        timeWindowLabel: 'last 90 days',
+      };
+    default:
+      return null;
+  }
+}
+
 function resolveTimeWindow(params: {
-  constraints?: InboxSearchQueryConstraints;
+  action: InboxSearchAction;
+  filters?: InboxSearchFilters;
+  options?: InboxSearchOptions;
   mode: InboxSearchSearchRequest['mode'];
   profile: InboxSearchRetrievalProfile;
   now?: Date;
 }): Pick<InboxSearchPlan, 'startDate' | 'endDateExclusive' | 'timeWindowLabel'> {
   const now = params.now ?? new Date();
-  const explicitStartDate = parseDateInput(params.constraints?.startDate);
-  const explicitEndDate = parseDateInput(params.constraints?.endDate);
+  const explicitStartDate = parseDateInput(params.filters?.startDate);
+  const explicitEndDate = parseDateInput(params.filters?.endDate);
   const explicitEndDateExclusive =
-    params.constraints?.endDate && explicitEndDate.date
+    params.filters?.endDate && explicitEndDate.date
       ? explicitEndDate.isDateOnly
         ? addDays(explicitEndDate.date, 1)
         : explicitEndDate.date
@@ -243,32 +360,25 @@ function resolveTimeWindow(params: {
     return {
       startDate: explicitStartDate.date,
       endDateExclusive: explicitEndDateExclusive,
-      timeWindowLabel: `${params.constraints?.startDate ?? '...'} to ${params.constraints?.endDate ?? '...'}`,
+      timeWindowLabel: `${params.filters?.startDate ?? '...'} to ${params.filters?.endDate ?? '...'}`,
     };
   }
 
-  switch (params.constraints?.timeWindow) {
-    case 'recent':
-    case 'last_month':
-      return {
-        startDate: addDays(now, -30),
-        endDateExclusive: null,
-        timeWindowLabel: 'last 30 days',
-      };
-    case 'last_year':
-      return {
-        startDate: addDays(now, -365),
-        endDateExclusive: null,
-        timeWindowLabel: 'last 365 days',
-      };
-    case 'all_time':
-      return {
-        startDate: null,
-        endDateExclusive: null,
-        timeWindowLabel: 'all time',
-      };
-    default:
-      break;
+  const relativeWindow = resolveRelativeWindow({
+    filters: params.filters,
+    now,
+    timezone: params.options?.timezone,
+  });
+  if (relativeWindow) {
+    return relativeWindow;
+  }
+
+  if (params.action !== 'find') {
+    return {
+      startDate: null,
+      endDateExclusive: null,
+      timeWindowLabel: 'all time',
+    };
   }
 
   if (params.mode === 'deep') {
@@ -312,25 +422,17 @@ function buildLexicalQuery(terms: string[]): string | null {
 }
 
 function buildSemanticQueryText(params: {
-  intent: string;
-  subjectHint: string;
-  senderHint: string;
-  recipientHint: string;
-  constraintKeywords: string[];
-  allowsFilterOnlySearch: boolean;
+  queryText?: string;
+  keywords: string[];
+  semanticRequested: boolean;
 }): string | null {
-  if (params.allowsFilterOnlySearch && params.constraintKeywords.length === 0) {
+  if (!params.semanticRequested) {
     return null;
   }
 
   const parts = [
-    params.intent.trim(),
-    params.subjectHint ? `Subject: ${params.subjectHint}` : '',
-    params.senderHint ? `Sender: ${params.senderHint}` : '',
-    params.recipientHint ? `Recipient: ${params.recipientHint}` : '',
-    params.constraintKeywords.length > 0
-      ? `Keywords: ${params.constraintKeywords.join(', ')}`
-      : '',
+    params.queryText?.trim() ?? '',
+    params.keywords.length > 0 ? `Keywords: ${params.keywords.join(', ')}` : '',
   ]
     .filter(Boolean)
     .join('\n')
@@ -339,99 +441,139 @@ function buildSemanticQueryText(params: {
   return parts.length >= 3 ? parts : null;
 }
 
+function hasStructuredFilterSignal(filters?: InboxSearchFilters): boolean {
+  return Boolean(
+    filters?.sender ||
+      filters?.recipient ||
+      filters?.subjectContains ||
+      filters?.bodyContains ||
+      (filters?.keywords?.length ?? 0) > 0 ||
+      typeof filters?.hasAttachment === 'boolean' ||
+      filters?.startDate ||
+      filters?.endDate ||
+      filters?.relativeWindow ||
+      filters?.threadId ||
+      filters?.messageId,
+  );
+}
+
+function collectAppliedFilters(filters?: InboxSearchFilters): string[] {
+  if (!filters) {
+    return [];
+  }
+
+  const applied: string[] = [];
+  if (filters.sender) applied.push('sender');
+  if (filters.recipient) applied.push('recipient');
+  if (filters.subjectContains) applied.push('subjectContains');
+  if (filters.bodyContains) applied.push('bodyContains');
+  if ((filters.keywords?.length ?? 0) > 0) applied.push('keywords');
+  if (typeof filters.hasAttachment === 'boolean') applied.push('hasAttachment');
+  if (filters.startDate) applied.push('startDate');
+  if (filters.endDate) applied.push('endDate');
+  if (filters.relativeWindow) applied.push('relativeWindow');
+  if (filters.threadId) applied.push('threadId');
+  if (filters.messageId) applied.push('messageId');
+  if (filters.includeDeleted) applied.push('includeDeleted');
+  return applied;
+}
+
 export function buildInboxSearchPlan(params: {
-  intent: string;
-  constraints?: InboxSearchQueryConstraints;
+  action: InboxSearchAction;
+  queryText?: string;
+  filters?: InboxSearchFilters;
+  options?: InboxSearchOptions;
   mode: InboxSearchSearchRequest['mode'];
   profile: InboxSearchRetrievalProfile;
+  maxCandidates: number;
   now?: Date;
 }): InboxSearchPlan {
   const notes: string[] = [];
-  const quotedPhrases = extractQuotedPhrases(params.intent);
-  const intentEmails = extractEmails(params.intent);
-  const intentKeywords = extractKeywords(params.intent);
-  const constraintKeywords = (params.constraints?.keywords ?? [])
+  const queryText = params.queryText?.trim() ?? '';
+  const quotedPhrases = extractQuotedPhrases(queryText);
+  const queryEmails = extractEmails(queryText);
+  const queryKeywords = extractLexicalKeywords(queryText);
+  const constraintKeywords = (params.filters?.keywords ?? [])
     .map((keyword) => keyword.trim())
     .filter(Boolean)
     .slice(0, 6);
-  const subjectHint = params.constraints?.subject?.trim() ?? '';
-  const senderHint = params.constraints?.sender?.trim() ?? '';
-  const recipientHint = params.constraints?.recipient?.trim() ?? '';
+  const subjectContains = params.filters?.subjectContains?.trim() ?? '';
+  const bodyContains = params.filters?.bodyContains?.trim() ?? '';
+  const senderHint = params.filters?.sender?.trim() ?? '';
+  const recipientHint = params.filters?.recipient?.trim() ?? '';
 
-  const lexicalTerms = Array.from(
-    new Set([
-      ...quotedPhrases,
-      ...constraintKeywords,
-      ...intentKeywords,
-      ...(subjectHint ? [subjectHint] : []),
-    ]),
-  );
+  const lexicalTerms = Array.from(new Set([...quotedPhrases, ...queryKeywords, ...constraintKeywords]));
+  const lexicalQuery = buildLexicalQuery(lexicalTerms);
+  const filterOnly = !lexicalQuery;
+  const semanticRequested = Boolean((params.options?.semantic ?? Boolean(queryText)) && queryText);
+
+  if (!lexicalQuery && !hasStructuredFilterSignal(params.filters)) {
+    notes.push('No query text or narrowing filters were provided.');
+  } else if (!lexicalQuery) {
+    notes.push('Running a local filter-only search because no lexical query terms were provided.');
+  }
+
+  const appliedFilters = collectAppliedFilters(params.filters);
 
   const matchTerms = Array.from(
     new Set([
       ...quotedPhrases,
       ...constraintKeywords,
-      ...intentKeywords,
-      ...(subjectHint ? [subjectHint] : []),
+      ...queryKeywords,
+      ...(subjectContains ? [subjectContains] : []),
+      ...(bodyContains ? [bodyContains] : []),
       ...(senderHint ? [senderHint] : []),
       ...(recipientHint ? [recipientHint] : []),
-      ...intentEmails,
+      ...queryEmails,
     ]),
   );
 
   const exactSenderTerms = Array.from(
-    new Set([...(senderHint ? [senderHint] : []), ...intentEmails]),
+    new Set([...(senderHint ? [senderHint] : []), ...queryEmails]),
   );
   const exactSubjectTerms = Array.from(
-    new Set([...(subjectHint ? [subjectHint] : []), ...quotedPhrases]),
+    new Set([...(subjectContains ? [subjectContains] : []), ...quotedPhrases]),
   );
 
   const timeWindow = resolveTimeWindow({
-    constraints: params.constraints,
+    action: params.action,
+    filters: params.filters,
+    options: params.options,
     mode: params.mode,
     profile: params.profile,
     now: params.now,
   });
-
-  const allowsFilterOnlySearch = Boolean(
-    senderHint ||
-      recipientHint ||
-      subjectHint ||
-      params.constraints?.startDate ||
-      params.constraints?.endDate ||
-      params.constraints?.timeWindow ||
-      params.constraints?.hasAttachment,
-  );
-
-  const lexicalQuery = buildLexicalQuery(lexicalTerms);
-  if (!lexicalQuery && !allowsFilterOnlySearch) {
-    notes.push('No search terms or narrowing constraints were derived from the request.');
-  }
-
-  if (!lexicalQuery && allowsFilterOnlySearch) {
-    notes.push(
-      'Running a local filter-only search because no lexical query terms were available.',
-    );
-  }
+  const sortBy = params.options?.sortBy ?? (params.action === 'find' ? 'relevance' : 'newest');
+  const limit = Math.min(params.options?.limit ?? params.maxCandidates, params.maxCandidates);
 
   return {
+    action: params.action,
     lexicalQuery,
     semanticQueryText: buildSemanticQueryText({
-      intent: params.intent,
-      subjectHint,
-      senderHint,
-      recipientHint,
-      constraintKeywords,
-      allowsFilterOnlySearch,
+      queryText,
+      keywords: constraintKeywords,
+      semanticRequested,
     }),
     matchTerms,
     exactSenderTerms,
     exactSubjectTerms,
+    appliedFilters,
+    groupBy: params.options?.groupBy ?? null,
+    sortBy,
+    limit,
+    resultShape:
+      params.action === 'find'
+        ? 'matches'
+        : params.action === 'summarize_range'
+          ? 'summary'
+          : params.action === 'count'
+            ? 'count'
+            : 'aggregates',
     timeWindowLabel: timeWindow.timeWindowLabel,
     notes,
     startDate: timeWindow.startDate,
     endDateExclusive: timeWindow.endDateExclusive,
-    allowsFilterOnlySearch,
+    filterOnly,
   };
 }
 
@@ -507,20 +649,23 @@ function buildWhereClause(clauses: Prisma.Sql[]): Prisma.Sql {
 function buildInboxSearchWhereClauses(params: {
   userId: string;
   scopedMailboxIds: string[];
-  constraints?: InboxSearchQueryConstraints;
+  filters?: InboxSearchFilters;
   plan: Pick<InboxSearchPlan, 'startDate' | 'endDateExclusive'>;
 }): Prisma.Sql[] {
   const clauses: Prisma.Sql[] = [
-    Prisma.sql`d."isDeleted" = false`,
     Prisma.sql`d."userId" = ${params.userId}`,
     Prisma.sql`m."userId" = ${params.userId}`,
   ];
+
+  if (!params.filters?.includeDeleted) {
+    clauses.push(Prisma.sql`d."isDeleted" = false`);
+  }
 
   if (params.scopedMailboxIds.length > 0) {
     clauses.push(Prisma.sql`d."mailboxId" IN (${Prisma.join(params.scopedMailboxIds)})`);
   }
 
-  const senderFilter = params.constraints?.sender?.trim();
+  const senderFilter = params.filters?.sender?.trim();
   if (senderFilter) {
     const escaped = escapeLikePattern(senderFilter.toLowerCase());
     clauses.push(
@@ -528,7 +673,7 @@ function buildInboxSearchWhereClauses(params: {
     );
   }
 
-  const recipientFilter = params.constraints?.recipient?.trim();
+  const recipientFilter = params.filters?.recipient?.trim();
   if (recipientFilter) {
     const escaped = escapeLikePattern(recipientFilter.toLowerCase());
     clauses.push(Prisma.sql`
@@ -540,8 +685,34 @@ function buildInboxSearchWhereClauses(params: {
     `);
   }
 
-  if (params.constraints?.hasAttachment === true) {
+  const subjectContains = params.filters?.subjectContains?.trim();
+  if (subjectContains) {
+    const escaped = escapeLikePattern(subjectContains.toLowerCase());
+    clauses.push(Prisma.sql`LOWER(COALESCE(d."subject", '')) LIKE ${`%${escaped}%`}`);
+  }
+
+  const bodyContains = params.filters?.bodyContains?.trim();
+  if (bodyContains) {
+    const escaped = escapeLikePattern(bodyContains.toLowerCase());
+    clauses.push(Prisma.sql`LOWER(COALESCE(d."bodyText", '')) LIKE ${`%${escaped}%`}`);
+  }
+
+  if ((params.filters?.keywords?.length ?? 0) > 0) {
+    for (const keyword of params.filters?.keywords ?? []) {
+      const escaped = escapeLikePattern(keyword.toLowerCase());
+      clauses.push(Prisma.sql`
+        (
+          LOWER(COALESCE(d."subject", '')) LIKE ${`%${escaped}%`}
+          OR LOWER(COALESCE(d."bodyText", '')) LIKE ${`%${escaped}%`}
+        )
+      `);
+    }
+  }
+
+  if (params.filters?.hasAttachment === true) {
     clauses.push(Prisma.sql`d."hasAttachment" = true`);
+  } else if (params.filters?.hasAttachment === false) {
+    clauses.push(Prisma.sql`d."hasAttachment" = false`);
   }
 
   if (params.plan.startDate) {
@@ -552,6 +723,14 @@ function buildInboxSearchWhereClauses(params: {
     clauses.push(Prisma.sql`d."sentAt" < ${params.plan.endDateExclusive}`);
   }
 
+  if (params.filters?.threadId) {
+    clauses.push(Prisma.sql`d."threadId" = ${params.filters.threadId}`);
+  }
+
+  if (params.filters?.messageId) {
+    clauses.push(Prisma.sql`d."messageId" = ${params.filters.messageId}`);
+  }
+
   return clauses;
 }
 
@@ -559,7 +738,7 @@ async function fetchLexicalCandidatesAndCheckpoints(params: {
   userId: string;
   lexicalQuery: string | null;
   scopedMailboxIds: string[];
-  constraints?: InboxSearchQueryConstraints;
+  filters?: InboxSearchFilters;
   plan: Pick<InboxSearchPlan, 'startDate' | 'endDateExclusive'>;
   limit: number;
 }): Promise<{
@@ -570,7 +749,7 @@ async function fetchLexicalCandidatesAndCheckpoints(params: {
     const whereClauses = buildInboxSearchWhereClauses({
       userId: params.userId,
       scopedMailboxIds: params.scopedMailboxIds,
-      constraints: params.constraints,
+      filters: params.filters,
       plan: params.plan,
     });
 
@@ -657,7 +836,7 @@ async function fetchSemanticCandidates(params: {
   userId: string;
   queryEmbedding: number[];
   scopedMailboxIds: string[];
-  constraints?: InboxSearchQueryConstraints;
+  filters?: InboxSearchFilters;
   plan: Pick<InboxSearchPlan, 'startDate' | 'endDateExclusive'>;
   limit: number;
 }): Promise<InboxSearchSemanticRow[]> {
@@ -665,7 +844,7 @@ async function fetchSemanticCandidates(params: {
     const whereClauses = buildInboxSearchWhereClauses({
       userId: params.userId,
       scopedMailboxIds: params.scopedMailboxIds,
-      constraints: params.constraints,
+      filters: params.filters,
       plan: params.plan,
     });
 
@@ -848,14 +1027,103 @@ function classifyInboxIndexFreshness(params: {
   };
 }
 
+function buildAggregationBucketExpression(
+  groupBy: InboxSearchGroupBy,
+  timezone: string,
+): Prisma.Sql {
+  switch (groupBy) {
+    case 'sender':
+      return Prisma.sql`COALESCE(NULLIF(TRIM(d."from"), ''), '(unknown sender)')`;
+    case 'day':
+      return Prisma.sql`to_char(d."sentAt" AT TIME ZONE ${timezone}, 'YYYY-MM-DD')`;
+    case 'thread':
+      return Prisma.sql`d."threadId"`;
+    case 'mailbox':
+      return Prisma.sql`m."emailAddress"`;
+    default:
+      return Prisma.sql`'(unknown)'`;
+  }
+}
+
+async function fetchAggregateBuckets(params: {
+  userId: string;
+  scopedMailboxIds: string[];
+  filters?: InboxSearchFilters;
+  plan: Pick<InboxSearchPlan, 'startDate' | 'endDateExclusive'>;
+  groupBy: InboxSearchGroupBy;
+  limit: number;
+  timezone?: string;
+}): Promise<InboxSearchAggregate[]> {
+  return runInboxSearchTransaction(params.userId, async (tx) => {
+    const whereClauses = buildInboxSearchWhereClauses({
+      userId: params.userId,
+      scopedMailboxIds: params.scopedMailboxIds,
+      filters: params.filters,
+      plan: params.plan,
+    });
+    const bucketExpression = buildAggregationBucketExpression(
+      params.groupBy,
+      params.timezone ?? 'UTC',
+    );
+
+    return tx.$queryRaw<InboxSearchAggregate[]>(Prisma.sql`
+      SELECT
+        ${bucketExpression} AS "key",
+        COUNT(*)::integer AS "count"
+      FROM "InboxSearchDocument" d
+      INNER JOIN "Mailbox" m
+        ON m."id" = d."mailboxId"
+      WHERE ${buildWhereClause(whereClauses)}
+      GROUP BY 1
+      ORDER BY "count" DESC, "key" ASC
+      LIMIT ${params.limit}
+    `);
+  });
+}
+
+async function fetchDocumentCount(params: {
+  userId: string;
+  scopedMailboxIds: string[];
+  filters?: InboxSearchFilters;
+  plan: Pick<InboxSearchPlan, 'startDate' | 'endDateExclusive'>;
+}): Promise<number> {
+  return runInboxSearchTransaction(params.userId, async (tx) => {
+    const whereClauses = buildInboxSearchWhereClauses({
+      userId: params.userId,
+      scopedMailboxIds: params.scopedMailboxIds,
+      filters: params.filters,
+      plan: params.plan,
+    });
+
+    const rows = await tx.$queryRaw<Array<{ count: number }>>(Prisma.sql`
+      SELECT COUNT(*)::integer AS "count"
+      FROM "InboxSearchDocument" d
+      INNER JOIN "Mailbox" m
+        ON m."id" = d."mailboxId"
+      WHERE ${buildWhereClause(whereClauses)}
+    `);
+
+    return rows[0]?.count ?? 0;
+  });
+}
+
 function buildSearchSummary(params: {
+  action: InboxSearchAction;
   lexicalQuery: string | null;
   semanticQueryText: string | null;
-  constraints?: InboxSearchQueryConstraints;
+  filters?: InboxSearchFilters;
   mailboxEmails: string[];
+  groupBy: InboxSearchGroupBy | null;
+  sortBy: InboxSearchSortBy;
+  filterOnly: boolean;
   timeWindowLabel: string;
 }): string {
-  const parts: string[] = [`local time window=${params.timeWindowLabel}`];
+  const parts: string[] = [
+    `action=${params.action}`,
+    `local time window=${params.timeWindowLabel}`,
+    `filterOnly=${params.filterOnly}`,
+    `sortBy=${params.sortBy}`,
+  ];
 
   if (params.lexicalQuery) {
     parts.push(`fts=${params.lexicalQuery}`);
@@ -867,26 +1135,61 @@ function buildSearchSummary(params: {
     parts.push('semantic=query-embedded');
   }
 
-  if (params.constraints?.sender) {
-    parts.push(`sender=${params.constraints.sender}`);
+  if (params.filters?.sender) {
+    parts.push(`sender=${params.filters.sender}`);
   }
-  if (params.constraints?.recipient) {
-    parts.push(`recipient=${params.constraints.recipient}`);
+  if (params.filters?.recipient) {
+    parts.push(`recipient=${params.filters.recipient}`);
   }
-  if (params.constraints?.subject) {
-    parts.push(`subject=${params.constraints.subject}`);
+  if (params.filters?.subjectContains) {
+    parts.push(`subjectContains=${params.filters.subjectContains}`);
   }
-  if (params.constraints?.hasAttachment) {
-    parts.push('hasAttachment=true');
+  if (params.filters?.bodyContains) {
+    parts.push(`bodyContains=${params.filters.bodyContains}`);
+  }
+  if (typeof params.filters?.hasAttachment === 'boolean') {
+    parts.push(`hasAttachment=${params.filters.hasAttachment}`);
+  }
+  if (params.filters?.threadId) {
+    parts.push(`threadId=${params.filters.threadId}`);
+  }
+  if (params.filters?.messageId) {
+    parts.push(`messageId=${params.filters.messageId}`);
+  }
+  if (params.groupBy) {
+    parts.push(`groupBy=${params.groupBy}`);
   }
 
   parts.push(`mailboxes=${params.mailboxEmails.join(', ')}`);
   return parts.join(' | ');
 }
 
+function sortCandidates(
+  candidates: InboxSearchCandidate[],
+  sortBy: InboxSearchSortBy,
+): InboxSearchCandidate[] {
+  return [...candidates].sort((left, right) => {
+    if (sortBy === 'newest') {
+      return new Date(right.date).getTime() - new Date(left.date).getTime();
+    }
+
+    if (sortBy === 'oldest') {
+      return new Date(left.date).getTime() - new Date(right.date).getTime();
+    }
+
+    if (right.totalScore !== left.totalScore) {
+      return right.totalScore - left.totalScore;
+    }
+
+    return new Date(right.date).getTime() - new Date(left.date).getTime();
+  });
+}
+
 const DEFAULT_INBOX_SEARCH_RUNTIME_DEPENDENCIES: InboxSearchRuntimeDependencies = {
   fetchLexicalCandidatesAndCheckpoints,
   fetchSemanticCandidates,
+  fetchDocumentCount,
+  fetchAggregateBuckets,
   embedInboxQueryText,
   now: () => new Date(),
   isVectorEnabled: () => getInboxRetrievalFeatureFlags().vectorEnabled,
@@ -903,20 +1206,28 @@ export async function searchInboxDocuments(
   const startedAt = runtime.now().getTime();
   const vectorEnabled = runtime.isVectorEnabled();
   const plan = buildInboxSearchPlan({
-    intent: params.intent,
-    constraints: params.constraints,
+    action: params.action,
+    queryText: params.queryText,
+    filters: params.filters,
+    options: params.options,
     mode: params.mode,
     profile: params.profile,
+    maxCandidates: params.maxCandidates,
   });
   const scopedMailboxIds = params.mailboxes.map((mailbox) => mailbox.id);
   const scopedMailboxEmails = params.mailboxes.map((mailbox) => mailbox.emailAddress);
   const initialCoverage: InboxSearchCoverage = {
+    action: params.action,
     queriesTried: [
       buildSearchSummary({
+        action: plan.action,
         lexicalQuery: plan.lexicalQuery,
         semanticQueryText: plan.semanticQueryText,
-        constraints: params.constraints,
+        filters: params.filters,
         mailboxEmails: scopedMailboxEmails,
+        groupBy: plan.groupBy,
+        sortBy: plan.sortBy,
+        filterOnly: plan.filterOnly,
         timeWindowLabel: plan.timeWindowLabel,
       }),
     ],
@@ -925,6 +1236,8 @@ export async function searchInboxDocuments(
     timeWindow: plan.timeWindowLabel,
     pagesFetched: 0,
     truncated: false,
+    filterOnly: plan.filterOnly,
+    appliedFilters: plan.appliedFilters,
     budgetNotes: [...plan.notes],
     engineVersion: 'inbox-search-v2-hybrid',
     indexFreshness: 'unknown',
@@ -938,26 +1251,40 @@ export async function searchInboxDocuments(
 
   logger.info('[InboxSearchSearch] retrieval stage start', {
     userId: params.userId,
+    action: params.action,
     mode: params.mode,
     profile: params.profile,
     mailboxCount: scopedMailboxIds.length,
+    mailboxScope: scopedMailboxEmails,
+    filters: params.filters ?? {},
+    queryTextPresent: Boolean(params.queryText),
     lexicalQueryPresent: Boolean(plan.lexicalQuery),
     semanticRequested: Boolean(plan.semanticQueryText),
+    groupBy: plan.groupBy,
+    sortBy: plan.sortBy,
+    limit: plan.limit,
+    filterOnly: plan.filterOnly,
+    timeWindowLabel: plan.timeWindowLabel,
     vectorEnabled,
   });
 
-  if (!plan.lexicalQuery && !plan.allowsFilterOnlySearch) {
+  if (!plan.lexicalQuery && !hasStructuredFilterSignal(params.filters)) {
     return {
+      action: params.action,
       candidates: [],
       coverage: {
         ...initialCoverage,
         retrievalLatencyMs: runtime.now().getTime() - startedAt,
       },
+      count: params.action === 'count' ? 0 : undefined,
+      aggregates: params.action === 'aggregate' ? [] : undefined,
+      groupBy: plan.groupBy ?? undefined,
     };
   }
 
   if (isTimeLow(params.deadlineAt)) {
     return {
+      action: params.action,
       candidates: [],
       coverage: {
         ...initialCoverage,
@@ -970,26 +1297,93 @@ export async function searchInboxDocuments(
           'Time budget low before local retrieval began.',
         ],
       },
+      count: params.action === 'count' ? 0 : undefined,
+      aggregates: params.action === 'aggregate' ? [] : undefined,
+      groupBy: plan.groupBy ?? undefined,
+    };
+  }
+
+  const freshnessPromise = runtime.fetchLexicalCandidatesAndCheckpoints({
+    userId: params.userId,
+    lexicalQuery: plan.lexicalQuery,
+    scopedMailboxIds,
+    filters: params.filters,
+    plan,
+    limit:
+      params.action === 'find' || params.action === 'summarize_range'
+        ? Math.max(plan.limit * 2, params.mode === 'deep' ? 80 : 40)
+        : 1,
+  });
+
+  if (params.action === 'count' || params.action === 'aggregate') {
+    const [{ checkpoints }, count, aggregates] = await Promise.all([
+      freshnessPromise,
+      runtime.fetchDocumentCount({
+        userId: params.userId,
+        scopedMailboxIds,
+        filters: params.filters,
+        plan,
+      }),
+      plan.groupBy
+        ? runtime.fetchAggregateBuckets({
+            userId: params.userId,
+            scopedMailboxIds,
+            filters: params.filters,
+            plan,
+            groupBy: plan.groupBy,
+            limit: plan.limit,
+            timezone: params.options?.timezone,
+          })
+        : Promise.resolve(undefined),
+    ]);
+
+    const freshness = classifyInboxIndexFreshness({
+      checkpoints,
+      scopedMailboxIds,
+      now: runtime.now(),
+    });
+    const retrievalLatencyMs = runtime.now().getTime() - startedAt;
+
+    logger.info('[InboxSearchSearch] aggregate stage complete', {
+      userId: params.userId,
+      action: params.action,
+      count,
+      aggregateBuckets: aggregates?.length ?? 0,
+      groupBy: plan.groupBy,
+      retrievalLatencyMs,
+    });
+
+    return {
+      action: params.action,
+      candidates: [],
+      coverage: {
+        ...initialCoverage,
+        budgetNotes: [...initialCoverage.budgetNotes, ...freshness.notes],
+        indexFreshness: freshness.freshness,
+        retrievalLatencyMs,
+        indexLag: freshness.indexLag,
+        semanticUnavailable: true,
+        fusionMethod: 'lexical-only',
+      },
+      count,
+      aggregates,
+      groupBy: plan.groupBy ?? undefined,
     };
   }
 
   const lexicalLimit = Math.max(
-    params.maxCandidates * 2,
+    plan.limit * 2,
     params.mode === 'deep' ? 80 : 40,
   );
   const semanticLimit = Math.max(
-    params.maxCandidates * 2,
+    plan.limit * 2,
     params.mode === 'deep' ? 80 : 40,
   );
 
-  const lexicalPromise = runtime.fetchLexicalCandidatesAndCheckpoints({
-    userId: params.userId,
-    lexicalQuery: plan.lexicalQuery,
-    scopedMailboxIds,
-    constraints: params.constraints,
-    plan,
-    limit: lexicalLimit,
-  });
+  const lexicalPromise = freshnessPromise.then(({ rows, checkpoints }) => ({
+    rows,
+    checkpoints,
+  }));
   const semanticQueryText = plan.semanticQueryText;
 
   const semanticQueryPromise =
@@ -1051,7 +1445,7 @@ export async function searchInboxDocuments(
           userId: params.userId,
           queryEmbedding: semanticQueryResult.embedding,
           scopedMailboxIds,
-          constraints: params.constraints,
+          filters: params.filters,
           plan,
           limit: semanticLimit,
         }),
@@ -1204,6 +1598,7 @@ export async function searchInboxDocuments(
 
   logger.info('[InboxSearchSearch] retrieval stage complete', {
     userId: params.userId,
+    action: params.action,
     mode: params.mode,
     lexicalCandidates: lexicalRows.length,
     semanticCandidates: semanticRows.length,
@@ -1213,7 +1608,8 @@ export async function searchInboxDocuments(
   });
 
   return {
-    candidates,
+    action: params.action,
+    candidates: sortCandidates(candidates, plan.sortBy).slice(0, plan.limit),
     coverage: {
       ...initialCoverage,
       threadsScanned: uniqueThreadIds.size,
@@ -1231,5 +1627,6 @@ export async function searchInboxDocuments(
       indexLag: freshness.indexLag,
       semanticUnavailable,
     },
+    groupBy: plan.groupBy ?? undefined,
   };
 }

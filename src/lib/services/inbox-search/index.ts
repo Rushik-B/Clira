@@ -47,18 +47,25 @@ export { getInboxRetrievalFeatureFlags } from '@/lib/services/inbox-search/featu
 export { prepareInboxBodyText } from '@/lib/services/inbox-search/text-prep';
 export { runInboxSearchTransaction } from '@/lib/services/inbox-search/tx';
 export type {
+  InboxSearchAction,
+  InboxSearchAggregate,
   InboxSearchCandidate,
   InboxSearchChunkRecord,
   InboxSearchCoverage,
+  InboxSearchFilters,
   InboxSearchFreshness,
+  InboxSearchGroupBy,
   InboxSearchIndexInput,
   InboxSearchIndexResult,
-  InboxSearchQueryConstraints,
   InboxSearchQueryMode,
+  InboxSearchOptions,
+  InboxSearchRelativeWindow,
   InboxSearchRetrievalProfile,
   InboxSearchScopedMailbox,
   InboxSearchSearchRequest,
   InboxSearchSearchResult,
+  InboxSearchSortBy,
+  InboxSearchToolArgs,
 } from '@/lib/services/inbox-search/types';
 export type {
   InboxIndexService,

@@ -135,6 +135,7 @@ function summarizeToolResult(toolName: string, result: unknown): string | null {
       break;
     }
     case 'search_inbox_context': {
+      const action = getStringValue(output.action) ?? 'find';
       const matches = Array.isArray(output.matches) ? output.matches.length : getNumberValue(output.count) ?? 0;
       const coverage = asRecord(output.coverage);
       const scanned =
@@ -142,7 +143,7 @@ function summarizeToolResult(toolName: string, result: unknown): string | null {
         getNumberValue(coverage?.threadsScanned) ??
         0;
       const confidence = getStringValue(output.confidence) ?? 'unknown';
-      summary = `search_inbox_context: ${matches} match(es), ${scanned} scanned, confidence=${confidence}`;
+      summary = `search_inbox_context(${action}): ${matches} result(s), ${scanned} scanned, confidence=${confidence}`;
       break;
     }
     case 'search_memory': {
@@ -297,4 +298,3 @@ export function extractToolCallsSummary(metadata: Record<string, unknown> | null
   if (resultsText) return resultsText;
   return null;
 }
-

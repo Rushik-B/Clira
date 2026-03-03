@@ -37,15 +37,57 @@ export type InboxSearchQueryMode = 'quick' | 'deep';
 
 export type InboxSearchRetrievalProfile = 'default' | 'messaging';
 
-export type InboxSearchQueryConstraints = {
+export type InboxSearchAction =
+  | 'find'
+  | 'summarize_range'
+  | 'count'
+  | 'aggregate';
+
+export type InboxSearchRelativeWindow =
+  | 'today'
+  | 'yesterday'
+  | 'last_7_days'
+  | 'last_30_days'
+  | 'last_90_days'
+  | 'all_time';
+
+export type InboxSearchGroupBy = 'sender' | 'day' | 'thread' | 'mailbox';
+
+export type InboxSearchSortBy = 'relevance' | 'newest' | 'oldest';
+
+export type InboxSearchFilters = {
   sender?: string;
   recipient?: string;
   keywords?: string[];
-  subject?: string;
-  timeWindow?: 'recent' | 'last_month' | 'last_year' | 'all_time';
+  subjectContains?: string;
+  bodyContains?: string;
   startDate?: string;
   endDate?: string;
+  relativeWindow?: InboxSearchRelativeWindow;
   hasAttachment?: boolean;
+  threadId?: string;
+  messageId?: string;
+  includeDeleted?: boolean;
+};
+
+export type InboxSearchOptions = {
+  limit?: number;
+  sortBy?: InboxSearchSortBy;
+  includeQuotes?: boolean;
+  includeSnippets?: boolean;
+  semantic?: boolean;
+  groupBy?: InboxSearchGroupBy;
+  timezone?: string;
+};
+
+export type InboxSearchToolArgs = {
+  action: InboxSearchAction;
+  mode?: InboxSearchQueryMode;
+  mailboxId?: string;
+  mailboxEmail?: string;
+  queryText?: string;
+  filters?: InboxSearchFilters;
+  options?: InboxSearchOptions;
 };
 
 export type InboxSearchScopedMailbox = {
@@ -82,12 +124,15 @@ export type InboxSearchCandidate = {
 };
 
 export type InboxSearchCoverage = {
+  action: InboxSearchAction;
   queriesTried: string[];
   threadsScanned: number;
   messagesScanned: number;
   timeWindow: string;
   pagesFetched: number;
   truncated: boolean;
+  filterOnly: boolean;
+  appliedFilters: string[];
   budgetNotes: string[];
   engineVersion: 'inbox-search-v2-lexical' | 'inbox-search-v2-hybrid';
   indexFreshness: InboxSearchFreshness;
@@ -99,12 +144,19 @@ export type InboxSearchCoverage = {
   semanticUnavailable: boolean;
 };
 
+export type InboxSearchAggregate = {
+  key: string;
+  count: number;
+};
+
 export type InboxSearchSearchRequest = {
   userId: string;
-  intent: string;
+  action: InboxSearchAction;
   mode: InboxSearchQueryMode;
   profile: InboxSearchRetrievalProfile;
-  constraints?: InboxSearchQueryConstraints;
+  queryText?: string;
+  filters?: InboxSearchFilters;
+  options?: InboxSearchOptions;
   mailboxes: InboxSearchScopedMailbox[];
   maxCandidates: number;
   snippetChars: number;
@@ -112,6 +164,10 @@ export type InboxSearchSearchRequest = {
 };
 
 export type InboxSearchSearchResult = {
+  action: InboxSearchAction;
   candidates: InboxSearchCandidate[];
   coverage: InboxSearchCoverage;
+  count?: number;
+  aggregates?: InboxSearchAggregate[];
+  groupBy?: InboxSearchGroupBy;
 };

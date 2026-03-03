@@ -10,10 +10,13 @@ import { readPromptFile } from '@/lib/prompts';
 import {
   getInboxRetrievalFeatureFlags,
   searchInboxDocuments,
+  type InboxSearchAction,
+  type InboxSearchAggregate,
   type InboxSearchCandidate,
   type InboxSearchCoverage,
-  type InboxSearchQueryConstraints,
+  type InboxSearchFilters,
   type InboxSearchQueryMode,
+  type InboxSearchOptions,
   type InboxSearchRetrievalProfile,
   type InboxSearchScopedMailbox,
 } from '@/lib/services/inbox-search';
@@ -32,12 +35,16 @@ export type EmailRetrievalProfile =
   | 'messaging'
   | 'whatsapp'
   | 'telegram';
-export type EmailRetrievalConstraints = InboxSearchQueryConstraints;
+export type EmailRetrievalAction = InboxSearchAction;
+export type EmailRetrievalFilters = InboxSearchFilters;
+export type EmailRetrievalOptions = InboxSearchOptions;
 
 export type EmailRetrievalRequest = {
-  intent: string;
+  action: EmailRetrievalAction;
   mode?: EmailRetrievalMode;
-  constraints?: EmailRetrievalConstraints;
+  queryText?: string;
+  filters?: EmailRetrievalFilters;
+  options?: EmailRetrievalOptions;
   profile?: EmailRetrievalProfile;
   mailboxId?: string;
   mailboxEmail?: string;
@@ -105,8 +112,11 @@ function buildEmailRetrievalPrompt(input: {
   candidates: InboxSearchCandidate[];
 }): string {
   const template = readPromptFile('core-processing/emailRetrievalPrompt.md');
-  const constraintsJson = input.request.constraints
-    ? JSON.stringify(input.request.constraints, null, 2)
+  const filtersJson = input.request.filters
+    ? JSON.stringify(input.request.filters, null, 2)
+    : '(none)';
+  const optionsJson = input.request.options
+    ? JSON.stringify(input.request.options, null, 2)
     : '(none)';
   const coverageJson = JSON.stringify(input.coverage, null, 2);
   const candidatesJson =
@@ -115,24 +125,30 @@ function buildEmailRetrievalPrompt(input: {
       : '(none)';
 
   return template
-    .replace('{userRequest}', input.request.intent)
+    .replace('{action}', input.request.action)
+    .replace('{queryText}', input.request.queryText ?? '(none)')
     .replace('{mode}', input.request.mode ?? 'quick')
-    .replace('{constraintsJson}', constraintsJson)
+    .replace('{filtersJson}', filtersJson)
+    .replace('{optionsJson}', optionsJson)
     .replace('{coverageJson}', coverageJson)
     .replace('{candidatesJson}', candidatesJson);
 }
 
 function createEmptyCoverage(
+  action: EmailRetrievalAction,
   budgetNotes: string[],
   overrides?: Partial<RetrievalCoverage>,
 ): RetrievalCoverage {
   return {
+    action,
     queriesTried: [],
     threadsScanned: 0,
     messagesScanned: 0,
     timeWindow: 'unknown',
     pagesFetched: 0,
     truncated: false,
+    filterOnly: true,
+    appliedFilters: [],
     budgetNotes,
     engineVersion: 'inbox-search-v2-hybrid',
     indexFreshness: 'unknown',
@@ -147,11 +163,13 @@ function createEmptyCoverage(
 }
 
 function createEmptyEvidencePack(
+  action: EmailRetrievalAction,
   coverage: RetrievalCoverage,
   followUpQuestions: string[],
   metadata?: RetrievalMetadata,
 ): EmailEvidencePackDTO {
   return {
+    action,
     matches: [],
     quotes: [],
     coverage,
@@ -161,12 +179,43 @@ function createEmptyEvidencePack(
   };
 }
 
-function createDeterministicEvidencePack(
+function createDeterministicSummary(
+  action: EmailRetrievalAction,
   candidates: InboxSearchCandidate[],
   coverage: RetrievalCoverage,
-  mode: EmailRetrievalMode,
-  metadata?: RetrievalMetadata,
-): EmailEvidencePackDTO {
+): string | undefined {
+  if (candidates.length === 0) {
+    return undefined;
+  }
+
+  if (action === 'summarize_range') {
+    const topCandidate = candidates[0]!;
+    return `Found ${candidates.length} matching email${candidates.length === 1 ? '' : 's'} across ${coverage.timeWindow}. Top thread: ${topCandidate.subject}.`;
+  }
+
+  return undefined;
+}
+
+function createDeterministicEvidencePack(params: {
+  action: EmailRetrievalAction;
+  candidates: InboxSearchCandidate[];
+  coverage: RetrievalCoverage;
+  mode: EmailRetrievalMode;
+  metadata?: RetrievalMetadata;
+  includeQuotes?: boolean;
+  includeSnippets?: boolean;
+  summary?: string;
+}): EmailEvidencePackDTO {
+  const {
+    action,
+    candidates,
+    coverage,
+    mode,
+    metadata,
+    includeQuotes = true,
+    includeSnippets = true,
+    summary,
+  } = params;
   const topCandidates = candidates.slice(0, 5);
   const confidence = inferInboxSearchConfidence({
     candidateCount: topCandidates.length,
@@ -179,6 +228,7 @@ function createDeterministicEvidencePack(
   });
 
   return {
+    action,
     matches: topCandidates.map((candidate) => ({
       threadId: candidate.threadId,
       messageId: candidate.messageId,
@@ -188,19 +238,22 @@ function createDeterministicEvidencePack(
       subject: candidate.subject,
       date: candidate.date,
       whyRelevant: candidate.whyRelevant,
-      quote: candidate.snippet.slice(0, 360),
+      quote: includeSnippets ? candidate.snippet.slice(0, 360) : '',
     })),
-    quotes: topCandidates.slice(0, 2).map((candidate) => ({
-      threadId: candidate.threadId,
-      messageId: candidate.messageId,
-      mailboxId: candidate.mailboxId,
-      mailboxEmail: candidate.mailboxEmail,
-      quote: candidate.snippet.slice(0, 360),
-      note: candidate.whyRelevant.slice(0, 200),
-    })),
+    quotes: includeQuotes
+      ? topCandidates.slice(0, 2).map((candidate) => ({
+          threadId: candidate.threadId,
+          messageId: candidate.messageId,
+          mailboxId: candidate.mailboxId,
+          mailboxEmail: candidate.mailboxEmail,
+          quote: candidate.snippet.slice(0, 360),
+          note: candidate.whyRelevant.slice(0, 200),
+        }))
+      : [],
     coverage,
     confidence,
     metadata,
+    summary: summary ?? createDeterministicSummary(action, topCandidates, coverage),
     followUpQuestions:
       confidence === 'low'
         ? [
@@ -208,6 +261,41 @@ function createDeterministicEvidencePack(
               ? 'Want me to search deeper across the local inbox index?'
               : 'Can you share a sender, subject, or date range to narrow this down?',
           ]
+        : [],
+  };
+}
+
+function createCountOrAggregateEvidencePack(params: {
+  action: Extract<EmailRetrievalAction, 'count' | 'aggregate'>;
+  coverage: RetrievalCoverage;
+  count: number;
+  aggregates?: InboxSearchAggregate[];
+  groupBy?: EmailRetrievalOptions['groupBy'];
+}): EmailEvidencePackDTO {
+  const { action, coverage, count, aggregates, groupBy } = params;
+  const topBucket = aggregates?.[0];
+  const summary =
+    action === 'count'
+      ? groupBy && topBucket
+        ? `Found ${count} matching emails. Top ${groupBy}: ${topBucket.key} (${topBucket.count}).`
+        : `Found ${count} matching emails.`
+      : topBucket
+        ? `Top ${groupBy ?? 'bucket'}: ${topBucket.key} (${topBucket.count}).`
+        : `No aggregate buckets matched.`;
+
+  return {
+    action,
+    matches: [],
+    quotes: [],
+    coverage,
+    confidence: count > 0 ? 'high' : 'low',
+    summary,
+    count,
+    aggregates,
+    groupBy,
+    followUpQuestions:
+      count === 0
+        ? ['Want to narrow this with a sender, mailbox, or date range?']
         : [],
   };
 }
@@ -264,7 +352,8 @@ async function runEscalatedQuickSearch(params: {
 }> {
   logger.info('[emailRetrievalSubagent] escalating weak quick retrieval to deep local search', {
     userId: params.userId,
-    intent: params.request.intent,
+    action: params.request.action,
+    queryText: params.request.queryText ?? null,
     mailboxId: params.request.mailboxId ?? null,
     mailboxEmail: params.request.mailboxEmail ?? null,
   });
@@ -303,8 +392,10 @@ async function runLocalInboxSearch(params: {
     return {
       scopedMailboxes,
       searchResult: {
+        action: params.request.action,
         candidates: [],
         coverage: createEmptyCoverage(
+          params.request.action,
           [
             params.request.mailboxId || params.request.mailboxEmail
               ? 'The requested mailbox is not available for local inbox retrieval.'
@@ -317,10 +408,12 @@ async function runLocalInboxSearch(params: {
 
   const searchResult = await searchInboxDocuments({
     userId: params.userId,
-    intent: params.request.intent,
+    action: params.request.action,
     mode: params.mode,
     profile: params.profile,
-    constraints: params.request.constraints,
+    queryText: params.request.queryText,
+    filters: params.request.filters,
+    options: params.request.options,
     mailboxes: scopedMailboxes,
     maxCandidates: params.budgets.maxCandidates,
     snippetChars: params.budgets.snippetChars,
@@ -343,6 +436,7 @@ export async function runEmailRetrieval(
   request: EmailRetrievalRequest,
   dependencies: EmailRetrievalDependencies,
 ): Promise<EmailEvidencePackDTO> {
+  const action = request.action;
   const mode: EmailRetrievalMode = request.mode ?? 'quick';
   const profile = normalizeRetrievalProfile(request.profile);
   const budgets = RETRIEVAL_BUDGETS_BY_PROFILE[profile][mode];
@@ -350,7 +444,8 @@ export async function runEmailRetrieval(
 
   if (!featureFlags.retrievalV2Enabled) {
     return createEmptyEvidencePack(
-      createEmptyCoverage([
+      action,
+      createEmptyCoverage(action, [
         'Local inbox retrieval is disabled by INBOX_RETRIEVAL_V2_ENABLED=false.',
       ], {
         fusionMethod: 'lexical-only',
@@ -363,6 +458,7 @@ export async function runEmailRetrieval(
   try {
     logger.info('[emailRetrievalSubagent] retrieval flags', {
       userId: dependencies.userId,
+      action,
       mode,
       profile,
       retrievalV2Enabled: featureFlags.retrievalV2Enabled,
@@ -383,7 +479,7 @@ export async function runEmailRetrieval(
     });
 
     if (scopedMailboxes.length === 0) {
-      return createEmptyEvidencePack(searchResult.coverage, [
+      return createEmptyEvidencePack(action, searchResult.coverage, [
         request.mailboxId || request.mailboxEmail
           ? 'I cannot find that mailbox locally yet. Want to choose another mailbox?'
           : 'I do not have any indexed mailbox data yet. Want to reconnect or wait for indexing?',
@@ -391,12 +487,22 @@ export async function runEmailRetrieval(
     }
 
     logger.info(
-      `[emailRetrievalSubagent] local retrieval profile=${profile} mode=${mode} mailboxes=${scopedMailboxes.length}`,
+      `[emailRetrievalSubagent] local retrieval profile=${profile} action=${action} mode=${mode} mailboxes=${scopedMailboxes.length}`,
     );
 
     logger.info(
       `[emailRetrievalSubagent] local candidates=${searchResult.candidates.length} scanned=${searchResult.coverage.messagesScanned} freshness=${searchResult.coverage.indexFreshness}`,
     );
+
+    if (action === 'count' || action === 'aggregate') {
+      return createCountOrAggregateEvidencePack({
+        action,
+        coverage: searchResult.coverage,
+        count: searchResult.count ?? 0,
+        aggregates: searchResult.aggregates,
+        groupBy: searchResult.groupBy,
+      });
+    }
 
     if (mode === 'quick') {
       if (searchResult.candidates.length === 0) {
@@ -409,33 +515,44 @@ export async function runEmailRetrieval(
           });
 
           if (escalated.result.searchResult.candidates.length > 0) {
-            return createDeterministicEvidencePack(
-              escalated.result.searchResult.candidates,
-              buildQuickEscalationCoverage(escalated.result.searchResult.coverage),
-              'deep',
-              escalated.metadata,
-            );
+            return createDeterministicEvidencePack({
+              action,
+              candidates: escalated.result.searchResult.candidates,
+              coverage: buildQuickEscalationCoverage(escalated.result.searchResult.coverage),
+              mode: 'deep',
+              metadata: escalated.metadata,
+              includeQuotes: request.options?.includeQuotes,
+              includeSnippets: request.options?.includeSnippets,
+            });
           }
 
           return createEmptyEvidencePack(
+            action,
             buildQuickEscalationCoverage(escalated.result.searchResult.coverage),
             ['I did not find a local match yet. Can you share a sender, subject, or timeframe?'],
             escalated.metadata,
           );
         }
 
-        return createEmptyEvidencePack(searchResult.coverage, [
+        return createEmptyEvidencePack(action, searchResult.coverage, [
           'I did not find a local match yet. Can you share a sender, subject, or timeframe?',
         ]);
       }
 
-      const quickPack = createDeterministicEvidencePack(
-        searchResult.candidates,
-        searchResult.coverage,
+      const quickPack = createDeterministicEvidencePack({
+        action,
+        candidates: searchResult.candidates,
+        coverage: searchResult.coverage,
         mode,
-      );
+        includeQuotes: request.options?.includeQuotes,
+        includeSnippets: request.options?.includeSnippets,
+      });
 
-      if (shouldEscalateQuickResult(quickPack) && !isTimeLow(dependencies.deadlineAt, 6_000)) {
+      if (
+        action === 'find' &&
+        shouldEscalateQuickResult(quickPack) &&
+        !isTimeLow(dependencies.deadlineAt, 6_000)
+      ) {
         const escalated = await runEscalatedQuickSearch({
           request,
           userId: dependencies.userId,
@@ -444,12 +561,15 @@ export async function runEmailRetrieval(
         });
 
         if (escalated.result.searchResult.candidates.length > 0) {
-          return createDeterministicEvidencePack(
-            escalated.result.searchResult.candidates,
-            buildQuickEscalationCoverage(escalated.result.searchResult.coverage),
-            'deep',
-            escalated.metadata,
-          );
+          return createDeterministicEvidencePack({
+            action,
+            candidates: escalated.result.searchResult.candidates,
+            coverage: buildQuickEscalationCoverage(escalated.result.searchResult.coverage),
+            mode: 'deep',
+            metadata: escalated.metadata,
+            includeQuotes: request.options?.includeQuotes,
+            includeSnippets: request.options?.includeSnippets,
+          });
         }
       }
 
@@ -457,23 +577,32 @@ export async function runEmailRetrieval(
     }
 
     if (searchResult.candidates.length === 0) {
-      return createEmptyEvidencePack(searchResult.coverage, [
+      return createEmptyEvidencePack(action, searchResult.coverage, [
         'I did not find a local match yet. Can you share a sender, subject, or timeframe?',
       ]);
     }
 
-    if (!featureFlags.llmRerankDeepOnly) {
-      return createDeterministicEvidencePack(
-        searchResult.candidates,
-        {
+    const shouldUseLlm =
+      action === 'summarize_range' ||
+      (action === 'find' && featureFlags.llmRerankDeepOnly);
+
+    if (!shouldUseLlm) {
+      return createDeterministicEvidencePack({
+        action,
+        candidates: searchResult.candidates,
+        coverage: {
           ...searchResult.coverage,
           budgetNotes: [
             ...(searchResult.coverage.budgetNotes ?? []),
-            'Skipped deep LLM rerank because INBOX_LLM_RERANK_DEEP_ONLY=false.',
+            action === 'find'
+              ? 'Skipped deep LLM rerank because INBOX_LLM_RERANK_DEEP_ONLY=false.'
+              : 'Used deterministic summary because LLM compression was not required.',
           ],
         },
         mode,
-      );
+        includeQuotes: request.options?.includeQuotes,
+        includeSnippets: request.options?.includeSnippets,
+      });
     }
 
     if (isTimeLow(dependencies.deadlineAt, 5_000)) {
@@ -485,11 +614,14 @@ export async function runEmailRetrieval(
         ],
       };
 
-      return createDeterministicEvidencePack(
-        searchResult.candidates,
+      return createDeterministicEvidencePack({
+        action,
+        candidates: searchResult.candidates,
         coverage,
         mode,
-      );
+        includeQuotes: request.options?.includeQuotes,
+        includeSnippets: request.options?.includeSnippets,
+      });
     }
 
     const prompt = buildEmailRetrievalPrompt({
@@ -501,7 +633,7 @@ export async function runEmailRetrieval(
     const { object } = await callObject<EmailEvidencePackDTO>({
       model: models.emailRetrieval(),
       system:
-        'You are an email retrieval specialist. Use only the provided local inbox candidates and return a precise evidence pack. Do not invent details.',
+        'You are an email retrieval specialist. Use only the provided local inbox candidates and return a precise evidence pack. Do not invent details or new filters.',
       prompt,
       schema: EmailEvidencePackSchema,
       temperature: 0.2,
@@ -513,6 +645,7 @@ export async function runEmailRetrieval(
 
     return {
       ...object,
+      action,
       coverage: searchResult.coverage,
     };
   } catch (error) {
@@ -520,7 +653,8 @@ export async function runEmailRetrieval(
     logger.error(`[emailRetrievalSubagent] Retrieval failed: ${message}`);
 
     return createEmptyEvidencePack(
-      createEmptyCoverage([`Local retrieval error: ${message}`]),
+      action,
+      createEmptyCoverage(action, [`Local retrieval error: ${message}`]),
       ['Something went wrong while searching. Want to retry with a sender or timeframe?'],
     );
   }
