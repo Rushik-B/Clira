@@ -243,7 +243,7 @@ describe('Executive agent selector', () => {
     ).toBe('inbox_context_pack');
   });
 
-  test('safety guard downgrades unsafe calendar_mutation_pack', () => {
+  test('calendar_mutation_pack is not downgraded by safety (LLM selector may detect intent from context)', () => {
     const input = buildInput({
       userRequest: 'what meetings do i have tomorrow?',
     });
@@ -253,8 +253,11 @@ describe('Executive agent selector', () => {
     });
 
     expect(features.calendarMutationIntent).toBe(false);
+    // calendar_mutation_pack is no longer blocked by enforcePackSafety —
+    // the LLM selector has conversation context and the per-tool allowlist
+    // in buildPackToolAllowlist gates dangerous tools at runtime.
     expect(
       enforcePackSafety('calendar_mutation_pack', features),
-    ).toBe('calendar_query_pack');
+    ).toBe('calendar_mutation_pack');
   });
 });

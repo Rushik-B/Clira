@@ -120,9 +120,14 @@ export function buildPackToolAllowlist(
     allowlist.delete('commit_calendar_change');
   }
 
+  // Remove plan_calendar_change unless:
+  // - regex detected mutation intent, OR
+  // - pending calendar change is being modified, OR
+  // - the selector explicitly chose calendar_mutation_pack (LLM detected intent from context)
   if (
     !features.calendarMutationIntent &&
-    !features.pendingCalendarModifyIntent
+    !features.pendingCalendarModifyIntent &&
+    packId !== 'calendar_mutation_pack'
   ) {
     allowlist.delete('plan_calendar_change');
   }

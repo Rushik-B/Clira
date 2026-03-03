@@ -445,6 +445,11 @@ function getDefaultPackReminders(packId: ToolPackId): string[] {
 /**
  * Bypass LLM routing for flows that are safety-critical or already explicit.
  * These branches are handled deterministically to avoid accidental escalation.
+ *
+ * Note: calendarMutationIntent is intentionally NOT a bypass condition.
+ * When the regex detects mutation intent it routes correctly, but when it
+ * misses (e.g. anaphoric "put it in my calendar too"), we need the LLM to
+ * reason from conversation context. The LLM path handles both cases.
  */
 function shouldBypassLlmSelector(features: ExecutiveTurnFeatures): boolean {
   return (
@@ -453,7 +458,6 @@ function shouldBypassLlmSelector(features: ExecutiveTurnFeatures): boolean {
       (features.pendingCalendarConfirmIntent ||
         features.pendingCalendarCancelIntent ||
         features.pendingCalendarModifyIntent)) ||
-    features.calendarMutationIntent ||
     features.reminderIntent ||
     features.alertIntent
   );
@@ -462,6 +466,13 @@ function shouldBypassLlmSelector(features: ExecutiveTurnFeatures): boolean {
 /**
  * Final safety firewall for any non-deterministic selector output.
  * If an unsafe pack is suggested, downgrade to the nearest safe read-only pack.
+ *
+ * Note: calendar_mutation_pack is no longer blocked here because the LLM
+ * selector now has conversation context to detect mutation intent that regex
+ * misses (e.g. anaphoric "put it in my calendar too"). The per-tool allowlist
+ * in buildPackToolAllowlist still gates dangerous tools like commit_calendar_change.
+ * Only email_send_pack retains a hard block because it requires verified DB state
+ * (draft present + explicit approval) that the LLM cannot infer.
  */
 export function enforcePackSafety(
   packId: ToolPackId,
@@ -474,53 +485,102 @@ export function enforcePackSafety(
     return 'inbox_context_pack';
   }
 
-  if (packId === 'calendar_mutation_pack') {
-    const canMutateCalendar =
-      features.calendarMutationIntent ||
-      (features.pendingCalendarChangePresent &&
-        (features.pendingCalendarConfirmIntent ||
-          features.pendingCalendarCancelIntent ||
-          features.pendingCalendarModifyIntent));
-    if (!canMutateCalendar) {
-      return 'calendar_query_pack';
-    }
-  }
-
   return packId;
 }
 
 /**
- * Compact classifier prompt for the optional LLM router.
- * We provide extracted features as the source of truth to reduce prompt variance
- * and keep routing decisions deterministic across equivalent paraphrases.
+ * Formats recent conversation history into a compact string for the LLM selector.
+ * Only includes the last few messages, trimming stale ones older than the cutoff.
+ */
+function formatRecentHistory(
+  history: ConversationMessageDTO[],
+  maxMessages = 6,
+  staleCutoffMs = 30 * 60 * 1000, // 30 minutes
+): string {
+  const now = Date.now();
+  const recent = history
+    .slice(-maxMessages)
+    .filter((msg) => now - msg.createdAt.getTime() < staleCutoffMs);
+
+  if (recent.length === 0) return '(no recent conversation history)';
+
+  return recent
+    .map((msg) => {
+      const role = msg.role === 'USER' ? 'User' : 'Assistant';
+      const time = msg.createdAt.toISOString();
+      const content = (msg.content ?? '').slice(0, 300);
+      return `[${time}] ${role}: ${content}`;
+    })
+    .join('\n');
+}
+
+/**
+ * LLM selector prompt that gives the model conversation context and rich pack
+ * descriptions so it can reason about intent semantically — including anaphoric
+ * references like "put it in my calendar too" that regex cannot resolve.
+ *
+ * Hard state facts (draft present, pending calendar change) are still passed as
+ * constraints so the LLM doesn't need to infer DB state.
  */
 function buildSelectorPrompt(params: {
   userRequest: string;
   features: ExecutiveTurnFeatures;
+  conversationHistory: ConversationMessageDTO[];
 }): string {
-  const { userRequest, features } = params;
+  const { userRequest, features, conversationHistory } = params;
+
+  const hardState = [
+    `draftCandidatePresent: ${features.draftCandidatePresent}`,
+    `explicitSendApproval: ${features.explicitSendApproval}`,
+    `pendingCalendarChangePresent: ${features.pendingCalendarChangePresent}`,
+  ].join(', ');
+
   return [
     'You route the current user message to exactly one executive tool pack.',
-    'Choose the MINIMUM safe pack that still has enough tools to answer well.',
+    'Choose the MINIMUM safe pack that still has enough tools to fulfil the request.',
     '',
-    'Pack semantics:',
-    '- core_recall_pack: memory recall only',
-    '- inbox_context_pack: email/comms context lookups',
-    '- calendar_query_pack: read-only calendar/inbox context',
-    '- calendar_mutation_pack: planning/committing calendar edits',
-    '- reminder_alert_pack: reminder/alert CRUD actions',
-    '- email_send_pack: send an already approved existing draft',
+    '## Tool packs (pick exactly one)',
     '',
-    'Hard constraints:',
-    '- Never pick email_send_pack without explicit send approval + draft candidate present.',
-    '- Never pick calendar_mutation_pack unless this turn/pending state clearly asks for calendar mutation.',
+    '**core_recall_pack** — Memory recall only.',
+    '  Use when: user asks about something you should already know, personal facts, preferences.',
+    '  Tools: search_memory, append_to_supermemory',
     '',
-    `User message: ${userRequest}`,
+    '**inbox_context_pack** — Email & comms context lookups.',
+    '  Use when: user asks about emails, messages, what someone said/wrote, inbox search.',
+    '  Tools: search_inbox_context, search_calendar + memory tools',
     '',
-    'Extracted turn features (truth):',
-    JSON.stringify(features),
+    '**calendar_query_pack** — Read-only calendar & schedule queries.',
+    '  Use when: user asks what is on their calendar, availability, meetings, workload overview.',
+    '  Tools: check_calendar, search_calendar, search_inbox_context + memory tools',
     '',
-    'Return JSON with packId, reason, confidence (0-1).',
+    '**calendar_mutation_pack** — Create, modify, or delete calendar events.',
+    '  Use when: user wants to ADD, BOOK, SCHEDULE, BLOCK, MOVE, CANCEL, or PUT something on their calendar.',
+    '  This includes follow-up requests like "put it in my calendar too", "add that to my cal", "book it".',
+    '  Tools: plan_calendar_change, commit_calendar_change, check_calendar + memory tools',
+    '',
+    '**reminder_alert_pack** — Reminder & alert CRUD.',
+    '  Use when: user wants to set, snooze, dismiss, list, or cancel reminders or email alerts.',
+    '  Tools: add_reminder, list_reminders, snooze_reminder, dismiss_reminder, cancel_reminder, add_email_alert, remove_email_alert, list_email_alerts',
+    '',
+    '**email_send_pack** — Send an already-drafted email.',
+    '  Use when: a draft is present AND user explicitly approves sending it.',
+    '  Tools: send_email, search_inbox_context + memory tools',
+    '',
+    '## Hard constraints',
+    '- NEVER pick email_send_pack unless explicitSendApproval=true AND draftCandidatePresent=true.',
+    '- NEVER pick calendar_mutation_pack for pure read/query requests (e.g. "what meetings do I have?").',
+    '- DO pick calendar_mutation_pack when the user wants to CREATE or MODIFY calendar events, even if they use anaphoric language ("put it on my calendar", "add that too", "book it").',
+    '',
+    '## Conversation context',
+    formatRecentHistory(conversationHistory),
+    '',
+    `## Current user message`,
+    userRequest,
+    '',
+    '## State facts (from system, treat as ground truth)',
+    hardState,
+    '',
+    'Return JSON: { packId, reason, confidence }.',
   ].join('\n');
 }
 
@@ -655,6 +715,7 @@ export async function selectExecutiveToolPackForTurn(params: {
       prompt: buildSelectorPrompt({
         userRequest: params.input.userRequest,
         features: params.features,
+        conversationHistory: params.input.conversationHistory,
       }),
       schema: selectorOutputSchema,
       temperature: 0,
