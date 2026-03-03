@@ -1,23 +1,27 @@
-import * as chrono from 'chrono-node';
 import { z } from 'zod';
 import { logger } from '@/lib/logger';
 import { prisma } from '@/lib/prisma';
+import { readPromptFile } from '@/lib/prompts';
 import {
   getCalendarSnapshot,
   gatherMemoryContextForReply,
 } from '@/lib/services/core/replyContextTools';
 import {
   addDaysToDateOnly,
-  getDateOnlyInTimezone,
-  getUserReferenceDate,
   endOfDayInTimezone,
   endOfTodayInTimezone,
+  getDateOnlyInTimezone,
   normalizeIsoDateInputToUtc,
   startOfDayInTimezone,
 } from '@/lib/utils/timezone';
 import { runCalendarAnalysis } from '@/lib/ai/agents/calendarAnalysisSubagent';
 import { runCalendarSearch } from '@/lib/ai/agents/calendarSearchSubagent';
 import { runEmailRetrieval } from '@/lib/ai/agents/emailRetrievalSubagent';
+import {
+  normalizeSearchInboxContextArgs,
+  searchInboxContextArgsSchema,
+  searchInboxContextProviderSchema,
+} from '../search-inbox-context-contract';
 import { isSupermemoryConfigured } from '@/lib/services/supermemory/client';
 import {
   CALENDAR_SEARCH_MIN_BUDGET_MS,
@@ -33,43 +37,46 @@ import type {
   SearchInboxContextArgs,
 } from '../types';
 
-const INBOX_DATE_HINT_REGEX =
-  /\b(today|tomorrow|yesterday|tonight|this morning|this afternoon|this evening|last night|monday|tuesday|wednesday|thursday|friday|saturday|sunday|jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|\d{4}-\d{2}-\d{2}|\d{1,2}(?:st|nd|rd|th))\b/i;
+const searchInboxContextToolDescription = readPromptFile(
+  'executive-agent/searchInboxContextTool.md',
+);
 
-function inferInboxDateConstraints(params: {
-  intent: string;
-  constraints?: SearchInboxContextArgs['constraints'];
-  userTimezone: string;
-  currentTimeUtc: string;
-}): SearchInboxContextArgs['constraints'] {
-  const existingConstraints = params.constraints;
-  if (existingConstraints?.startDate || existingConstraints?.endDate) {
-    return existingConstraints;
-  }
-
-  if (!INBOX_DATE_HINT_REGEX.test(params.intent)) {
-    return existingConstraints;
-  }
-
-  const referenceDate = getUserReferenceDate(new Date(params.currentTimeUtc), params.userTimezone);
-  const parsedResults = chrono.parse(params.intent, referenceDate, {
-    forwardDate: false,
-  });
-  const parsedDate = parsedResults[0]?.start?.date();
-
-  if (!parsedDate || Number.isNaN(parsedDate.getTime())) {
-    return existingConstraints;
-  }
-
-  const inferredDateOnly = `${String(parsedDate.getUTCFullYear()).padStart(4, '0')}-${String(
-    parsedDate.getUTCMonth() + 1,
-  ).padStart(2, '0')}-${String(parsedDate.getUTCDate()).padStart(2, '0')}`;
-  const nextDateOnly = addDaysToDateOnly(inferredDateOnly, 1);
+function buildInvalidInboxSearchResult(args: unknown, message: string) {
+  const action =
+    args && typeof args === 'object' && typeof (args as { action?: unknown }).action === 'string'
+      ? (args as { action: 'find' | 'summarize_range' | 'count' | 'aggregate' }).action
+      : 'find';
 
   return {
-    ...existingConstraints,
-    startDate: startOfDayInTimezone(inferredDateOnly, params.userTimezone).toISOString(),
-    endDate: startOfDayInTimezone(nextDateOnly, params.userTimezone).toISOString(),
+    action,
+    matches: [],
+    quotes: [],
+    coverage: {
+      action,
+      queriesTried: [],
+      threadsScanned: 0,
+      messagesScanned: 0,
+      timeWindow: 'unknown',
+      pagesFetched: 0,
+      truncated: false,
+      filterOnly: true,
+      appliedFilters: [],
+      budgetNotes: [message],
+      engineVersion: 'inbox-search-v2-hybrid' as const,
+      indexFreshness: 'unknown' as const,
+      retrievalLatencyMs: 0,
+      lexicalCandidates: 0,
+      semanticCandidates: 0,
+      fusionMethod: 'lexical-only' as const,
+      indexLag: null,
+      semanticUnavailable: true,
+    },
+    confidence: 'low' as const,
+    metadata: {
+      validationError: true,
+    },
+    summary: message,
+    followUpQuestions: [message],
   };
 }
 
@@ -138,56 +145,28 @@ export function buildContextTools({
       // Tool 1: Search Inbox Context
       // ─────────────────────────────────────────────────────────────────────────
       search_inbox_context: {
-        description:
-          'Search the user inbox and return a compact evidence pack with ranked matches, quotes, and coverage. ' +
-          'Use deep for analytical, quantitative, or aggregative questions (totals, counts, sums, patterns, temporal summaries, or any question requiring data from many emails)—deep returns broader coverage for accurate calculation. Use quick for simple lookup (one email, recent thread, contact). Also use deep for exact wording, attachments, or when quick results are weak. This tool does not dump raw emails. You may perform any analysis over the evidence (aggregations, calculations, inference) and report clearly.',
-        inputSchema: z
-          .object({
-            mode: z.enum(['quick', 'deep']).optional().describe('Use "deep" for analytical/aggregative questions or broad coverage; "quick" for simple lookup. Default: quick.'),
-            intent: z
-              .string()
-              .min(1)
-              .max(500)
-              .describe('Natural language description of the email to find'),
-            mailboxId: z
-              .string()
-              .optional()
-              .describe('Optional mailbox ID to restrict local retrieval to one connected mailbox'),
-            mailboxEmail: z
-              .string()
-              .optional()
-              .describe('Optional mailbox email to restrict local retrieval to one connected mailbox'),
-            constraints: z
-              .object({
-                sender: z.string().optional().describe('Sender email or name'),
-                recipient: z.string().optional().describe('Recipient email or name'),
-                keywords: z.array(z.string()).max(8).optional().describe('Keywords or phrases'),
-                subject: z.string().optional().describe('Subject hint or fragment'),
-                timeWindow: z
-                  .enum(['recent', 'last_month', 'last_year', 'all_time'])
-                  .optional()
-                  .describe('Time window hint'),
-                startDate: z.string().optional().describe('ISO start date'),
-                endDate: z.string().optional().describe('ISO end date'),
-                hasAttachment: z.boolean().optional().describe('Require attachments'),
-              })
-              .optional(),
-          }),
+        description: searchInboxContextToolDescription,
+        inputSchema: searchInboxContextArgsSchema,
+        providerInputSchema: searchInboxContextProviderSchema,
         execute: async (args: SearchInboxContextArgs) => {
-          const mode = args.mode ?? 'quick';
-          const intent = args.intent?.trim() || input.userRequest;
-          const normalizedConstraints = inferInboxDateConstraints({
-            intent,
-            constraints: args.constraints,
-            userTimezone,
-            currentTimeUtc,
-          });
+          let normalizedArgs;
+          try {
+            normalizedArgs = normalizeSearchInboxContextArgs(args, {
+              defaultTimezone: userTimezone,
+            });
+          } catch (error) {
+            const message = error instanceof Error ? error.message : 'Invalid inbox search request.';
+            logger.warn('[executiveAgent] search_inbox_context invalid args', {
+              userId: input.userId,
+              message,
+              args,
+            });
+            return buildInvalidInboxSearchResult(args, message);
+          }
+
+          const mode = normalizedArgs.mode;
           const cacheArgs = {
-            mode,
-            intent,
-            constraints: normalizedConstraints,
-            mailboxId: args.mailboxId,
-            mailboxEmail: args.mailboxEmail,
+            ...normalizedArgs,
           };
           const inboxMinStoredAtMs = await getInboxMinStoredAtMs();
           const cachedResult = toolResultCache.get('search_inbox_context', cacheArgs, {
@@ -195,7 +174,7 @@ export function buildContextTools({
           });
           if (cachedResult) {
             logger.info(
-              `[executiveAgent] search_inbox_context cache hit: mode=${mode} intent="${truncate(intent, 80)}"`,
+              `[executiveAgent] search_inbox_context cache hit: action=${normalizedArgs.action} mode=${mode} query="${truncate(normalizedArgs.queryText ?? '(none)', 80)}"`,
             );
             return cachedResult;
           }
@@ -222,7 +201,7 @@ export function buildContextTools({
           }
 
           logger.info(
-            `[executiveAgent] search_inbox_context: mode=${mode} intent="${truncate(intent, 80)}"`,
+            `[executiveAgent] search_inbox_context: action=${normalizedArgs.action} mode=${mode} query="${truncate(normalizedArgs.queryText ?? '(none)', 80)}"`,
           );
 
           const toolCallIndex = nextSubagentCallIndex();
@@ -235,11 +214,13 @@ export function buildContextTools({
             run: (budgetContext) =>
               runEmailRetrieval(
                 {
-                  intent,
+                  action: normalizedArgs.action,
                   mode,
-                  mailboxId: args.mailboxId,
-                  mailboxEmail: args.mailboxEmail,
-                  constraints: normalizedConstraints,
+                  mailboxId: normalizedArgs.mailboxId,
+                  mailboxEmail: normalizedArgs.mailboxEmail,
+                  queryText: normalizedArgs.queryText,
+                  filters: normalizedArgs.filters,
+                  options: normalizedArgs.options,
                   profile: retrievalProfile,
                 },
                 {

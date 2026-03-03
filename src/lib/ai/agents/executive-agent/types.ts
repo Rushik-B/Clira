@@ -3,6 +3,9 @@ import type {
   ProgressUpdateContext,
 } from '@/lib/ai/tools/sendProgressUpdate';
 import type {
+  InboxSearchToolArgs,
+} from '@/lib/services/inbox-search/types';
+import type {
   ConversationMessageDTO,
 } from '@/lib/ai/schemas/executiveAgentSchemas';
 import type { Prisma, PendingCalendarChangeStatus } from '@prisma/client';
@@ -143,22 +146,7 @@ export interface PromptContext {
   currentDateUserTzDateOnly: string;
 }
 
-export type SearchInboxContextArgs = {
-  mode?: 'quick' | 'deep';
-  intent: string;
-  mailboxId?: string;
-  mailboxEmail?: string;
-  constraints?: {
-    sender?: string;
-    recipient?: string;
-    keywords?: string[];
-    subject?: string;
-    timeWindow?: 'recent' | 'last_month' | 'last_year' | 'all_time';
-    startDate?: string;
-    endDate?: string;
-    hasAttachment?: boolean;
-  };
-};
+export type SearchInboxContextArgs = InboxSearchToolArgs;
 
 export type RetrievalProfile = 'default' | 'messaging';
 

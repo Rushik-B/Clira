@@ -55,6 +55,7 @@ import {
   type ExecutiveToolResultCacheStats,
 } from './toolResultReuseCache';
 import { stripCacheDebugMetadataForPersistence } from './persistence';
+import { normalizeExecutiveAgentToolsForModel } from './tool-schema-normalization';
 import { createInitialWorkingState, createWorkingStateController } from './workingState';
 import type {
   ExecutiveAgentInput,
@@ -287,6 +288,9 @@ export class ExecutiveAgent {
           }
         },
       });
+      const modelTools = normalizeExecutiveAgentToolsForModel(
+        timedTools as Record<string, any>,
+      );
 
       const stopConditions = [stopWhenToolCalled('send_email')];
 
@@ -314,7 +318,7 @@ export class ExecutiveAgent {
             model: models.execAgent(),
             system: promptSystemPrompt,
             messages,
-            tools: timedTools,
+            tools: modelTools,
             timeLeftMs: () => toolAbort!.timeLeftMs(),
             maxSteps: MESSAGING_MAX_STEPS,
             maxToolCallsTotal: MESSAGING_MAX_TOOL_CALLS_TOTAL,
@@ -333,7 +337,7 @@ export class ExecutiveAgent {
             model: models.execAgent(),
             system: promptSystemPrompt,
             messages,
-            tools: timedTools,
+            tools: modelTools,
             maxSteps: MESSAGING_MAX_STEPS,
             maxToolCallsTotal: MESSAGING_MAX_TOOL_CALLS_TOTAL,
             maxToolCallsPerTool: activeToolBudgets,
