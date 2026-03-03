@@ -197,18 +197,24 @@ function extractKeywords(text: string, limit = 6): string[] {
   return Array.from(new Set(tokens)).slice(0, limit);
 }
 
-function parseDateInput(value?: string): Date | null {
+function parseDateInput(value?: string): { date: Date | null; isDateOnly: boolean } {
   if (!value) {
-    return null;
+    return { date: null, isDateOnly: false };
   }
 
   const dateOnlyMatch = value.match(/^(\d{4}-\d{2}-\d{2})$/);
   if (dateOnlyMatch) {
-    return new Date(`${dateOnlyMatch[1]}T00:00:00.000Z`);
+    return {
+      date: new Date(`${dateOnlyMatch[1]}T00:00:00.000Z`),
+      isDateOnly: true,
+    };
   }
 
   const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? null : parsed;
+  return {
+    date: Number.isNaN(parsed.getTime()) ? null : parsed,
+    isDateOnly: false,
+  };
 }
 
 function addDays(date: Date, days: number): Date {
@@ -227,13 +233,15 @@ function resolveTimeWindow(params: {
   const explicitStartDate = parseDateInput(params.constraints?.startDate);
   const explicitEndDate = parseDateInput(params.constraints?.endDate);
   const explicitEndDateExclusive =
-    params.constraints?.endDate && explicitEndDate
-      ? addDays(explicitEndDate, 1)
+    params.constraints?.endDate && explicitEndDate.date
+      ? explicitEndDate.isDateOnly
+        ? addDays(explicitEndDate.date, 1)
+        : explicitEndDate.date
       : null;
 
-  if (explicitStartDate || explicitEndDateExclusive) {
+  if (explicitStartDate.date || explicitEndDateExclusive) {
     return {
-      startDate: explicitStartDate,
+      startDate: explicitStartDate.date,
       endDateExclusive: explicitEndDateExclusive,
       timeWindowLabel: `${params.constraints?.startDate ?? '...'} to ${params.constraints?.endDate ?? '...'}`,
     };

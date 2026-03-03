@@ -1,3 +1,4 @@
+import * as chrono from 'chrono-node';
 import { z } from 'zod';
 import { logger } from '@/lib/logger';
 import { prisma } from '@/lib/prisma';
@@ -6,10 +7,11 @@ import {
   gatherMemoryContextForReply,
 } from '@/lib/services/core/replyContextTools';
 import {
+  addDaysToDateOnly,
+  getDateOnlyInTimezone,
+  getUserReferenceDate,
   endOfDayInTimezone,
   endOfTodayInTimezone,
-  getDateOnlyInTimezone,
-  addDaysToDateOnly,
   normalizeIsoDateInputToUtc,
   startOfDayInTimezone,
 } from '@/lib/utils/timezone';
@@ -30,6 +32,46 @@ import type {
   ExecutiveRuntimeContext,
   SearchInboxContextArgs,
 } from '../types';
+
+const INBOX_DATE_HINT_REGEX =
+  /\b(today|tomorrow|yesterday|tonight|this morning|this afternoon|this evening|last night|monday|tuesday|wednesday|thursday|friday|saturday|sunday|jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|\d{4}-\d{2}-\d{2}|\d{1,2}(?:st|nd|rd|th))\b/i;
+
+function inferInboxDateConstraints(params: {
+  intent: string;
+  constraints?: SearchInboxContextArgs['constraints'];
+  userTimezone: string;
+  currentTimeUtc: string;
+}): SearchInboxContextArgs['constraints'] {
+  const existingConstraints = params.constraints;
+  if (existingConstraints?.startDate || existingConstraints?.endDate) {
+    return existingConstraints;
+  }
+
+  if (!INBOX_DATE_HINT_REGEX.test(params.intent)) {
+    return existingConstraints;
+  }
+
+  const referenceDate = getUserReferenceDate(new Date(params.currentTimeUtc), params.userTimezone);
+  const parsedResults = chrono.parse(params.intent, referenceDate, {
+    forwardDate: false,
+  });
+  const parsedDate = parsedResults[0]?.start?.date();
+
+  if (!parsedDate || Number.isNaN(parsedDate.getTime())) {
+    return existingConstraints;
+  }
+
+  const inferredDateOnly = `${String(parsedDate.getUTCFullYear()).padStart(4, '0')}-${String(
+    parsedDate.getUTCMonth() + 1,
+  ).padStart(2, '0')}-${String(parsedDate.getUTCDate()).padStart(2, '0')}`;
+  const nextDateOnly = addDaysToDateOnly(inferredDateOnly, 1);
+
+  return {
+    ...existingConstraints,
+    startDate: startOfDayInTimezone(inferredDateOnly, params.userTimezone).toISOString(),
+    endDate: startOfDayInTimezone(nextDateOnly, params.userTimezone).toISOString(),
+  };
+}
 
 export function buildContextTools({
   context,
@@ -134,10 +176,16 @@ export function buildContextTools({
         execute: async (args: SearchInboxContextArgs) => {
           const mode = args.mode ?? 'quick';
           const intent = args.intent?.trim() || input.userRequest;
+          const normalizedConstraints = inferInboxDateConstraints({
+            intent,
+            constraints: args.constraints,
+            userTimezone,
+            currentTimeUtc,
+          });
           const cacheArgs = {
             mode,
             intent,
-            constraints: args.constraints,
+            constraints: normalizedConstraints,
             mailboxId: args.mailboxId,
             mailboxEmail: args.mailboxEmail,
           };
@@ -191,7 +239,7 @@ export function buildContextTools({
                   mode,
                   mailboxId: args.mailboxId,
                   mailboxEmail: args.mailboxEmail,
-                  constraints: args.constraints,
+                  constraints: normalizedConstraints,
                   profile: retrievalProfile,
                 },
                 {

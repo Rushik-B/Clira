@@ -30,6 +30,10 @@ const supermemoryMocks = vi.hoisted(() => ({
   isSupermemoryConfigured: vi.fn(),
 }));
 
+const prismaMocks = vi.hoisted(() => ({
+  mailboxFindMany: vi.fn(),
+}));
+
 vi.mock('@/lib/ai/agents/emailRetrievalSubagent', () => ({
   runEmailRetrieval: retrievalMocks.runEmailRetrieval,
 }));
@@ -55,6 +59,14 @@ vi.mock('@/lib/ai/agents/calendarSearchSubagent', () => ({
 
 vi.mock('@/lib/services/supermemory/client', () => ({
   isSupermemoryConfigured: supermemoryMocks.isSupermemoryConfigured,
+}));
+
+vi.mock('@/lib/prisma', () => ({
+  prisma: {
+    mailbox: {
+      findMany: prismaMocks.mailboxFindMany,
+    },
+  },
 }));
 
 const { buildContextTools } = await import(
@@ -97,6 +109,96 @@ function createEvidencePack(overrides: Record<string, unknown> = {}) {
     confidence: 'high',
     followUpQuestions: [],
     ...overrides,
+  };
+}
+
+function normalizeCacheValue(value: unknown): unknown {
+  if (typeof value === 'string') {
+    return value.trim().replace(/\s+/g, ' ').toLowerCase();
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((item) => normalizeCacheValue(item)).sort();
+  }
+
+  if (!value || typeof value !== 'object') {
+    return value;
+  }
+
+  const entries = Object.entries(value)
+    .filter(([, itemValue]) => itemValue !== undefined)
+    .map(([key, itemValue]) => [key, normalizeCacheValue(itemValue)] as const)
+    .sort(([left], [right]) => left.localeCompare(right));
+
+  return Object.fromEntries(entries);
+}
+
+function createMockToolResultCache() {
+  const cache = new Map<string, unknown>();
+
+  const buildKey = (toolName: string, args: unknown) =>
+    `${toolName}:${JSON.stringify(normalizeCacheValue(args))}`;
+
+  return {
+    get(toolName: string, args: unknown) {
+      const key = buildKey(toolName, args);
+      const cached = cache.get(key);
+      if (!cached || typeof cached !== 'object' || cached === null) {
+        return cached ?? null;
+      }
+
+      return {
+        ...cached,
+        metadata: {
+          ...((cached as Record<string, unknown>).metadata as Record<string, unknown> | undefined),
+          cached: true,
+        },
+      };
+    },
+    set(toolName: string, args: unknown, result: unknown) {
+      cache.set(buildKey(toolName, args), result);
+    },
+    noteMutation() {},
+    getStats() {
+      return {
+        search_inbox_context: {
+          history_hit: 0,
+          runtime_hit: 0,
+          miss_not_found: 0,
+          miss_expired: 0,
+          miss_invalidated: 0,
+          set_ok: 0,
+          set_skipped_non_cacheable: 0,
+        },
+        search_calendar: {
+          history_hit: 0,
+          runtime_hit: 0,
+          miss_not_found: 0,
+          miss_expired: 0,
+          miss_invalidated: 0,
+          set_ok: 0,
+          set_skipped_non_cacheable: 0,
+        },
+        check_calendar: {
+          history_hit: 0,
+          runtime_hit: 0,
+          miss_not_found: 0,
+          miss_expired: 0,
+          miss_invalidated: 0,
+          set_ok: 0,
+          set_skipped_non_cacheable: 0,
+        },
+        search_memory: {
+          history_hit: 0,
+          runtime_hit: 0,
+          miss_not_found: 0,
+          miss_expired: 0,
+          miss_invalidated: 0,
+          set_ok: 0,
+          set_skipped_non_cacheable: 0,
+        },
+      };
+    },
   };
 }
 
@@ -148,6 +250,7 @@ function createContext() {
     isRunCurrent: async () => true,
     isBurstStable: () => true,
     onMemoryStored: vi.fn(),
+    toolResultCache: createMockToolResultCache(),
   };
 }
 
@@ -169,6 +272,7 @@ describe('buildContextTools search_inbox_context', () => {
     );
     retrievalMocks.runEmailRetrieval.mockResolvedValue(createEvidencePack());
     supermemoryMocks.isSupermemoryConfigured.mockReturnValue(false);
+    prismaMocks.mailboxFindMany.mockResolvedValue([]);
   });
 
   test('memoizes duplicate inbox calls within one run and marks cached reuse', async () => {
@@ -240,6 +344,29 @@ describe('buildContextTools search_inbox_context', () => {
       counts: { total: 2, tool: 2 },
       budgetExceeded: true,
     });
+  });
+
+  test('infers user-local day constraints from inbox date requests', async () => {
+    const tools = buildContextTools({
+      context: createContext(),
+      nextSubagentCallIndex: () => 0,
+    }) as Record<string, { execute: (args: Record<string, unknown>) => Promise<unknown> }>;
+
+    await tools.search_inbox_context.execute({
+      mode: 'deep',
+      intent: 'check my inbox for 25th feb and tell me what happened',
+    });
+
+    expect(retrievalMocks.runEmailRetrieval).toHaveBeenCalledWith(
+      expect.objectContaining({
+        intent: 'check my inbox for 25th feb and tell me what happened',
+        constraints: expect.objectContaining({
+          startDate: '2026-02-25T08:00:00.000Z',
+          endDate: '2026-02-26T08:00:00.000Z',
+        }),
+      }),
+      expect.any(Object),
+    );
   });
 
   test('memory and calendar context tools keep existing local behavior', async () => {
