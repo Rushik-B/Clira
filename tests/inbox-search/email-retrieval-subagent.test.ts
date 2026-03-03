@@ -66,9 +66,11 @@ describe('runEmailRetrieval', () => {
     ]);
     promptMocks.readPromptFile.mockReturnValue(
       [
-        'Request: {userRequest}',
+        'Action: {action}',
+        'Query: {queryText}',
         'Mode: {mode}',
-        'Constraints: {constraintsJson}',
+        'Filters: {filtersJson}',
+        'Options: {optionsJson}',
         'Coverage: {coverageJson}',
         'Candidates: {candidatesJson}',
       ].join('\n'),
@@ -78,6 +80,7 @@ describe('runEmailRetrieval', () => {
 
   test('returns deterministic evidence pack in quick mode without LLM rerank', async () => {
     inboxSearchMocks.searchInboxDocuments.mockResolvedValue({
+      action: 'find',
       candidates: [
         {
           documentId: 'doc-1',
@@ -104,12 +107,15 @@ describe('runEmailRetrieval', () => {
         },
       ],
       coverage: {
+        action: 'find',
         queriesTried: ['fts=kickoff budget'],
         threadsScanned: 1,
         messagesScanned: 1,
         timeWindow: 'last 180 days',
         pagesFetched: 0,
         truncated: false,
+        filterOnly: false,
+        appliedFilters: [],
         budgetNotes: [],
         engineVersion: 'inbox-search-v2-hybrid',
         indexFreshness: 'fresh',
@@ -124,7 +130,8 @@ describe('runEmailRetrieval', () => {
 
     const result = await runEmailRetrieval(
       {
-        intent: 'Find kickoff budget email',
+        action: 'find',
+        queryText: 'Find kickoff budget email',
         mode: 'quick',
       },
       {
@@ -142,14 +149,18 @@ describe('runEmailRetrieval', () => {
   test('escalates weak quick retrieval internally before returning', async () => {
     inboxSearchMocks.searchInboxDocuments
       .mockResolvedValueOnce({
+        action: 'find',
         candidates: [],
         coverage: {
+          action: 'find',
           queriesTried: ['fts=invoice'],
           threadsScanned: 0,
           messagesScanned: 0,
           timeWindow: 'last 180 days',
           pagesFetched: 0,
           truncated: false,
+          filterOnly: false,
+          appliedFilters: [],
           budgetNotes: [],
           engineVersion: 'inbox-search-v2-hybrid',
           indexFreshness: 'unknown',
@@ -162,6 +173,7 @@ describe('runEmailRetrieval', () => {
         },
       })
       .mockResolvedValueOnce({
+        action: 'find',
         candidates: [
           {
             documentId: 'doc-2',
@@ -188,12 +200,15 @@ describe('runEmailRetrieval', () => {
           },
         ],
         coverage: {
+          action: 'find',
           queriesTried: ['fts=invoice | escalated=deep'],
           threadsScanned: 1,
           messagesScanned: 1,
           timeWindow: 'all time',
           pagesFetched: 0,
           truncated: false,
+          filterOnly: false,
+          appliedFilters: [],
           budgetNotes: [],
           engineVersion: 'inbox-search-v2-hybrid',
           indexFreshness: 'fresh',
@@ -208,7 +223,8 @@ describe('runEmailRetrieval', () => {
 
     const result = await runEmailRetrieval(
       {
-        intent: 'Find the invoice email',
+        action: 'find',
+        queryText: 'Find the invoice email',
         mode: 'quick',
       },
       {
@@ -230,6 +246,7 @@ describe('runEmailRetrieval', () => {
 
   test('uses deep LLM compression over local candidates when enabled', async () => {
     inboxSearchMocks.searchInboxDocuments.mockResolvedValue({
+      action: 'find',
       candidates: [
         {
           documentId: 'doc-1',
@@ -256,12 +273,15 @@ describe('runEmailRetrieval', () => {
         },
       ],
       coverage: {
+        action: 'find',
         queriesTried: ['fts=kickoff budget'],
         threadsScanned: 1,
         messagesScanned: 1,
         timeWindow: 'all time',
         pagesFetched: 0,
         truncated: false,
+        filterOnly: false,
+        appliedFilters: [],
         budgetNotes: [],
         engineVersion: 'inbox-search-v2-hybrid',
         indexFreshness: 'fresh',
@@ -276,6 +296,7 @@ describe('runEmailRetrieval', () => {
 
     llmMocks.callObject.mockResolvedValue({
       object: {
+        action: 'find',
         matches: [
           {
             threadId: 'thread-1',
@@ -291,12 +312,15 @@ describe('runEmailRetrieval', () => {
         ],
         quotes: [],
         coverage: {
+          action: 'find',
           queriesTried: [],
           threadsScanned: 0,
           messagesScanned: 0,
           timeWindow: 'unknown',
           pagesFetched: 0,
           truncated: false,
+          filterOnly: false,
+          appliedFilters: [],
         },
         confidence: 'high',
         followUpQuestions: [],
@@ -305,7 +329,8 @@ describe('runEmailRetrieval', () => {
 
     const result = await runEmailRetrieval(
       {
-        intent: 'Summarize kickoff email evidence',
+        action: 'find',
+        queryText: 'Summarize kickoff email evidence',
         mode: 'deep',
       },
       {
@@ -329,7 +354,8 @@ describe('runEmailRetrieval', () => {
 
     const result = await runEmailRetrieval(
       {
-        intent: 'find latest vendor invoice',
+        action: 'find',
+        queryText: 'find latest vendor invoice',
         mode: 'quick',
       },
       {

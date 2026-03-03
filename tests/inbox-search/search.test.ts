@@ -11,41 +11,49 @@ import {
 } from '@/lib/services/inbox-search/scoring';
 
 describe('buildInboxSearchPlan', () => {
-  test('builds lexical terms and all-time deep window from intent + constraints', () => {
+  test('builds lexical terms from queryText and keeps subjectContains as a filter hint', () => {
     const plan = buildInboxSearchPlan({
-      intent: 'find "project kickoff" emails from alice@example.com about budget',
-      constraints: {
-        subject: 'Kickoff agenda',
+      action: 'find',
+      queryText: 'find "project kickoff" budget update',
+      filters: {
+        sender: 'alice@example.com',
+        subjectContains: 'Kickoff agenda',
         keywords: ['forecast'],
+      },
+      options: {
+        semantic: true,
       },
       mode: 'deep',
       profile: 'default',
+      maxCandidates: 5,
       now: new Date('2026-02-27T00:00:00.000Z'),
     });
 
     expect(plan.lexicalQuery).toContain('"project kickoff"');
     expect(plan.lexicalQuery).toContain('forecast');
-    expect(plan.lexicalQuery).toContain('"Kickoff agenda"');
     expect(plan.timeWindowLabel).toBe('all time');
     expect(plan.matchTerms).toContain('alice@example.com');
+    expect(plan.appliedFilters).toContain('subjectContains');
   });
 
-  test('falls back to filter-only search when constraints narrow the scope', () => {
+  test('falls back to filter-only search when structured filters narrow the scope', () => {
     const plan = buildInboxSearchPlan({
-      intent: 'it',
-      constraints: {
+      action: 'find',
+      queryText: 'it',
+      filters: {
         sender: 'bob@example.com',
         hasAttachment: true,
       },
       mode: 'quick',
       profile: 'default',
+      maxCandidates: 5,
       now: new Date('2026-02-27T00:00:00.000Z'),
     });
 
     expect(plan.lexicalQuery).toBeNull();
-    expect(plan.allowsFilterOnlySearch).toBe(true);
+    expect(plan.filterOnly).toBe(true);
     expect(plan.notes).toContain(
-      'Running a local filter-only search because no lexical query terms were available.',
+      'Running a local filter-only search because no lexical query terms were provided.',
     );
   });
 });
@@ -145,7 +153,8 @@ describe('searchInboxDocuments hybrid retrieval', () => {
     const result = await searchInboxDocuments(
       {
         userId: 'user-1',
-        intent: 'kickoff budget update',
+        action: 'find',
+        queryText: 'kickoff budget update',
         mode: 'quick',
         profile: 'default',
         mailboxes: [
@@ -182,20 +191,22 @@ describe('searchInboxDocuments hybrid retrieval', () => {
     expect(result.coverage.fusionMethod).toBe('rrf_k60');
     expect(result.coverage.semanticUnavailable).toBe(false);
     expect(result.candidates).toHaveLength(2);
-    expect(result.candidates[0]?.documentId).toBe('doc-b');
-    expect(result.candidates[0]?.semanticScore).toBe(0.95);
-    expect(result.candidates[0]?.semanticRank).toBe(1);
-    expect(result.candidates[1]?.documentId).toBe('doc-a');
+    expect(result.candidates[0]?.documentId).toBe('doc-a');
+    expect(result.candidates[0]?.semanticRank).toBe(2);
+    expect(result.candidates[1]?.documentId).toBe('doc-b');
+    expect(result.candidates[1]?.semanticScore).toBe(0.95);
+    expect(result.candidates[1]?.semanticRank).toBe(1);
   });
 
   test('falls back to lexical-only when query embedding fails', async () => {
     const result = await searchInboxDocuments(
       {
         userId: 'user-1',
-        intent: 'budget from alice',
+        action: 'find',
+        queryText: 'budget from alice',
         mode: 'quick',
         profile: 'default',
-        constraints: {
+        filters: {
           sender: 'alice@example.com',
         },
         mailboxes: [
@@ -258,7 +269,8 @@ describe('searchInboxDocuments hybrid retrieval', () => {
     const result = await searchInboxDocuments(
       {
         userId: 'user-1',
-        intent: 'status report',
+        action: 'find',
+        queryText: 'status report',
         mode: 'quick',
         profile: 'default',
         mailboxes: [
@@ -294,6 +306,59 @@ describe('searchInboxDocuments hybrid retrieval', () => {
     expect(result.coverage.indexFreshness).toBe('stale');
     expect(result.coverage.indexLag).toBe(240);
     expect(result.coverage.budgetNotes.join(' ')).toContain('not started inbox backfill');
+  });
+
+  test('returns deterministic grouped counts without LLM retrieval paths', async () => {
+    const result = await searchInboxDocuments(
+      {
+        userId: 'user-1',
+        action: 'aggregate',
+        mode: 'quick',
+        profile: 'default',
+        filters: {
+          relativeWindow: 'last_30_days',
+        },
+        options: {
+          groupBy: 'sender',
+          limit: 3,
+        },
+        mailboxes: [
+          {
+            id: 'mailbox-1',
+            emailAddress: 'user@example.com',
+            status: 'CONNECTED',
+            isPrimary: true,
+          },
+        ],
+        maxCandidates: 5,
+        snippetChars: 200,
+      },
+      {
+        fetchLexicalCandidatesAndCheckpoints: async () => ({
+          rows: [],
+          checkpoints: [
+            {
+              mailboxId: 'mailbox-1',
+              lastIndexedAt: new Date('2026-02-27T00:00:00.000Z'),
+              lagEstimate: 1,
+              backfillState: InboxBackfillState.COMPLETE,
+            },
+          ],
+        }),
+        fetchDocumentCount: async () => 7,
+        fetchAggregateBuckets: async () => [
+          { key: 'Alice <alice@example.com>', count: 4 },
+          { key: 'Bob <bob@example.com>', count: 3 },
+        ],
+        now: () => new Date('2026-02-27T00:00:00.000Z'),
+        isVectorEnabled: () => true,
+      },
+    );
+
+    expect(result.action).toBe('aggregate');
+    expect(result.count).toBe(7);
+    expect(result.aggregates?.[0]?.key).toContain('Alice');
+    expect(result.groupBy).toBe('sender');
   });
 });
 

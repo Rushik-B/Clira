@@ -75,6 +75,7 @@ const { buildContextTools } = await import(
 
 function createEvidencePack(overrides: Record<string, unknown> = {}) {
   return {
+    action: 'find',
     matches: [
       {
         threadId: 'thread-1',
@@ -90,12 +91,15 @@ function createEvidencePack(overrides: Record<string, unknown> = {}) {
     ],
     quotes: [],
     coverage: {
+      action: 'find',
       queriesTried: ['fts=invoice'],
       threadsScanned: 1,
       messagesScanned: 1,
       timeWindow: 'last 30 days',
       pagesFetched: 0,
       truncated: false,
+      filterOnly: false,
+      appliedFilters: ['sender', 'keywords'],
       budgetNotes: [],
       engineVersion: 'inbox-search-v2-hybrid',
       indexFreshness: 'fresh',
@@ -140,11 +144,11 @@ function createMockToolResultCache() {
     `${toolName}:${JSON.stringify(normalizeCacheValue(args))}`;
 
   return {
-    get(toolName: string, args: unknown) {
+    get<T = unknown>(toolName: string, args: unknown): T | null {
       const key = buildKey(toolName, args);
       const cached = cache.get(key);
       if (!cached || typeof cached !== 'object' || cached === null) {
-        return cached ?? null;
+        return (cached ?? null) as T | null;
       }
 
       return {
@@ -153,7 +157,7 @@ function createMockToolResultCache() {
           ...((cached as Record<string, unknown>).metadata as Record<string, unknown> | undefined),
           cached: true,
         },
-      };
+      } as T;
     },
     set(toolName: string, args: unknown, result: unknown) {
       cache.set(buildKey(toolName, args), result);
@@ -283,19 +287,21 @@ describe('buildContextTools search_inbox_context', () => {
     }) as Record<string, { execute: (args: Record<string, unknown>) => Promise<unknown> }>;
 
     const first = await tools.search_inbox_context.execute({
+      action: 'find',
       mode: 'quick',
-      intent: 'Find the latest invoice',
+      queryText: 'Find the latest invoice',
       mailboxEmail: 'USER@example.com',
-      constraints: {
+      filters: {
         sender: 'Alice@example.com',
         keywords: ['invoice', 'latest'],
       },
     });
     const second = await tools.search_inbox_context.execute({
+      action: 'find',
       mode: 'quick',
-      intent: '  find   the latest invoice  ',
+      queryText: '  find   the latest invoice  ',
       mailboxEmail: 'user@example.com',
-      constraints: {
+      filters: {
         sender: 'alice@example.com',
         keywords: ['latest', 'invoice'],
       },
@@ -316,20 +322,24 @@ describe('buildContextTools search_inbox_context', () => {
     }) as Record<string, { execute: (args: Record<string, unknown>) => Promise<unknown> }>;
 
     const first = await tools.search_inbox_context.execute({
+      action: 'find',
       mode: 'quick',
-      intent: 'Find invoice A',
+      queryText: 'Find invoice A',
     });
     const duplicate = await tools.search_inbox_context.execute({
+      action: 'find',
       mode: 'quick',
-      intent: 'find invoice a',
+      queryText: 'find invoice a',
     });
     const secondDistinct = await tools.search_inbox_context.execute({
+      action: 'find',
       mode: 'quick',
-      intent: 'Find invoice B',
+      queryText: 'Find invoice B',
     });
     const overBudget = await tools.search_inbox_context.execute({
+      action: 'find',
       mode: 'quick',
-      intent: 'Find invoice C',
+      queryText: 'Find invoice C',
     });
 
     expect(EmailEvidencePackSchema.parse(first)).toBeTruthy();
@@ -346,26 +356,58 @@ describe('buildContextTools search_inbox_context', () => {
     });
   });
 
-  test('infers user-local day constraints from inbox date requests', async () => {
+  test('passes structured summarize_range filters through without natural-language date inference', async () => {
     const tools = buildContextTools({
       context: createContext(),
       nextSubagentCallIndex: () => 0,
     }) as Record<string, { execute: (args: Record<string, unknown>) => Promise<unknown> }>;
 
     await tools.search_inbox_context.execute({
+      action: 'summarize_range',
       mode: 'deep',
-      intent: 'check my inbox for 25th feb and tell me what happened',
+      filters: {
+        startDate: '2026-02-25',
+        endDate: '2026-02-25',
+      },
     });
 
     expect(retrievalMocks.runEmailRetrieval).toHaveBeenCalledWith(
       expect.objectContaining({
-        intent: 'check my inbox for 25th feb and tell me what happened',
-        constraints: expect.objectContaining({
-          startDate: '2026-02-25T08:00:00.000Z',
-          endDate: '2026-02-26T08:00:00.000Z',
+        action: 'summarize_range',
+        filters: expect.objectContaining({
+          startDate: '2026-02-25',
+          endDate: '2026-02-25',
+        }),
+        options: expect.objectContaining({
+          timezone: 'America/Vancouver',
         }),
       }),
       expect.any(Object),
+    );
+  });
+
+  test('returns an explicit validation result for invalid structured inbox arguments', async () => {
+    const tools = buildContextTools({
+      context: createContext(),
+      nextSubagentCallIndex: () => 0,
+    }) as Record<string, { execute: (args: Record<string, unknown>) => Promise<unknown> }>;
+
+    const result = await tools.search_inbox_context.execute({
+      action: 'aggregate',
+      mode: 'deep',
+      queryText: 'invoice',
+    });
+
+    expect(retrievalMocks.runEmailRetrieval).not.toHaveBeenCalled();
+    expect(result).toEqual(
+      expect.objectContaining({
+        action: 'aggregate',
+        confidence: 'low',
+        summary: 'aggregate requires options.groupBy.',
+        metadata: {
+          validationError: true,
+        },
+      }),
     );
   });
 
