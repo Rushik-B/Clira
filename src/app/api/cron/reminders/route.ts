@@ -4,14 +4,13 @@ import { reminderNotificationQueue } from '@/lib/services/utils/queues';
 import { markReminderMissed } from '@/lib/services/reminderNotificationService';
 
 const CRON_SECRET = process.env.CRON_SECRET;
-const LOOKAHEAD_MS = 65 * 1000; // 65 seconds – queue reminders due in the next 65s
 const STALE_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Reminder Notification Cron Endpoint
  *
- * Runs every minute to check for due reminders and enqueue them for delivery.
- * - Queues reminders due within the next 65 seconds (small lookahead for cron granularity)
+ * Runs on cron schedule to check for due reminders and enqueue them for delivery.
+ * - Queues reminders that are due now or overdue (`current_time >= reminder_time`)
  * - Marks stale reminders (>24h old) as MISSED
  * - Uses deduplication via jobId to prevent double-delivery
  */
@@ -32,15 +31,14 @@ export async function POST(request: NextRequest) {
   console.log('[REMINDER CRON] 🚀 Starting reminder check...');
 
   const now = new Date();
-  const lookahead = new Date(now.getTime() + LOOKAHEAD_MS);
   const staleCutoff = new Date(now.getTime() - STALE_MS);
 
   const reminders = await prisma.reminder.findMany({
     where: {
       OR: [
-        { status: 'PENDING', scheduledAt: { lte: lookahead } },
-        { status: 'SNOOZED', snoozedUntil: { lte: lookahead } },
-        { status: 'SNOOZED', snoozedUntil: null, scheduledAt: { lte: lookahead } },
+        { status: 'PENDING', scheduledAt: { lte: now } },
+        { status: 'SNOOZED', snoozedUntil: { lte: now } },
+        { status: 'SNOOZED', snoozedUntil: null, scheduledAt: { lte: now } },
       ],
     },
     select: {
@@ -117,13 +115,13 @@ export async function POST(request: NextRequest) {
 // Handle GET requests for system status and information
 export async function GET() {
   const now = new Date();
-  const lookahead = new Date(now.getTime() + LOOKAHEAD_MS);
 
   const pendingCount = await prisma.reminder.count({
     where: {
       OR: [
-        { status: 'PENDING', scheduledAt: { lte: lookahead } },
-        { status: 'SNOOZED', snoozedUntil: { lte: lookahead } },
+        { status: 'PENDING', scheduledAt: { lte: now } },
+        { status: 'SNOOZED', snoozedUntil: { lte: now } },
+        { status: 'SNOOZED', snoozedUntil: null, scheduledAt: { lte: now } },
       ],
     },
   });
@@ -132,7 +130,7 @@ export async function GET() {
     service: 'Reminder Notification Cron',
     status: 'active',
     configuration: {
-      lookaheadSeconds: LOOKAHEAD_MS / 1000,
+      triggerRule: 'current_time_gte_reminder_time',
       staleThresholdHours: STALE_MS / 3600000,
     },
     pendingReminders: pendingCount,

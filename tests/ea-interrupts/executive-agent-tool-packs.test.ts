@@ -1,0 +1,128 @@
+import { describe, expect, test, vi } from 'vitest';
+vi.mock('@/lib/prisma', () => ({
+  prisma: new Proxy(
+    {},
+    {
+      get: () => ({}),
+    },
+  ),
+}));
+
+import { buildExecutiveAgentTools } from '@/lib/ai/agents/executive-agent/tools';
+import {
+  extractExecutiveTurnFeatures,
+  selectExecutiveToolPack,
+} from '@/lib/ai/agents/executive-agent/selector';
+import type {
+  ExecutiveAgentInput,
+  ExecutiveRuntimeContext,
+} from '@/lib/ai/agents/executive-agent/types';
+
+function buildInput(params: {
+  userRequest: string;
+  classifierDecision?: NonNullable<ExecutiveAgentInput['runContext']>['classifierDecision'];
+}): ExecutiveAgentInput {
+  return {
+    userId: 'user-1',
+    userEmail: 'user@example.com',
+    userRequest: params.userRequest,
+    conversationId: 'conv-1',
+    channel: 'twilio',
+    conversationHistory: [],
+    runContext: {
+      runId: 'run-1',
+      burstId: 'burst-1',
+      classifierDecision: params.classifierDecision ?? null,
+      droppedSummary: [],
+      isRunCurrent: async () => true,
+      isBurstStable: () => true,
+    },
+  };
+}
+
+function buildContext(params: {
+  input: ExecutiveAgentInput;
+  pendingCalendarChangePresent: boolean;
+}): ExecutiveRuntimeContext {
+  const turnFeatures = extractExecutiveTurnFeatures({
+    input: params.input,
+    pendingCalendarChangePresent: params.pendingCalendarChangePresent,
+  });
+  const selection = selectExecutiveToolPack(turnFeatures);
+
+  return {
+    input: params.input,
+    channel: 'twilio',
+    retrievalProfile: 'messaging',
+    selectedPack: selection.packId,
+    selectorReasons: selection.reasons,
+    turnFeatures,
+    userTimezone: 'America/Vancouver',
+    currentTimeUtc: '2026-03-02T18:00:00.000Z',
+    currentTimeUserTz: 'Monday, March 2, 2026 at 10:00 AM',
+    dayOfWeek: 'Monday',
+    toolAbort: {
+      timeLeftMs: () => 30_000,
+    },
+    toolAbortSignal: undefined,
+    isRunCurrent: async () => true,
+    isBurstStable: () => true,
+    onMemoryStored: () => {},
+    registerToolResultCacheStatsReader: () => {},
+  };
+}
+
+describe('Executive agent tool packs', () => {
+  test('tool maps are deterministic and sorted', () => {
+    const context = buildContext({
+      input: buildInput({ userRequest: 'find the email from my professor' }),
+      pendingCalendarChangePresent: false,
+    });
+
+    const tools = buildExecutiveAgentTools(context);
+    const toolNames = Object.keys(tools);
+
+    expect(toolNames).toEqual([...toolNames].sort());
+  });
+
+  test('ambiguous inbox turns never expose send or calendar mutation tools', () => {
+    const context = buildContext({
+      input: buildInput({
+        userRequest: 'what did Alex say about tomorrow?',
+        classifierDecision: 'ambiguous',
+      }),
+      pendingCalendarChangePresent: false,
+    });
+
+    const toolNames = Object.keys(buildExecutiveAgentTools(context));
+
+    expect(toolNames).toContain('search_inbox_context');
+    expect(toolNames).not.toContain('send_email');
+    expect(toolNames).not.toContain('plan_calendar_change');
+    expect(toolNames).not.toContain('commit_calendar_change');
+  });
+
+  test('new calendar mutation turns expose plan but not commit', () => {
+    const context = buildContext({
+      input: buildInput({ userRequest: 'move my 3 meetings tomorrow to Friday' }),
+      pendingCalendarChangePresent: false,
+    });
+
+    const toolNames = Object.keys(buildExecutiveAgentTools(context));
+
+    expect(toolNames).toContain('plan_calendar_change');
+    expect(toolNames).not.toContain('commit_calendar_change');
+  });
+
+  test('pending calendar confirm turns expose commit but not plan', () => {
+    const context = buildContext({
+      input: buildInput({ userRequest: 'yes' }),
+      pendingCalendarChangePresent: true,
+    });
+
+    const toolNames = Object.keys(buildExecutiveAgentTools(context));
+
+    expect(toolNames).toContain('commit_calendar_change');
+    expect(toolNames).not.toContain('plan_calendar_change');
+  });
+});

@@ -6,21 +6,75 @@ import {
 } from '@/lib/services/core/replyContextTools';
 import { isSupermemoryConfigured } from '@/lib/services/supermemory/client';
 import {
-  formatConversationHistory,
+  formatConversationHistoryAsMessages,
   formatRelativeTime,
-  truncate,
 } from './helpers';
 import type { ProgressUpdateChannel } from '@/lib/ai/progressTypes';
-import type { ExecutiveAgentInput, PromptContext } from './types';
+import type {
+  ExecutiveAgentInput,
+  PromptContext,
+} from './types';
 import { getDateOnlyInTimezone } from '@/lib/utils/timezone';
 import { logger } from '@/lib/logger';
 import { buildRunContextPromptFragment } from '@/lib/services/messaging-orchestration';
 
+export const EXECUTIVE_AGENT_PROMPT_VERSION = 'ea-prompt-v1';
+
+function buildCurrentTurnMessage(params: {
+  input: ExecutiveAgentInput;
+  channel: ProgressUpdateChannel;
+  currentTimeUtc: string;
+  currentTimeUserTz: string;
+  dayOfWeek: string;
+  currentDateUserTzDateOnly: string;
+  userTimezone: string;
+  timeSinceLastMessage: string;
+  memoryContext: string;
+  runContextFragment: string;
+  pendingCalendarInstruction: string;
+  harnessReminders: string[];
+}): string {
+  const sections = [
+    '## Current Turn Context',
+    `Current time (right now): ${params.currentTimeUserTz} (${params.dayOfWeek})`,
+    `User-local date (YYYY-MM-DD): ${params.currentDateUserTzDateOnly}`,
+    `UTC: ${params.currentTimeUtc}`,
+    `Timezone: ${params.userTimezone}`,
+    `Messaging channel: ${params.channel}`,
+    `User: ${params.input.userEmail}`,
+    `Time since last message: ${params.timeSinceLastMessage}`,
+    '',
+    params.runContextFragment,
+    '',
+    '## Pending Calendar State',
+    params.pendingCalendarInstruction,
+    '',
+    ...(params.harnessReminders.length > 0
+      ? [
+          '## Harness Reminders',
+          ...params.harnessReminders.map((reminder) => `- ${reminder}`),
+          '',
+        ]
+      : []),
+    '## User Memory Snapshot',
+    params.memoryContext,
+    '',
+    '## Current User Request',
+    params.input.userRequest,
+  ];
+
+  return sections.join('\n');
+}
+
 export async function buildExecutiveAgentPrompt(
   input: ExecutiveAgentInput,
   channel: ProgressUpdateChannel,
+  options?: {
+    pendingCalendarInstruction?: string;
+    harnessReminders?: string[];
+  },
 ): Promise<PromptContext> {
-  const template = readPromptFile('whatsapp/executiveAgentPrompt.md');
+  const systemPrompt = readPromptFile('whatsapp/executiveAgentPrompt.md');
 
   // Fetch user settings for timezone
   let userTimezone = DEFAULT_CALENDAR_TIMEZONE;
@@ -72,24 +126,20 @@ export async function buildExecutiveAgentPrompt(
     currentDateUserTzDateOnly = getDateOnlyInTimezone(now, DEFAULT_CALENDAR_TIMEZONE);
   }
 
-  // Fetch memory context: include user request so recall questions get relevant memories (e.g. "stat prof name")
+  // Keep this memory snapshot generic and compact so it doesn't churn on every
+  // request. Detailed recall should go through search_memory at runtime.
   let memoryContext = '(No memories stored yet)';
   if (isSupermemoryConfigured()) {
     try {
-      const requestSnippet = truncate(input.userRequest.trim(), 80);
-      const memoryQuery =
-        requestSnippet.length > 0
-          ? `${requestSnippet} user preferences facts contacts names roles`
-          : 'user preferences communication style facts contacts';
       const memories = await gatherMemoryContextForReply({
         userId: input.userId,
-        query: memoryQuery,
-        limit: 6,
-        threshold: 0.3,
+        query: 'user preferences communication style facts contacts names roles reminder default time',
+        limit: 4,
+        threshold: 0.35,
       });
       if (memories.length > 0) {
         memoryContext = memories
-          .map((m) => `- ${truncate(m.content, 200)}`)
+          .map((m) => `- ${m.content.trim().slice(0, 200)}`)
           .join('\n');
       }
     } catch (error) {
@@ -108,26 +158,34 @@ export async function buildExecutiveAgentPrompt(
     timeSinceLastMessage = 'This is the first message in this conversation.';
   }
 
-  const prompt = template
-    .replace('{currentTimeUtc}', currentTimeUtc)
-    .replace('{userTimezone}', userTimezone)
-    .replace('{currentTimeUserTz}', currentTimeUserTz)
-    .replace('{dayOfWeek}', dayOfWeek)
-    .replace('{currentDateUserTzDateOnly}', currentDateUserTzDateOnly)
-    .replace('{timeSinceLastMessage}', timeSinceLastMessage)
-    .replace('{userEmail}', input.userEmail)
-    .replace('{userRequest}', input.userRequest)
-    .replace('{messagingChannel}', channel)
-    .replace('{conversationHistory}', formatConversationHistory(input.conversationHistory, now, userTimezone))
-    .replace('{memoryContext}', memoryContext);
-
   const runContextFragment = buildRunContextPromptFragment({
     classifierDecision: input.runContext?.classifierDecision,
     droppedSummary: input.runContext?.droppedSummary,
   });
 
   return {
-    prompt: `${prompt}\n\n${runContextFragment}`,
+    systemPrompt,
+    messages: [
+      ...formatConversationHistoryAsMessages(input.conversationHistory),
+      {
+        role: 'user',
+        content: buildCurrentTurnMessage({
+          input,
+          channel,
+          currentTimeUtc,
+          currentTimeUserTz,
+          dayOfWeek,
+          currentDateUserTzDateOnly,
+          userTimezone,
+          timeSinceLastMessage,
+          memoryContext,
+          runContextFragment,
+          pendingCalendarInstruction:
+            options?.pendingCalendarInstruction ?? 'No active pending calendar change exists.',
+          harnessReminders: options?.harnessReminders ?? [],
+        }),
+      },
+    ],
     userTimezone,
     currentTimeUtc,
     currentTimeUserTz,

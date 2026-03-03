@@ -297,6 +297,8 @@ const CalendarLlmUpdateItemSchema = z
   })
   .strict();
 
+// Allow min(0) for action arrays so model output that includes empty "other action"
+// keys (e.g. updateItems: [] for action create) still validates; mapping ignores them.
 export const CalendarCreatorLlmSchema = z
   .object({
     action: z.enum(['create', 'update', 'delete', 'clarify']),
@@ -305,10 +307,10 @@ export const CalendarCreatorLlmSchema = z
     createMeetLink: z.boolean().optional(),
     calendarId: z.string().optional(),
     userPreviewText: z.string().min(1).max(1200),
-    createItems: z.array(CalendarCreateEventDraftSchema).min(1).max(50).optional(),
-    updateItems: z.array(CalendarLlmUpdateItemSchema).min(1).max(50).optional(),
-    deleteTargets: z.array(CalendarTargetSchema).min(1).max(50).optional(),
-    clarifyingQuestions: z.array(z.string().min(1).max(200)).min(1).max(3).optional(),
+    createItems: z.array(CalendarCreateEventDraftSchema).min(0).max(50).optional(),
+    updateItems: z.array(CalendarLlmUpdateItemSchema).min(0).max(50).optional(),
+    deleteTargets: z.array(CalendarTargetSchema).min(0).max(50).optional(),
+    clarifyingQuestions: z.array(z.string().min(1).max(200)).min(0).max(3).optional(),
   })
   .strict();
 

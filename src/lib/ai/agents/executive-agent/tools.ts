@@ -1,3 +1,5 @@
+import { z } from 'zod';
+import { progressUpdateKinds } from '@/lib/ai/progressTypes';
 import {
   createSendProgressUpdateTool,
 } from '@/lib/ai/tools/sendProgressUpdate';
@@ -7,6 +9,39 @@ import type {
 import { buildContextTools } from './tools/context-tools';
 import { buildCalendarMutationTools } from './tools/calendar-mutation-tools';
 import { buildMessagingTools } from './tools/messaging-tools';
+import {
+  buildPackToolAllowlist,
+  type ExecutiveToolName,
+} from './toolPacks';
+
+const progressUpdateInputSchema = z.object({
+  kind: z.enum(progressUpdateKinds).describe('Progress update category'),
+  text: z.string().min(1).max(200).describe('Short, one-sentence update in Clira voice'),
+});
+
+function buildUnavailableProgressUpdateTool(context: ExecutiveRuntimeContext) {
+  return {
+    description:
+      'Send a short, human progress update to the user. ' +
+      'Use for quick acknowledgments, deep-search updates, or long-running tasks.',
+    inputSchema: progressUpdateInputSchema,
+    execute: async () => ({
+      sent: false,
+      persisted: false,
+      droppedReason: 'no_channel' as const,
+      requestId: context.input.runContext?.runId ?? 'unavailable',
+      channel: context.channel,
+    }),
+  };
+}
+
+function orderToolsDeterministically(
+  tools: Record<string, unknown>,
+): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(tools).sort(([left], [right]) => left.localeCompare(right)),
+  );
+}
 
 export function buildExecutiveAgentTools(context: ExecutiveRuntimeContext): Record<string, unknown> {
   let subagentCallIndex = 0;
@@ -16,20 +51,28 @@ export function buildExecutiveAgentTools(context: ExecutiveRuntimeContext): Reco
     return index;
   };
 
-  const tools: Record<string, unknown> = {
+  const allTools: Record<string, unknown> = {
     ...buildContextTools({ context, nextSubagentCallIndex }),
     ...buildCalendarMutationTools({ context, nextSubagentCallIndex }),
     ...buildMessagingTools({ context }),
   };
 
-  if (context.input.progressContext) {
-    tools.send_progress_update = createSendProgressUpdateTool({
-      ...context.input.progressContext,
-      canEmitProgress:
-        context.input.progressContext.canEmitProgress ??
-        (() => context.isBurstStable()),
-    });
-  }
+  allTools.send_progress_update = context.input.progressContext
+    ? createSendProgressUpdateTool({
+        ...context.input.progressContext,
+        canEmitProgress:
+          context.input.progressContext.canEmitProgress ??
+          (() => context.isBurstStable()),
+      })
+    : buildUnavailableProgressUpdateTool(context);
 
-  return tools;
+  const allowlist = new Set(
+    buildPackToolAllowlist(context.selectedPack, context.turnFeatures),
+  );
+
+  const filteredTools = Object.fromEntries(
+    Object.entries(allTools).filter(([toolName]) => allowlist.has(toolName as ExecutiveToolName)),
+  );
+
+  return orderToolsDeterministically(filteredTools);
 }
