@@ -65,7 +65,8 @@ services:
         condition: service_started
 
   db:
-    image: postgres:16-alpine
+    # pgvector required for InboxSearchChunk.embedding (email search subagent semantic search)
+    image: pgvector/pgvector:pg16
     restart: unless-stopped
     environment:
       POSTGRES_DB: clira
