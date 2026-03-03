@@ -9,6 +9,9 @@ import type {
 import type {
   CalendarEventDraftDTO,
 } from '@/lib/ai/schemas/calendarCreatorSchemas';
+import type {
+  ExecutivePromptMessage,
+} from './types';
 import {
   MESSAGING_FIRST_TOOL_MAX_BUDGET_MS,
   MESSAGING_MIN_SUBAGENT_BUDGET_MS,
@@ -368,63 +371,45 @@ export function isCalendarScopeError(error: unknown): boolean {
   );
 }
 
+function formatHistoryTimestamp(createdAt: Date): string {
+  return createdAt.toISOString();
+}
+
 /**
- * Formats conversation history for inclusion in the prompt.
- * Includes tool call metadata and timestamps to provide context about past actions and time gaps.
+ * Formats prior conversation turns as deterministic messages so the shared
+ * prefix stays stable across turns and can benefit from prompt caching.
  */
-export function formatConversationHistory(
+export function formatConversationHistoryAsMessages(
   history: ConversationMessageDTO[],
-  currentTime: Date,
-  userTimezone: string,
-): string {
+): ExecutivePromptMessage[] {
   if (!history || history.length === 0) {
-    return '(No prior messages in this conversation)';
+    return [];
   }
 
   return history
-    .slice(-15) // Keep last 15 messages for context
-    .map((msg, idx) => {
-      const role = msg.role === 'USER' ? 'User' : 'Clira';
-      const content = truncate(msg.content, 500);
+    .slice(-15)
+    .map((msg) => {
+      const normalizedRole = msg.role === 'USER'
+        ? 'user'
+        : 'assistant';
+      const timestamp = formatHistoryTimestamp(new Date(msg.createdAt));
+      const contentLines = [
+        `[Timestamp] ${timestamp}`,
+        truncate(msg.content, 500),
+      ];
 
-      // Calculate time since this message
-      const msgTime = new Date(msg.createdAt);
-      const msAgo = currentTime.getTime() - msgTime.getTime();
-      const relativeTime = formatRelativeTime(msAgo);
-
-      // Format absolute time in user's timezone
-      let absoluteTime = '';
-      try {
-        absoluteTime = new Intl.DateTimeFormat('en-US', {
-          month: 'short',
-          day: 'numeric',
-          hour: '2-digit',
-          minute: '2-digit',
-          hour12: true,
-          timeZone: userTimezone,
-        }).format(msgTime);
-      } catch {
-        absoluteTime = msgTime.toLocaleString('en-US', {
-          month: 'short',
-          day: 'numeric',
-          hour: '2-digit',
-          minute: '2-digit',
-          hour12: true,
-        });
-      }
-
-      // Extract tool call context from metadata if available
-      let toolContext = '';
       if (msg.role === 'ASSISTANT' && msg.metadata) {
         const toolCalls = extractToolCallsSummary(msg.metadata);
         if (toolCalls) {
-          toolContext = `\n  └─ Tools used: ${toolCalls}`;
+          contentLines.push('', `[Tool history] ${toolCalls}`);
         }
       }
 
-      return `[${idx + 1}] ${role} (${absoluteTime}, ${relativeTime}): ${content}${toolContext}`;
-    })
-    .join('\n\n');
+      return {
+        role: normalizedRole,
+        content: contentLines.join('\n'),
+      };
+    });
 }
 
 /**
@@ -473,15 +458,24 @@ export function collectToolNamesFromExecution({
 }): Set<string> {
   const names = new Set<string>();
 
+  const extractToolName = (item: Record<string, unknown>): string | null => {
+    const candidate =
+      item.toolName ??
+      item.name ??
+      item.tool ??
+      (item.function &&
+      typeof item.function === 'object' &&
+      (item.function as Record<string, unknown>).name) ??
+      item.functionName;
+    return typeof candidate === 'string' && candidate.length > 0 ? candidate : null;
+  };
+
   const collectFromArray = (arr: unknown) => {
     if (!Array.isArray(arr)) return;
     for (const item of arr) {
       if (!item || typeof item !== 'object') continue;
-      const candidate =
-        (item as Record<string, unknown>).toolName ??
-        (item as Record<string, unknown>).name ??
-        (item as Record<string, unknown>).tool;
-      if (typeof candidate === 'string' && candidate.length > 0) {
+      const candidate = extractToolName(item as Record<string, unknown>);
+      if (candidate) {
         names.add(candidate);
       }
     }
@@ -498,6 +492,56 @@ export function collectToolNamesFromExecution({
   }
 
   return names;
+}
+
+export function collectExecutedToolNames({
+  toolCalls,
+  toolResults,
+  steps,
+  toolBudget,
+  availableToolNames,
+}: {
+  toolCalls: unknown;
+  toolResults: unknown;
+  steps: unknown;
+  toolBudget?: { perTool?: Record<string, number> };
+  availableToolNames?: readonly string[];
+}): Set<string> {
+  const budgetPerTool = toolBudget?.perTool ?? null;
+  if (budgetPerTool && typeof budgetPerTool === 'object') {
+    const budgetNames = Object.entries(budgetPerTool)
+      .filter(([, count]) => typeof count === 'number' && count > 0)
+      .map(([toolName]) => toolName);
+    if (budgetNames.length > 0) {
+      return new Set(budgetNames);
+    }
+  }
+
+  const observed = collectToolNamesFromExecution({ toolCalls, toolResults, steps });
+  if (!availableToolNames || availableToolNames.length === 0) {
+    return observed;
+  }
+
+  const available = new Set(availableToolNames);
+  return new Set(Array.from(observed).filter((toolName) => available.has(toolName)));
+}
+
+export function collectOutOfPackToolNames({
+  toolCalls,
+  toolResults,
+  steps,
+  availableToolNames,
+}: {
+  toolCalls: unknown;
+  toolResults: unknown;
+  steps: unknown;
+  availableToolNames: readonly string[];
+}): Set<string> {
+  const available = new Set(availableToolNames);
+  const observed = collectToolNamesFromExecution({ toolCalls, toolResults, steps });
+  return new Set(
+    Array.from(observed).filter((toolName) => !available.has(toolName)),
+  );
 }
 
 /**
@@ -623,6 +667,7 @@ export function wrapToolsWithTimingMetadata({
   setLastProgressSentAt,
   isRunCurrent,
   hasPendingSteer,
+  onToolResult,
 }: {
   tools: Record<string, unknown>;
   agentStartedAt: number;
@@ -631,6 +676,7 @@ export function wrapToolsWithTimingMetadata({
   setLastProgressSentAt: (sentAt: number) => void;
   isRunCurrent: () => Promise<boolean>;
   hasPendingSteer?: () => Promise<boolean>;
+  onToolResult?: (toolName: string, args: unknown, result: unknown, observedAtMs: number) => void;
 }): Record<string, unknown> {
   const wrappedTools: Record<string, unknown> = {};
 
@@ -664,7 +710,12 @@ export function wrapToolsWithTimingMetadata({
             ms_since_last_progress_update: now - (lastProgressSentAt || agentStartedAt),
             time_left_ms: timeLeftMs(),
           };
-          return attachTimingMetadata(buildPendingSteerDeferredResult(toolName), timing);
+          const deferredResult = attachTimingMetadata(
+            buildPendingSteerDeferredResult(toolName),
+            timing,
+          );
+          onToolResult?.(toolName, args, deferredResult, now);
+          return deferredResult;
         }
 
         const result = await execute(args);
@@ -674,6 +725,7 @@ export function wrapToolsWithTimingMetadata({
           if (didSendProgressUpdate(result)) {
             setLastProgressSentAt(now);
           }
+          onToolResult?.(toolName, args, result, now);
           return result;
         }
 
@@ -684,7 +736,9 @@ export function wrapToolsWithTimingMetadata({
           time_left_ms: timeLeftMs(),
         };
 
-        return attachTimingMetadata(result, timing);
+        const timedResult = attachTimingMetadata(result, timing);
+        onToolResult?.(toolName, args, timedResult, now);
+        return timedResult;
       },
     };
   }

@@ -15,6 +15,28 @@ export type SteerRunContext = {
   markRunPhase: (phase: RunPhase) => Promise<void>;
 };
 
+function hasNonEmptyMessageContent(
+  messages: Array<{ role: 'user' | 'assistant'; content: string }> | undefined,
+): messages is Array<{ role: 'user' | 'assistant'; content: string }> {
+  return Array.isArray(messages) && messages.some((message) => message.content.trim().length > 0);
+}
+
+function resolveSeedMessages(params: {
+  prompt?: string;
+  messages?: Array<{ role: 'user' | 'assistant'; content: string }>;
+}): Array<{ role: 'user' | 'assistant'; content: string }> {
+  if (hasNonEmptyMessageContent(params.messages)) {
+    return [...params.messages];
+  }
+
+  const prompt = params.prompt?.trim();
+  if (prompt) {
+    return [{ role: 'user', content: prompt }];
+  }
+
+  throw new Error('empty seed input');
+}
+
 function buildSteerInjection(params: {
   events: ConsumeSteerEventsResult['events'];
   droppedSummary: string[];
@@ -51,7 +73,8 @@ function buildSteerInjection(params: {
 export async function runSteerableTextWithTools(params: {
   model: LanguageModel | string;
   system?: string;
-  prompt: string;
+  prompt?: string;
+  messages?: Array<{ role: 'user' | 'assistant'; content: string }>;
   tools: any;
   timeLeftMs: () => number | null;
   maxSteps: number;
@@ -74,7 +97,10 @@ export async function runSteerableTextWithTools(params: {
   toolBudget?: ToolBudgetReport;
   steer: { appliedEvents: number; appliedDroppedSummary: number; lastSeq: number };
 }> {
-  const messages: any[] = [{ role: 'user', content: params.prompt }];
+  const messages: any[] = resolveSeedMessages({
+    messages: params.messages,
+    prompt: params.prompt,
+  });
 
   const budget = createToolBudgetController({
     tools: params.tools as any,

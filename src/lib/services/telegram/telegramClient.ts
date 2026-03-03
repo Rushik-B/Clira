@@ -249,6 +249,17 @@ export class TelegramClient {
     }
   }
 
+  startTypingIndicator(chatId: string): () => void {
+    const fire = () => {
+      this.bot.api.sendChatAction(toTelegramChatId(chatId), 'typing').catch(() => {
+        // Best-effort; indicator auto-expires after 5s anyway.
+      });
+    };
+    fire();
+    const interval = setInterval(fire, 4_000);
+    return () => clearInterval(interval);
+  }
+
   async sendMessage(chatId: string, text: string): Promise<TelegramSendMessageResponse> {
     const normalizedText = normalizeMarkdownForTelegram(text);
     const sent = await this.bot.api.sendMessage(toTelegramChatId(chatId), normalizedText, {

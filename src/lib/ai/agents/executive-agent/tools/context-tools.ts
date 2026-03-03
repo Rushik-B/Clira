@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { logger } from '@/lib/logger';
+import { prisma } from '@/lib/prisma';
 import {
   getCalendarSnapshot,
   gatherMemoryContextForReply,
@@ -46,11 +47,49 @@ export function buildContextTools({
     dayOfWeek,
     toolAbort,
     toolAbortSignal,
+    toolResultCache,
   } = context;
 
   const inboxCallTracker = {
     quickCalls: 0,
     deepCalls: 0,
+  };
+  context.registerToolResultCacheStatsReader?.(() => toolResultCache.getStats());
+
+  let inboxMinStoredAtMsPromise: Promise<number | undefined> | null = null;
+  const getInboxMinStoredAtMs = async (): Promise<number | undefined> => {
+    if (!inboxMinStoredAtMsPromise) {
+      inboxMinStoredAtMsPromise = prisma.mailbox.findMany({
+        where: {
+          userId: input.userId,
+          status: 'CONNECTED',
+        },
+        select: {
+          updatedAt: true,
+          gmailHistoryId: true,
+        },
+      }).then((mailboxes) => {
+        const updatedAtValues = mailboxes
+          .map((mailbox) => mailbox.updatedAt?.getTime())
+          .filter((value): value is number => Number.isFinite(value));
+
+        if (updatedAtValues.length === 0) {
+          return undefined;
+        }
+
+        const maxUpdatedAtMs = Math.max(...updatedAtValues);
+        const historyMarkerCount = mailboxes.filter((mailbox) => !!mailbox.gmailHistoryId).length;
+        logger.debug(
+          `[executiveAgent] search_inbox_context freshness marker: connectedMailboxes=${mailboxes.length} historyMarkers=${historyMarkerCount} minStoredAtMs=${maxUpdatedAtMs}`,
+        );
+        return maxUpdatedAtMs;
+      }).catch((error) => {
+        logger.warn('[executiveAgent] Failed to load inbox freshness marker', error);
+        return undefined;
+      });
+    }
+
+    return inboxMinStoredAtMsPromise;
   };
 
   return {
@@ -87,6 +126,22 @@ export function buildContextTools({
         execute: async (args: SearchInboxContextArgs) => {
           const mode = args.mode ?? 'quick';
           const intent = args.intent?.trim() || input.userRequest;
+          const cacheArgs = {
+            mode,
+            intent,
+            constraints: args.constraints,
+          };
+          const inboxMinStoredAtMs = await getInboxMinStoredAtMs();
+          const cachedResult = toolResultCache.get('search_inbox_context', cacheArgs, {
+            minStoredAtMs: inboxMinStoredAtMs,
+          });
+          if (cachedResult) {
+            logger.info(
+              `[executiveAgent] search_inbox_context cache hit: mode=${mode} intent="${truncate(intent, 80)}"`,
+            );
+            return cachedResult;
+          }
+
           const totalCalls = inboxCallTracker.quickCalls + inboxCallTracker.deepCalls;
           const modeCalls = mode === 'deep' ? inboxCallTracker.deepCalls : inboxCallTracker.quickCalls;
           const modeLimit = MESSAGING_INBOX_CALL_LIMITS[mode];
@@ -113,8 +168,7 @@ export function buildContextTools({
           );
 
           const toolCallIndex = nextSubagentCallIndex();
-
-          return runWithSubagentBudget({
+          const result = await runWithSubagentBudget({
             toolName: 'search_inbox_context',
             counts: { total: totalCalls, tool: modeCalls },
             timeLeftMs: toolAbort.timeLeftMs(),
@@ -135,6 +189,8 @@ export function buildContextTools({
                 },
               ),
           });
+          toolResultCache.set('search_inbox_context', cacheArgs, result);
+          return result;
         },
       },
 
@@ -152,6 +208,16 @@ export function buildContextTools({
           limit: z.number().int().min(1).max(10).optional().describe('Max memories to return (default: 5)'),
         }),
         execute: async (args: { query: string; limit?: number }) => {
+          const cacheArgs = {
+            query: args.query,
+            limit: args.limit ?? 5,
+          };
+          const cachedResult = toolResultCache.get('search_memory', cacheArgs);
+          if (cachedResult) {
+            logger.info(`[executiveAgent] search_memory cache hit: "${truncate(args.query, 50)}"`);
+            return cachedResult;
+          }
+
           logger.info(`[executiveAgent] search_memory: "${truncate(args.query, 50)}"`);
 
           if (!isSupermemoryConfigured()) {
@@ -165,7 +231,7 @@ export function buildContextTools({
             threshold: 0.4,
           });
 
-          return {
+          const result = {
             query: args.query,
             count: memories.length,
             memories: memories.map((m) => ({
@@ -173,6 +239,8 @@ export function buildContextTools({
               relevanceScore: m.score,
             })),
           };
+          toolResultCache.set('search_memory', cacheArgs, result);
+          return result;
         },
       },
 
@@ -200,6 +268,20 @@ export function buildContextTools({
           durationNeeded?: string;
           preferences?: string;
         }) => {
+          const cacheArgs = {
+            startDate: args.startDate,
+            endDate: args.endDate,
+            durationNeeded: args.durationNeeded,
+            preferences: args.preferences,
+          };
+          const cachedResult = toolResultCache.get('check_calendar', cacheArgs);
+          if (cachedResult) {
+            logger.info(
+              `[executiveAgent] check_calendar cache hit: ${args.startDate} to ${args.endDate}`,
+            );
+            return cachedResult;
+          }
+
           logger.info(`[executiveAgent] check_calendar: ${args.startDate} to ${args.endDate}`);
           let normalizedStartDate: Date;
           let normalizedEndDate: Date;
@@ -230,8 +312,7 @@ export function buildContextTools({
           });
 
           const toolCallIndex = nextSubagentCallIndex();
-
-          return runWithSubagentBudget({
+          const result = await runWithSubagentBudget({
             toolName: 'check_calendar',
             counts: { total: 0, tool: 0 },
             timeLeftMs: toolAbort.timeLeftMs(),
@@ -263,6 +344,8 @@ export function buildContextTools({
                 },
               ),
           });
+          toolResultCache.set('check_calendar', cacheArgs, result);
+          return result;
         },
       },
 
@@ -298,6 +381,19 @@ export function buildContextTools({
           maxResults?: number;
           minRelevance?: number;
         }) => {
+          const cacheArgs = {
+            query: args.query,
+            startDate: args.startDate,
+            endDate: args.endDate,
+            maxResults: args.maxResults ?? 10,
+            minRelevance: args.minRelevance ?? 40,
+          };
+          const cachedResult = toolResultCache.get('search_calendar', cacheArgs);
+          if (cachedResult) {
+            logger.info(`[executiveAgent] search_calendar cache hit: "${truncate(args.query, 50)}"`);
+            return cachedResult;
+          }
+
           logger.info(`[executiveAgent] search_calendar: "${truncate(args.query, 50)}"`);
 
           // Default date range: 30 days ago to today (in user's timezone)
@@ -365,8 +461,7 @@ export function buildContextTools({
           });
 
           const toolCallIndex = nextSubagentCallIndex();
-
-          return runWithSubagentBudget({
+          const result = await runWithSubagentBudget({
             toolName: 'search_calendar',
             counts: { total: 0, tool: 0 },
             timeLeftMs: toolAbort.timeLeftMs(),
@@ -400,6 +495,8 @@ export function buildContextTools({
                 },
               ),
           });
+          toolResultCache.set('search_calendar', cacheArgs, result);
+          return result;
         },
       },
   };

@@ -237,8 +237,7 @@ export async function triggerReminderNotification(input: ReminderNotificationInp
     return;
   }
 
-  const lookaheadMs = 65 * 1000; // match cron: allow delivery within 65s of due time
-  if (dueAt.getTime() > now.getTime() + lookaheadMs) {
+  if (dueAt.getTime() > now.getTime()) {
     logger.info(`[reminderNotification] Not due yet - reminder=${reminder.id}`);
     return;
   }

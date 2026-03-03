@@ -2,20 +2,32 @@ import { describe, expect, test } from 'vitest';
 import {
   EA_MICRO_BUFFER_MS,
   EA_QUEUE_CAP,
+  type OrchestrationDecision,
+  type RunSkip,
+  type RunStart,
 } from '@/lib/services/messaging-orchestration/types';
 import { createOrchestratorHarness, withEnv } from '../helpers/orchestrator-harness';
+
+function expectStart(decision: OrchestrationDecision): RunStart {
+  expect(decision.kind).toBe('start');
+  return decision as RunStart;
+}
+
+function expectSkip(decision: OrchestrationDecision): RunSkip {
+  expect(decision.kind).toBe('skip');
+  return decision as RunSkip;
+}
 
 describe('MessagingOrchestrator scenarios', () => {
   test('scenario 1: single start uses micro-buffer and starts run', async () => {
     const harness = createOrchestratorHarness();
 
-    const decision = await harness.orchestrator.prepareRun({
+    const decision = expectStart(await harness.orchestrator.prepareRun({
       channel: 'twilio',
       conversationId: 'conv-1',
       userRequest: 'Draft an update for leadership',
-    });
+    }));
 
-    expect(decision.kind).toBe('start');
     expect(harness.sleepCalls).toEqual([EA_MICRO_BUFFER_MS]);
     expect(await decision.runContext.isRunCurrent()).toBe(true);
   });
@@ -30,20 +42,18 @@ describe('MessagingOrchestrator scenarios', () => {
       }),
     });
 
-    const first = await harness.orchestrator.prepareRun({
+    const first = expectStart(await harness.orchestrator.prepareRun({
       channel: 'twilio',
       conversationId: 'conv-2',
       userRequest: 'Draft to Alex',
-    });
-    expect(first.kind).toBe('start');
+    }));
 
-    const second = await harness.orchestrator.prepareRun({
+    const second = expectStart(await harness.orchestrator.prepareRun({
       channel: 'twilio',
       conversationId: 'conv-2',
       userRequest: 'no, send to Jordan instead',
-    });
+    }));
 
-    expect(second.kind).toBe('start');
     expect(second.runContext.runId).not.toBe(first.runContext.runId);
     expect(await first.runContext.isRunCurrent()).toBe(false);
     expect(await second.runContext.isRunCurrent()).toBe(true);
@@ -59,20 +69,18 @@ describe('MessagingOrchestrator scenarios', () => {
       }),
     });
 
-    const first = await harness.orchestrator.prepareRun({
+    const first = expectStart(await harness.orchestrator.prepareRun({
       channel: 'twilio',
       conversationId: 'conv-3',
       userRequest: 'Summarize my inbox',
-    });
-    expect(first.kind).toBe('start');
+    }));
 
-    const queued = await harness.orchestrator.prepareRun({
+    const queued = expectSkip(await harness.orchestrator.prepareRun({
       channel: 'twilio',
       conversationId: 'conv-3',
       userRequest: 'Separate task: after this, check calendar conflicts',
-    });
+    }));
 
-    expect(queued.kind).toBe('skip');
     expect(queued.reason).toBe('queued_followup');
 
     const finalized = await harness.orchestrator.finalizeRun({ runContext: first.runContext });
@@ -83,21 +91,19 @@ describe('MessagingOrchestrator scenarios', () => {
   test('scenario 4: command bypass supersedes active run immediately', async () => {
     const harness = createOrchestratorHarness();
 
-    const first = await harness.orchestrator.prepareRun({
+    const first = expectStart(await harness.orchestrator.prepareRun({
       channel: 'twilio',
       conversationId: 'conv-4',
       userRequest: 'Write a draft to finance',
-    });
-    expect(first.kind).toBe('start');
+    }));
 
-    const commandRun = await harness.orchestrator.prepareRun({
+    const commandRun = expectStart(await harness.orchestrator.prepareRun({
       channel: 'twilio',
       conversationId: 'conv-4',
       userRequest: 'send',
       isCommand: true,
-    });
+    }));
 
-    expect(commandRun.kind).toBe('start');
     expect(await first.runContext.isRunCurrent()).toBe(false);
     expect(await commandRun.runContext.isRunCurrent()).toBe(true);
   });
@@ -112,20 +118,18 @@ describe('MessagingOrchestrator scenarios', () => {
       }),
     });
 
-    const mediaRun = await harness.orchestrator.prepareRun({
+    const mediaRun = expectStart(await harness.orchestrator.prepareRun({
       channel: 'whatsapp',
       conversationId: 'conv-5',
       userRequest: 'User sent an image on WhatsApp. Detailed image description: meeting notes.',
-    });
-    expect(mediaRun.kind).toBe('start');
+    }));
 
-    const correctionRun = await harness.orchestrator.prepareRun({
+    const correctionRun = expectStart(await harness.orchestrator.prepareRun({
       channel: 'whatsapp',
       conversationId: 'conv-5',
       userRequest: 'actually email only the action items',
-    });
+    }));
 
-    expect(correctionRun.kind).toBe('start');
     expect(correctionRun.runContext.burstId).toBe(mediaRun.runContext.burstId);
     expect(await mediaRun.runContext.isRunCurrent()).toBe(false);
   });
@@ -140,21 +144,19 @@ describe('MessagingOrchestrator scenarios', () => {
       }),
     });
 
-    const first = await harness.orchestrator.prepareRun({
+    const first = expectStart(await harness.orchestrator.prepareRun({
       channel: 'twilio',
       conversationId: 'conv-6',
       userRequest: 'initial request',
-    });
-    expect(first.kind).toBe('start');
+    }));
 
     const extraMessages = EA_QUEUE_CAP + 3;
     for (let i = 1; i <= extraMessages; i += 1) {
-      const decision = await harness.orchestrator.prepareRun({
+      const decision = expectSkip(await harness.orchestrator.prepareRun({
         channel: 'twilio',
         conversationId: 'conv-6',
         userRequest: `overflow message ${i}`,
-      });
-      expect(decision.kind).toBe('skip');
+      }));
     }
 
     const state = harness.getState('twilio', 'conv-6');
@@ -176,20 +178,18 @@ describe('Cooperative steering scenarios', () => {
         }),
       });
 
-      const first = await harness.orchestrator.prepareRun({
+      const first = expectStart(await harness.orchestrator.prepareRun({
         channel: 'twilio',
         conversationId: 'conv-7',
         userRequest: 'Draft to Alex',
-      });
-      expect(first.kind).toBe('start');
+      }));
 
-      const steer = await harness.orchestrator.prepareRun({
+      const steer = expectSkip(await harness.orchestrator.prepareRun({
         channel: 'twilio',
         conversationId: 'conv-7',
         userRequest: 'actually, keep it shorter',
-      });
+      }));
 
-      expect(steer.kind).toBe('skip');
       expect(steer.reason).toBe('steered_in_run');
       expect(await first.runContext.isRunCurrent()).toBe(true);
 
@@ -216,20 +216,18 @@ describe('Cooperative steering scenarios', () => {
         }),
       });
 
-      const first = await harness.orchestrator.prepareRun({
+      const first = expectStart(await harness.orchestrator.prepareRun({
         channel: 'telegram',
         conversationId: 'conv-14',
         userRequest: 'Check my calendar for next Friday and Saturday.',
-      });
-      expect(first.kind).toBe('start');
+      }));
 
-      const steer = await harness.orchestrator.prepareRun({
+      const steer = expectSkip(await harness.orchestrator.prepareRun({
         channel: 'telegram',
         conversationId: 'conv-14',
         userRequest: 'Also keep the response under 4 bullets and include timezone.',
-      });
+      }));
 
-      expect(steer.kind).toBe('skip');
       expect(steer.reason).toBe('steered_in_run');
 
       const state = harness.getState('telegram', 'conv-14');
@@ -252,22 +250,20 @@ describe('Cooperative steering scenarios', () => {
         }),
       });
 
-      const first = await harness.orchestrator.prepareRun({
+      const first = expectStart(await harness.orchestrator.prepareRun({
         channel: 'twilio',
         conversationId: 'conv-8',
         userRequest: 'Draft to Alex',
-      });
-      expect(first.kind).toBe('start');
+      }));
 
       await first.runContext.markRunPhase('commit_boundary');
 
-      const incoming = await harness.orchestrator.prepareRun({
+      const incoming = expectStart(await harness.orchestrator.prepareRun({
         channel: 'twilio',
         conversationId: 'conv-8',
         userRequest: 'actually, add a line about the deadline',
-      });
+      }));
 
-      expect(incoming.kind).toBe('start');
       expect(incoming.runContext.runId).not.toBe(first.runContext.runId);
       expect(await first.runContext.isRunCurrent()).toBe(false);
       expect(await incoming.runContext.isRunCurrent()).toBe(true);
@@ -301,20 +297,18 @@ describe('Cooperative steering scenarios', () => {
         },
       });
 
-      const first = await harness.orchestrator.prepareRun({
+      const first = expectStart(await harness.orchestrator.prepareRun({
         channel: 'twilio',
         conversationId: 'conv-13',
         userRequest: 'Draft to Alex',
-      });
-      expect(first.kind).toBe('start');
+      }));
 
-      const incoming = await harness.orchestrator.prepareRun({
+      const incoming = expectSkip(await harness.orchestrator.prepareRun({
         channel: 'twilio',
         conversationId: 'conv-13',
         userRequest: 'actually, keep this very short',
-      });
+      }));
 
-      expect(incoming.kind).toBe('skip');
       expect(incoming.reason).toBe('queued_followup');
 
       const state = harness.getState('twilio', 'conv-13');
@@ -337,20 +331,18 @@ describe('Cooperative steering scenarios', () => {
         }),
       });
 
-      const first = await harness.orchestrator.prepareRun({
+      const first = expectStart(await harness.orchestrator.prepareRun({
         channel: 'twilio',
         conversationId: 'conv-9',
         userRequest: 'Draft to Alex',
-      });
-      expect(first.kind).toBe('start');
+      }));
 
       for (const msg of ['msg-1', 'msg-2', 'msg-3', 'msg-4']) {
-        const decision = await harness.orchestrator.prepareRun({
+        const decision = expectSkip(await harness.orchestrator.prepareRun({
           channel: 'twilio',
           conversationId: 'conv-9',
           userRequest: msg,
-        });
-        expect(decision.kind).toBe('skip');
+        }));
         expect(decision.reason).toBe('steered_in_run');
       }
 
@@ -379,20 +371,18 @@ describe('Steering lifecycle events', () => {
         }),
       });
 
-      const first = await harness.orchestrator.prepareRun({
+      const first = expectStart(await harness.orchestrator.prepareRun({
         channel: 'twilio',
         conversationId: 'conv-11',
         userRequest: 'Draft to Alex',
-      });
-      expect(first.kind).toBe('start');
+      }));
 
       for (const msg of ['make it shorter', 'mention timeline']) {
-        const decision = await harness.orchestrator.prepareRun({
+        const decision = expectSkip(await harness.orchestrator.prepareRun({
           channel: 'twilio',
           conversationId: 'conv-11',
           userRequest: msg,
-        });
-        expect(decision.kind).toBe('skip');
+        }));
         expect(decision.reason).toBe('steered_in_run');
       }
 
@@ -412,12 +402,11 @@ describe('Steering lifecycle events', () => {
   test('scenario 12: run phase transitions emit lifecycle events', async () => {
     const harness = createOrchestratorHarness();
 
-    const first = await harness.orchestrator.prepareRun({
+    const first = expectStart(await harness.orchestrator.prepareRun({
       channel: 'twilio',
       conversationId: 'conv-12',
       userRequest: 'Draft to Alex',
-    });
-    expect(first.kind).toBe('start');
+    }));
 
     await first.runContext.markRunPhase('commit_boundary');
     await harness.orchestrator.finalizeRun({ runContext: first.runContext });
@@ -453,18 +442,16 @@ describe('Channel adapter parity', () => {
       conversationId: () => 'conv-10',
     };
 
-    const first = await harness.orchestrator.prepareRunWithAdapter({
+    const first = expectStart(await harness.orchestrator.prepareRunWithAdapter({
       adapter,
       userRequest: 'Draft this update for the team',
-    });
-    expect(first.kind).toBe('start');
+    }));
 
-    const correction = await harness.orchestrator.prepareRunWithAdapter({
+    const correction = expectStart(await harness.orchestrator.prepareRunWithAdapter({
       adapter,
       userRequest: 'wait, include the deadline update',
-    });
+    }));
 
-    expect(correction.kind).toBe('start');
     expect(await first.runContext.isRunCurrent()).toBe(false);
     expect(correction.runContext.channel).toBe('telegram');
   });
