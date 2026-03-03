@@ -676,7 +676,7 @@ export function wrapToolsWithTimingMetadata({
   setLastProgressSentAt: (sentAt: number) => void;
   isRunCurrent: () => Promise<boolean>;
   hasPendingSteer?: () => Promise<boolean>;
-  onToolResult?: (toolName: string, result: unknown) => void;
+  onToolResult?: (toolName: string, args: unknown, result: unknown, observedAtMs: number) => void;
 }): Record<string, unknown> {
   const wrappedTools: Record<string, unknown> = {};
 
@@ -714,7 +714,7 @@ export function wrapToolsWithTimingMetadata({
             buildPendingSteerDeferredResult(toolName),
             timing,
           );
-          onToolResult?.(toolName, deferredResult);
+          onToolResult?.(toolName, args, deferredResult, now);
           return deferredResult;
         }
 
@@ -725,7 +725,7 @@ export function wrapToolsWithTimingMetadata({
           if (didSendProgressUpdate(result)) {
             setLastProgressSentAt(now);
           }
-          onToolResult?.(toolName, result);
+          onToolResult?.(toolName, args, result, now);
           return result;
         }
 
@@ -737,7 +737,7 @@ export function wrapToolsWithTimingMetadata({
         };
 
         const timedResult = attachTimingMetadata(result, timing);
-        onToolResult?.(toolName, timedResult);
+        onToolResult?.(toolName, args, timedResult, now);
         return timedResult;
       },
     };

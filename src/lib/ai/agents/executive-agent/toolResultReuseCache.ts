@@ -338,11 +338,11 @@ function isResultCacheable(result: unknown): boolean {
   return true;
 }
 
-function isAppendToSupermemorySuccessful(result: unknown): boolean {
+export function isAppendToSupermemorySuccessful(result: unknown): boolean {
   return isRecord(result) && result.stored === true;
 }
 
-function isCommitCalendarChangeSuccessful(args: unknown, result: unknown): boolean {
+export function isCommitCalendarChangeSuccessful(args: unknown, result: unknown): boolean {
   if (!isRecord(result) || result.ok !== true) {
     return false;
   }
@@ -356,6 +356,20 @@ function isCommitCalendarChangeSuccessful(args: unknown, result: unknown): boole
   }
 
   return true;
+}
+
+function applyMutationInvalidation(params: {
+  mutationToolName: MutationToolName;
+  cutoffs: ToolInvalidationCutoffs;
+  storedAtMs: number;
+}): void {
+  if (params.mutationToolName === 'append_to_supermemory') {
+    updateInvalidationCutoff(params.cutoffs, 'search_memory', params.storedAtMs);
+    return;
+  }
+
+  updateInvalidationCutoff(params.cutoffs, 'search_calendar', params.storedAtMs);
+  updateInvalidationCutoff(params.cutoffs, 'check_calendar', params.storedAtMs);
 }
 
 function cloneValue<T>(value: T): T {
@@ -404,13 +418,20 @@ function applyMutationCutoffFromHistory(params: {
 
     if (mutationToolName === 'append_to_supermemory') {
       if (!isAppendToSupermemorySuccessful(result)) continue;
-      updateInvalidationCutoff(params.cutoffs, 'search_memory', params.storedAtMs);
+      applyMutationInvalidation({
+        mutationToolName,
+        cutoffs: params.cutoffs,
+        storedAtMs: params.storedAtMs,
+      });
       continue;
     }
 
     if (!isCommitCalendarChangeSuccessful(args, result)) continue;
-    updateInvalidationCutoff(params.cutoffs, 'search_calendar', params.storedAtMs);
-    updateInvalidationCutoff(params.cutoffs, 'check_calendar', params.storedAtMs);
+    applyMutationInvalidation({
+      mutationToolName,
+      cutoffs: params.cutoffs,
+      storedAtMs: params.storedAtMs,
+    });
   }
 }
 
@@ -522,6 +543,7 @@ export type ExecutiveToolResultReuseCache = {
     options?: CacheGetOptions,
   ) => T | null;
   set: (toolName: CacheableToolName, args: unknown, result: unknown) => void;
+  noteMutation: (toolName: MutationToolName, storedAtMs: number) => void;
   getStats: () => ExecutiveToolResultCacheStats;
 };
 
@@ -626,6 +648,13 @@ export function createExecutiveToolResultReuseCache(params: {
         source: 'runtime',
       });
       stats[toolName].set_ok += 1;
+    },
+    noteMutation: (toolName: MutationToolName, storedAtMs: number): void => {
+      applyMutationInvalidation({
+        mutationToolName: toolName,
+        cutoffs: invalidationCutoffsByTool,
+        storedAtMs,
+      });
     },
     getStats: () => cloneStats(stats),
   };

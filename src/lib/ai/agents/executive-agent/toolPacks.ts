@@ -106,17 +106,22 @@ export function isReadOnlyPack(packId: ToolPackId): boolean {
   );
 }
 
+function isResolutionIntent(features: ExecutiveTurnFeatures): boolean {
+  return features.pendingCalendarConfirmIntent || features.pendingCalendarCancelIntent;
+}
+
 export function buildPackToolAllowlist(
   packId: ToolPackId,
   features: ExecutiveTurnFeatures,
 ): readonly ExecutiveToolName[] {
   const allowlist = new Set<ExecutiveToolName>(getToolPackToolNames(packId));
+  const resolutionIntent = isResolutionIntent(features);
 
   if (!features.explicitSendApproval || !features.draftCandidatePresent) {
     allowlist.delete('send_email');
   }
 
-  if (!features.pendingCalendarChangePresent) {
+  if (!features.pendingCalendarChangePresent || !resolutionIntent) {
     allowlist.delete('commit_calendar_change');
   }
 
@@ -134,14 +139,14 @@ export function buildPackToolAllowlist(
 
   if (
     features.pendingCalendarChangePresent &&
-    (features.pendingCalendarConfirmIntent || features.pendingCalendarCancelIntent)
+    resolutionIntent
   ) {
     allowlist.delete('plan_calendar_change');
   }
 
   if (
     features.pendingCalendarChangePresent &&
-    features.pendingCalendarModifyIntent
+    (features.pendingCalendarModifyIntent || !resolutionIntent)
   ) {
     allowlist.delete('commit_calendar_change');
   }

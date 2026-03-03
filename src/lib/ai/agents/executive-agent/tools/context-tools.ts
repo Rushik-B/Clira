@@ -26,7 +26,6 @@ import {
   runWithSubagentBudget,
   truncate,
 } from '../helpers';
-import { createExecutiveToolResultReuseCache } from '../toolResultReuseCache';
 import type {
   ExecutiveRuntimeContext,
   SearchInboxContextArgs,
@@ -48,15 +47,13 @@ export function buildContextTools({
     dayOfWeek,
     toolAbort,
     toolAbortSignal,
+    toolResultCache,
   } = context;
 
   const inboxCallTracker = {
     quickCalls: 0,
     deepCalls: 0,
   };
-  const toolResultCache = createExecutiveToolResultReuseCache({
-    conversationHistory: input.conversationHistory,
-  });
   context.registerToolResultCacheStatsReader?.(() => toolResultCache.getStats());
 
   let inboxMinStoredAtMsPromise: Promise<number | undefined> | null = null;

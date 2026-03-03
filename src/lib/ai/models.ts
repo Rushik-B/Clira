@@ -62,7 +62,7 @@ function getCerebrasProvider() {
  * Returns the configured chat model used for LLM-based executive pack routing.
  */
 function getCerebrasSelectorModel() {
-  const modelName = process.env.EA_SELECTOR_CEREBRAS_MODEL ?? DEFAULT_CEREBRAS_SELECTOR_MODEL;
+  const modelName = process.env.EA_SELECTOR_CEREBRAS_MODEL?.trim() || DEFAULT_CEREBRAS_SELECTOR_MODEL;
   return getCerebrasProvider().chatModel(modelName);
 }
 

@@ -48,7 +48,12 @@ import {
   selectExecutiveToolPackForTurn,
 } from './selector';
 import { EXECUTIVE_AGENT_PACK_VERSION } from './toolPacks';
-import type { ExecutiveToolResultCacheStats } from './toolResultReuseCache';
+import {
+  createExecutiveToolResultReuseCache,
+  isAppendToSupermemorySuccessful,
+  isCommitCalendarChangeSuccessful,
+  type ExecutiveToolResultCacheStats,
+} from './toolResultReuseCache';
 import { stripCacheDebugMetadataForPersistence } from './persistence';
 import { createInitialWorkingState, createWorkingStateController } from './workingState';
 import type {
@@ -67,6 +72,9 @@ export class ExecutiveAgent {
     } = {};
     const resolvedChannel = resolveProgressChannel(input);
     const retrievalProfile = resolveRetrievalProfile(resolvedChannel);
+    const toolResultCache = createExecutiveToolResultReuseCache({
+      conversationHistory: input.conversationHistory,
+    });
     const isRunCurrent = async () => {
       if (!input.runContext?.isRunCurrent) return true;
       return input.runContext.isRunCurrent();
@@ -233,6 +241,7 @@ export class ExecutiveAgent {
         registerToolResultCacheStatsReader: (readStats) => {
           toolResultCacheStatsReader.read = readStats;
         },
+        toolResultCache,
       });
 
       logger.info('[executiveAgent] harness.pack_tools', {
@@ -259,8 +268,23 @@ export class ExecutiveAgent {
         },
         isRunCurrent,
         hasPendingSteer,
-        onToolResult: (toolName, result) => {
+        onToolResult: (toolName, args, result, observedAtMs) => {
           workingStateController?.updateFromToolResult(toolName, result);
+
+          if (
+            toolName === 'append_to_supermemory' &&
+            isAppendToSupermemorySuccessful(result)
+          ) {
+            toolResultCache.noteMutation('append_to_supermemory', observedAtMs);
+            return;
+          }
+
+          if (
+            toolName === 'commit_calendar_change' &&
+            isCommitCalendarChangeSuccessful(args, result)
+          ) {
+            toolResultCache.noteMutation('commit_calendar_change', observedAtMs);
+          }
         },
       });
 

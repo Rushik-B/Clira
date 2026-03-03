@@ -11,6 +11,7 @@ import type {
   RunPhase,
 } from '@/lib/services/messaging-orchestration/types';
 import type {
+  ExecutiveToolResultReuseCache,
   ExecutiveToolResultCacheStats,
 } from './toolResultReuseCache';
 
@@ -183,4 +184,5 @@ export type ExecutiveRuntimeContext = {
   registerToolResultCacheStatsReader?: (
     readStats: () => ExecutiveToolResultCacheStats,
   ) => void;
+  toolResultCache: ExecutiveToolResultReuseCache;
 };
