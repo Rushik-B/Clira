@@ -168,8 +168,12 @@ export class ExecutiveAgent {
         features: activeTurnFeatures,
       });
       const activePack = selection.packId;
+      input.runContext?.setSelectedPack?.(activePack);
       selectedPack = activePack;
       selectorReasons = selection.reasons;
+      // #region agent log
+      if (process.env.NODE_ENV !== 'test') fetch('http://127.0.0.1:7323/ingest/e7802cbc-6047-4a50-845a-416b4765b5c3',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'04f813'},body:JSON.stringify({sessionId:'04f813',runId:input.runContext?.runId ?? 'none',hypothesisId:'H2',location:'src/lib/ai/agents/executive-agent/executiveAgent.ts:173',message:'executive selection finalized for run',data:{channel:resolvedChannel,selectedPack:activePack,priorPack:input.runContext?.priorPack ?? null,reasons:selection.reasons.slice(0,3)},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
 
       logger.info('[executiveAgent] harness.selection', {
         selectedPack,

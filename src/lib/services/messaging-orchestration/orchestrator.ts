@@ -16,6 +16,7 @@ import type {
   PrepareRunParams,
   RelevanceClassification,
   RunContext,
+  RunPackId,
   RunPhase,
   SteerEvent,
 } from './types';
@@ -48,6 +49,8 @@ type LocalRunRecord = {
   windowEndsAt: number;
   hasQueuedFollowup: boolean;
   classifierDecision: RelevanceClassification['decision'] | null;
+  priorPack: RunPackId | null;
+  selectedPack: RunPackId | null;
   droppedSummary: string[];
   runPhase: RunPhase;
   stale: boolean;
@@ -209,6 +212,7 @@ export class MessagingOrchestrator {
         burstId: this.deps.createId(),
         windowEndsAt: this.deps.now(),
         classifierDecision: null,
+        priorPack: null,
         droppedSummary: [],
         runPhase: 'running',
       });
@@ -252,6 +256,8 @@ export class MessagingOrchestrator {
 
     if (params.isCommand) {
       const activeRunId = stateAfterInbound.activeRunId;
+      const priorPack =
+        activeRunId ? this.readLocalRunSelectedPack(conversationKey, activeRunId) : null;
       if (activeRunId) {
         this.deps.emitEvent('orchestrator.run.superseded', {
           channel,
@@ -270,6 +276,7 @@ export class MessagingOrchestrator {
         userRequest,
         expectedRevision: stateAfterInbound.revision,
         forceReplace: true,
+        priorPack,
       }).catch((error) => {
         if (isBenignStartConflict(error)) {
           return null;
@@ -308,6 +315,10 @@ export class MessagingOrchestrator {
       });
 
       if (shouldSupersede(classifierDecision)) {
+        const priorPack = this.readLocalRunSelectedPack(
+          conversationKey,
+          stateAfterInbound.activeRunId,
+        );
         this.deps.emitEvent('orchestrator.run.superseded', {
           channel,
           conversationId,
@@ -331,6 +342,7 @@ export class MessagingOrchestrator {
           expectedRevision: stateAfterInbound.revision,
           forceReplace: true,
           classifierDecision,
+          priorPack,
         }).catch((error) => {
           if (isBenignStartConflict(error)) {
             return null;
@@ -368,6 +380,10 @@ export class MessagingOrchestrator {
         !explicitFollowupQueue &&
         activeRunPhase === 'commit_boundary'
       ) {
+        const priorPack = this.readLocalRunSelectedPack(
+          conversationKey,
+          stateAfterInbound.activeRunId,
+        );
         this.deps.emitEvent('orchestrator.steer.blocked_commit_boundary', {
           channel,
           conversationId,
@@ -402,6 +418,7 @@ export class MessagingOrchestrator {
           expectedRevision: stateAfterInbound.revision,
           forceReplace: true,
           classifierDecision,
+          priorPack,
         }).catch((error) => {
           if (isBenignStartConflict(error)) {
             return null;
@@ -639,6 +656,7 @@ export class MessagingOrchestrator {
     const queuedRevision = state.queuedRevision;
 
     if (queuedText && queuedRevision && queuedRevision > runContext.revision) {
+      const priorPack = this.readLocalRunSelectedPack(conversationKey, runContext.runId);
       const start = await this.startRun({
         channel: runContext.channel,
         conversationId: runContext.conversationId,
@@ -646,6 +664,7 @@ export class MessagingOrchestrator {
         userRequest: queuedText,
         expectedRevision: state.revision,
         forceReplace: true,
+        priorPack,
         nextBurstId: this.deps.createId(),
       }).catch((error) => {
         if (isBenignStartConflict(error)) {
@@ -770,6 +789,17 @@ export class MessagingOrchestrator {
     this.localRuns.delete(conversationKey);
   }
 
+  private readLocalRunSelectedPack(
+    conversationKey: string,
+    runId: string,
+  ): RunPackId | null {
+    const active = this.localRuns.get(conversationKey);
+    if (!active || active.runId !== runId || active.stale) {
+      return null;
+    }
+    return active.selectedPack;
+  }
+
   private abortLocalRun(
     conversationKey: string,
     runId: string,
@@ -798,8 +828,16 @@ export class MessagingOrchestrator {
       conversationId: record.conversationId,
       conversationKey: record.conversationKey,
       classifierDecision: record.classifierDecision,
+      priorPack: record.priorPack,
       droppedSummary: record.droppedSummary,
       abortSignal: record.abortController.signal,
+      setSelectedPack: (packId: RunPackId) => {
+        const local = this.localRuns.get(record.conversationKey);
+        if (!local || local.runId !== record.runId || local.stale) {
+          return;
+        }
+        local.selectedPack = packId;
+      },
       isRunCurrent: async () => {
         const local = this.localRuns.get(record.conversationKey);
         if (!local || local.runId !== record.runId || local.stale) {
@@ -990,6 +1028,7 @@ export class MessagingOrchestrator {
     burstId: string;
     windowEndsAt: number;
     classifierDecision: RelevanceClassification['decision'] | null;
+    priorPack: RunPackId | null;
     droppedSummary: string[];
     runPhase: RunPhase;
   }): RunContext {
@@ -1018,6 +1057,8 @@ export class MessagingOrchestrator {
       windowEndsAt: params.windowEndsAt,
       hasQueuedFollowup: false,
       classifierDecision: params.classifierDecision,
+      priorPack: params.priorPack,
+      selectedPack: null,
       droppedSummary: [...params.droppedSummary],
       runPhase: params.runPhase,
       stale: false,
@@ -1035,6 +1076,7 @@ export class MessagingOrchestrator {
     expectedRevision: number;
     forceReplace: boolean;
     classifierDecision?: RelevanceClassification;
+    priorPack?: RunPackId | null;
     nextBurstId?: string;
   }): Promise<{ runContext: RunContext }> {
     const runId = this.deps.createId();
@@ -1054,7 +1096,7 @@ export class MessagingOrchestrator {
         activeRunId: runId,
         activeRevision: state.revision,
         activeRunPhase: 'running',
-        latestIntentText: params.userRequest,
+        latestIntentText: params.classifierDecision?.latestIntentText ?? params.userRequest,
         classifierDecision: params.classifierDecision?.decision ?? state.classifierDecision,
         pendingCount: 0,
         queuedIntentText: null,
@@ -1064,6 +1106,9 @@ export class MessagingOrchestrator {
         steerDroppedSummary: [],
       };
     });
+    // #region agent log
+    if (process.env.NODE_ENV !== 'test') fetch('http://127.0.0.1:7323/ingest/e7802cbc-6047-4a50-845a-416b4765b5c3',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'04f813'},body:JSON.stringify({sessionId:'04f813',runId,hypothesisId:'H1',location:'src/lib/services/messaging-orchestration/orchestrator.ts:1068',message:'startRun preserved merged intent and prior pack',data:{channel:params.channel,usedClassifierIntent:Boolean(params.classifierDecision?.latestIntentText),latestIntentText:(params.classifierDecision?.latestIntentText ?? params.userRequest).slice(0,160),priorPack:params.priorPack ?? null},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
 
     const runContext = this.registerLocalRun({
       channel: params.channel,
@@ -1074,6 +1119,7 @@ export class MessagingOrchestrator {
       burstId: current.burstId,
       windowEndsAt: current.windowEndsAt,
       classifierDecision: current.classifierDecision,
+      priorPack: params.priorPack ?? null,
       droppedSummary: current.droppedSummary,
       runPhase: current.activeRunPhase ?? 'running',
     });

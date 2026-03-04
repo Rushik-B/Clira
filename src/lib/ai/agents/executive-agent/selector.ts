@@ -1,6 +1,7 @@
 import { z } from 'zod';
-import { callObject } from '@/lib/ai/callLlm';
-import { models } from '@/lib/ai/models';
+import { withConcurrency } from '@/lib/ai/concurrency';
+import { LlmError } from '@/lib/ai/errors';
+import { withRetry } from '@/lib/ai/retry';
 import { logger } from '@/lib/logger';
 import type {
   ConversationMessageDTO,
@@ -396,9 +397,42 @@ const selectorOutputSchema = z.object({
     'reminder_alert_pack',
     'email_send_pack',
   ]),
-  reason: z.string().min(1).max(220),
-  confidence: z.number().min(0).max(1),
 });
+
+const CEREBRAS_SELECTOR_RESPONSE_FORMAT = {
+  type: 'json_schema',
+  json_schema: {
+    name: 'executive_pack_selection',
+    strict: true,
+    schema: {
+      type: 'object',
+      properties: {
+        packId: {
+          type: 'string',
+          enum: [
+            'core_recall_pack',
+            'inbox_context_pack',
+            'calendar_query_pack',
+            'calendar_mutation_pack',
+            'reminder_alert_pack',
+            'email_send_pack',
+          ],
+        },
+      },
+      required: ['packId'],
+      additionalProperties: false,
+    },
+  },
+} as const;
+
+type CerebrasSelectorApiResponse = {
+  choices?: Array<{
+    message?: {
+      content?: string | null;
+    } | null;
+  }>;
+  id?: string;
+};
 
 /**
  * Enables the optional LLM selector path.
@@ -415,16 +449,6 @@ function isSelectorLlmEnabled(channel: ExecutiveTurnFeatures['channel']): boolea
   if (channelFlag === 'true') return true;
   if (channelFlag === 'false') return false;
   return globalFlag === 'true';
-}
-
-/**
- * Minimum confidence required before accepting the LLM selector output.
- * Values are clamped to [0, 1]. Invalid input falls back to 0.55.
- */
-function getSelectorMinConfidence(): number {
-  const raw = Number.parseFloat(process.env.EA_SELECTOR_LLM_MIN_CONFIDENCE ?? '0.55');
-  if (!Number.isFinite(raw)) return 0.55;
-  return Math.max(0, Math.min(1, raw));
 }
 
 /**
@@ -461,6 +485,27 @@ function shouldBypassLlmSelector(features: ExecutiveTurnFeatures): boolean {
     features.reminderIntent ||
     features.alertIntent
   );
+}
+
+const SELECTOR_BURST_CACHE_MAX = 256;
+const selectorBurstPackCache = new Map<string, ToolPackId>();
+
+function getSelectorBurstCacheKey(
+  channel: ExecutiveTurnFeatures['channel'],
+  burstId?: string,
+): string | null {
+  if (!burstId) return null;
+  return `${channel}:${burstId}`;
+}
+
+function setCachedBurstPack(cacheKey: string, packId: ToolPackId): void {
+  selectorBurstPackCache.set(cacheKey, packId);
+  if (selectorBurstPackCache.size > SELECTOR_BURST_CACHE_MAX) {
+    const firstKey = selectorBurstPackCache.keys().next().value as string | undefined;
+    if (firstKey) {
+      selectorBurstPackCache.delete(firstKey);
+    }
+  }
 }
 
 /**
@@ -514,14 +559,6 @@ function formatRecentHistory(
     .join('\n');
 }
 
-/**
- * LLM selector prompt that gives the model conversation context and rich pack
- * descriptions so it can reason about intent semantically — including anaphoric
- * references like "put it in my calendar too" that regex cannot resolve.
- *
- * Hard state facts (draft present, pending calendar change) are still passed as
- * constraints so the LLM doesn't need to infer DB state.
- */
 function buildSelectorPrompt(params: {
   userRequest: string;
   features: ExecutiveTurnFeatures;
@@ -529,59 +566,147 @@ function buildSelectorPrompt(params: {
 }): string {
   const { userRequest, features, conversationHistory } = params;
 
-  const hardState = [
-    `draftCandidatePresent: ${features.draftCandidatePresent}`,
-    `explicitSendApproval: ${features.explicitSendApproval}`,
-    `pendingCalendarChangePresent: ${features.pendingCalendarChangePresent}`,
-  ].join(', ');
-
   return [
-    'You route the current user message to exactly one executive tool pack.',
-    'Choose the MINIMUM safe pack that still has enough tools to fulfil the request.',
+    'Pick exactly one packId for the user message.',
     '',
-    '## Tool packs (pick exactly one)',
+    'core_recall_pack — personal facts, memory, preferences',
+    'inbox_context_pack — email lookup, what someone said/wrote, drafting',
+    'calendar_query_pack — read calendar, check availability, workload overview',
+    'calendar_mutation_pack — create/move/cancel calendar events; includes anaphoric "add it", "put it in my cal", "book it"',
+    'reminder_alert_pack — set/snooze/dismiss reminders or email alerts',
+    'email_send_pack — send approved draft (only when draftCandidatePresent=true AND explicitSendApproval=true)',
     '',
-    '**core_recall_pack** — Memory recall only.',
-    '  Use when: user asks about something you should already know, personal facts, preferences.',
-    '  Tools: search_memory, append_to_supermemory',
+    'Examples:',
+    '"when is my next meeting?" → calendar_query_pack',
+    '"block tomorrow 2-3pm" → calendar_mutation_pack',
+    '"add that to my calendar" → calendar_mutation_pack',
+    '"put it in my cal too" → calendar_mutation_pack',
+    '"what did alex say in his email?" → inbox_context_pack',
+    '"draft a reply to sarah" → inbox_context_pack',
+    '"who is my manager?" → core_recall_pack',
+    '"when was my whistler trip?" → core_recall_pack',
+    '"remind me in an hour" → reminder_alert_pack',
+    '"yes send it" [draftCandidatePresent=true] → email_send_pack',
     '',
-    '**inbox_context_pack** — Email & comms context lookups.',
-    '  Use when: user asks about emails, messages, what someone said/wrote, inbox search.',
-    '  Tools: search_inbox_context, search_calendar + memory tools',
+    `State: draftCandidatePresent=${features.draftCandidatePresent}, explicitSendApproval=${features.explicitSendApproval}, pendingCalendarChangePresent=${features.pendingCalendarChangePresent}`,
     '',
-    '**calendar_query_pack** — Read-only calendar & schedule queries.',
-    '  Use when: user asks what is on their calendar, availability, meetings, workload overview.',
-    '  Tools: check_calendar, search_calendar, search_inbox_context + memory tools',
-    '',
-    '**calendar_mutation_pack** — Create, modify, or delete calendar events.',
-    '  Use when: user wants to ADD, BOOK, SCHEDULE, BLOCK, MOVE, CANCEL, or PUT something on their calendar.',
-    '  This includes follow-up requests like "put it in my calendar too", "add that to my cal", "book it".',
-    '  Tools: plan_calendar_change, commit_calendar_change, check_calendar + memory tools',
-    '',
-    '**reminder_alert_pack** — Reminder & alert CRUD.',
-    '  Use when: user wants to set, snooze, dismiss, list, or cancel reminders or email alerts.',
-    '  Tools: add_reminder, list_reminders, snooze_reminder, dismiss_reminder, cancel_reminder, add_email_alert, remove_email_alert, list_email_alerts',
-    '',
-    '**email_send_pack** — Send an already-drafted email.',
-    '  Use when: a draft is present AND user explicitly approves sending it.',
-    '  Tools: send_email, search_inbox_context + memory tools',
-    '',
-    '## Hard constraints',
-    '- NEVER pick email_send_pack unless explicitSendApproval=true AND draftCandidatePresent=true.',
-    '- NEVER pick calendar_mutation_pack for pure read/query requests (e.g. "what meetings do I have?").',
-    '- DO pick calendar_mutation_pack when the user wants to CREATE or MODIFY calendar events, even if they use anaphoric language ("put it on my calendar", "add that too", "book it").',
-    '',
-    '## Conversation context',
+    'Recent conversation:',
     formatRecentHistory(conversationHistory),
     '',
-    `## Current user message`,
-    userRequest,
+    `User: ${userRequest}`,
     '',
-    '## State facts (from system, treat as ground truth)',
-    hardState,
-    '',
-    'Return JSON: { packId, reason, confidence }.',
+    'Return JSON: { "packId": "..." }',
   ].join('\n');
+}
+
+async function callCerebrasSelector(params: {
+  userRequest: string;
+  features: ExecutiveTurnFeatures;
+  conversationHistory: ConversationMessageDTO[];
+  abortSignal?: AbortSignal;
+}): Promise<z.infer<typeof selectorOutputSchema>> {
+  const apiKey = process.env.CEREBRAS_API_KEY?.trim();
+  if (!apiKey) {
+    throw new LlmError(
+      'CEREBRAS_API_KEY is required when EA selector Cerebras routing is enabled',
+      {
+        code: 'provider',
+        provider: 'cerebras',
+        model: process.env.EA_SELECTOR_CEREBRAS_MODEL?.trim() || 'llama3.1-8b',
+      },
+    );
+  }
+
+  const model = process.env.EA_SELECTOR_CEREBRAS_MODEL?.trim() || 'llama3.1-8b';
+  const body = {
+    model,
+    temperature: 0,
+    messages: [
+      {
+        role: 'system',
+        content:
+          'You are a routing classifier for executive tool packs. Return strict JSON only.',
+      },
+      {
+        role: 'user',
+        content: buildSelectorPrompt({
+          userRequest: params.userRequest,
+          features: params.features,
+          conversationHistory: params.conversationHistory,
+        }),
+      },
+    ],
+    response_format: CEREBRAS_SELECTOR_RESPONSE_FORMAT,
+  };
+
+  const exec = async () => {
+    const response = await fetch('https://api.cerebras.ai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+      signal: params.abortSignal,
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new LlmError(
+        `Cerebras selector request failed: ${response.status} ${errorText}`.slice(
+          0,
+          1200,
+        ),
+        {
+          code: 'provider',
+          status: response.status,
+          provider: 'cerebras',
+          model,
+        },
+      );
+    }
+
+    const payload = (await response.json()) as CerebrasSelectorApiResponse;
+    const content = payload.choices?.[0]?.message?.content;
+    if (typeof content !== 'string' || !content.trim()) {
+      throw new LlmError('Cerebras selector returned empty content', {
+        code: 'invalid_output',
+        provider: 'cerebras',
+        model,
+        requestId: payload.id,
+      });
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(content);
+    } catch (error) {
+      throw new LlmError(
+        `Cerebras selector returned non-JSON content: ${content}`.slice(0, 1200),
+        {
+          code: 'invalid_output',
+          provider: 'cerebras',
+          model,
+          requestId: payload.id,
+          cause: error,
+        },
+      );
+    }
+
+    return selectorOutputSchema.parse(parsed);
+  };
+
+  return withConcurrency(
+    () =>
+      withRetry(exec, {
+        maxAttempts: 2,
+        baseDelayMs: 250,
+      }),
+    {
+      key: `${params.features.channel}.executive.selector`,
+      maxConcurrency: 4,
+    },
+  );
 }
 
 export function selectExecutiveToolPack(
@@ -695,9 +820,12 @@ export async function selectExecutiveToolPackForTurn(params: {
   input: ExecutiveAgentInput;
   features: ExecutiveTurnFeatures;
 }): Promise<PackSelection> {
-  // Baseline deterministic selector is always available and is used as fallback
-  // for disabled, low-confidence, or failed LLM selector runs.
+  // Deterministic selector is always computed as fallback for disabled or failed LLM runs.
   const deterministic = selectExecutiveToolPack(params.features);
+  const cacheKey = getSelectorBurstCacheKey(
+    params.features.channel,
+    params.input.runContext?.burstId,
+  );
 
   if (!isSelectorLlmEnabled(params.features.channel)) {
     return deterministic;
@@ -708,54 +836,70 @@ export async function selectExecutiveToolPackForTurn(params: {
   }
 
   try {
-    const { object } = await callObject<z.infer<typeof selectorOutputSchema>>({
-      model: models.execSelector(),
-      system:
-        'You are a routing classifier for executive tool packs. Return strict JSON only.',
-      prompt: buildSelectorPrompt({
-        userRequest: params.input.userRequest,
-        features: params.features,
-        conversationHistory: params.input.conversationHistory,
-      }),
-      schema: selectorOutputSchema,
-      temperature: 0,
-      op: `${params.features.channel}.executive.selector`,
-      concurrency: {
-        key: `${params.features.channel}.executive.selector`,
-        maxConcurrency: 4,
-      },
-      retry: { maxAttempts: 2, baseDelayMs: 250 },
+    const object = await callCerebrasSelector({
+      userRequest: params.input.userRequest,
+      features: params.features,
+      conversationHistory: params.input.conversationHistory,
       abortSignal: params.input.abortSignal,
     });
 
-    if (object.confidence < getSelectorMinConfidence()) {
-      logger.info('[executiveAgent] selector.llm_low_confidence_fallback', {
-        confidence: object.confidence,
-        minConfidence: getSelectorMinConfidence(),
-        llmPack: object.packId,
-      });
-      return deterministic;
-    }
-
-    // Even with high confidence, route through hard safety constraints.
+    // Route through hard safety constraints.
     const safePack = enforcePackSafety(object.packId, params.features);
     if (safePack !== object.packId) {
       logger.warn('[executiveAgent] selector.llm_safety_override', {
         llmPack: object.packId,
         safePack,
-        reason: object.reason,
       });
+    }
+    if (cacheKey) {
+      setCachedBurstPack(cacheKey, safePack);
+      // #region agent log
+      if (process.env.NODE_ENV !== 'test') fetch('http://127.0.0.1:7323/ingest/e7802cbc-6047-4a50-845a-416b4765b5c3',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'04f813'},body:JSON.stringify({sessionId:'04f813',runId:params.input.runContext?.runId ?? 'none',hypothesisId:'H3',location:'src/lib/ai/agents/executive-agent/selector.ts:847',message:'selector cached successful pack for burst',data:{channel:params.features.channel,burstId:params.input.runContext?.burstId ?? null,safePack},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
     }
 
     return buildSelection(
       safePack,
-      [`llm selector: ${object.reason}`],
+      ['llm selector'],
       getDefaultPackReminders(safePack),
     );
   } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    const isRateLimited =
+      (error instanceof LlmError && error.status === 429) ||
+      /(?:\b429\b|rate[\s_-]?limit|too_many_requests|queue_exceeded)/i.test(errorMessage);
+    const cachedPack = cacheKey ? selectorBurstPackCache.get(cacheKey) : undefined;
+    if (isRateLimited && cachedPack) {
+      // #region agent log
+      if (process.env.NODE_ENV !== 'test') fetch('http://127.0.0.1:7323/ingest/e7802cbc-6047-4a50-845a-416b4765b5c3',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'04f813'},body:JSON.stringify({sessionId:'04f813',runId:params.input.runContext?.runId ?? 'none',hypothesisId:'H3',location:'src/lib/ai/agents/executive-agent/selector.ts:860',message:'selector fallback reused cached burst pack',data:{channel:params.features.channel,burstId:params.input.runContext?.burstId ?? null,cachedPack,error:errorMessage.slice(0,180)},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+      return buildSelection(
+        cachedPack,
+        ['selector rate-limited; reused cached pack for current burst'],
+        getDefaultPackReminders(cachedPack),
+      );
+    }
+
+    if (
+      deterministic.packId === 'core_recall_pack' &&
+      params.input.runContext?.priorPack
+    ) {
+      // #region agent log
+      if (process.env.NODE_ENV !== 'test') fetch('http://127.0.0.1:7323/ingest/e7802cbc-6047-4a50-845a-416b4765b5c3',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'04f813'},body:JSON.stringify({sessionId:'04f813',runId:params.input.runContext?.runId ?? 'none',hypothesisId:'H2',location:'src/lib/ai/agents/executive-agent/selector.ts:876',message:'selector fallback inherited prior pack from superseded run',data:{channel:params.features.channel,burstId:params.input.runContext?.burstId ?? null,priorPack:params.input.runContext.priorPack,error:errorMessage.slice(0,180)},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+      return buildSelection(
+        params.input.runContext.priorPack,
+        ['inherited prior pack from superseded run'],
+        getDefaultPackReminders(params.input.runContext.priorPack),
+      );
+    }
+
     logger.warn('[executiveAgent] selector.llm_failed_fallback', {
-      error: error instanceof Error ? error.message : String(error),
+      error: errorMessage,
     });
+    // #region agent log
+    if (process.env.NODE_ENV !== 'test') fetch('http://127.0.0.1:7323/ingest/e7802cbc-6047-4a50-845a-416b4765b5c3',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'04f813'},body:JSON.stringify({sessionId:'04f813',runId:params.input.runContext?.runId ?? 'none',hypothesisId:'H3',location:'src/lib/ai/agents/executive-agent/selector.ts:891',message:'selector fallback used deterministic pack',data:{channel:params.features.channel,burstId:params.input.runContext?.burstId ?? null,deterministicPack:deterministic.packId,error:errorMessage.slice(0,180)},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
     return deterministic;
   }
 }

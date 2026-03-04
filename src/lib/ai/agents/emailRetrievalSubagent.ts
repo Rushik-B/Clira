@@ -624,6 +624,27 @@ export async function runEmailRetrieval(
       });
     }
 
+    if (dependencies.abortSignal?.aborted) {
+      const coverage = {
+        ...searchResult.coverage,
+        budgetNotes: [
+          ...(searchResult.coverage.budgetNotes ?? []),
+          'Skipped deep LLM compression because a newer user message superseded this run.',
+        ],
+      };
+      // #region agent log
+      if (process.env.NODE_ENV !== 'test') fetch('http://127.0.0.1:7323/ingest/e7802cbc-6047-4a50-845a-416b4765b5c3',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'04f813'},body:JSON.stringify({sessionId:'04f813',runId:'email-retrieval',hypothesisId:'H4',location:'src/lib/ai/agents/emailRetrievalSubagent.ts:634',message:'retrieval preflight aborted before llm rerank',data:{action,mode,candidateCount:searchResult.candidates.length},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+      return createDeterministicEvidencePack({
+        action,
+        candidates: searchResult.candidates,
+        coverage,
+        mode,
+        includeQuotes: request.options?.includeQuotes,
+        includeSnippets: request.options?.includeSnippets,
+      });
+    }
+
     const prompt = buildEmailRetrievalPrompt({
       request: { ...request, mode },
       coverage: searchResult.coverage,

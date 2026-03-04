@@ -31,7 +31,16 @@ export interface ExecutiveAgentInput {
     runId: string;
     burstId: string;
     classifierDecision?: 'supersede' | 'followup' | 'ambiguous' | null;
+    priorPack?:
+      | 'core_recall_pack'
+      | 'inbox_context_pack'
+      | 'calendar_query_pack'
+      | 'calendar_mutation_pack'
+      | 'reminder_alert_pack'
+      | 'email_send_pack'
+      | null;
     droppedSummary?: string[];
+    setSelectedPack?: (packId: ToolPackId) => void;
     isRunCurrent: () => Promise<boolean>;
     isBurstStable: () => boolean;
     consumeSteerEvents?: (afterSeq: number) => Promise<ConsumeSteerEventsResult>;
