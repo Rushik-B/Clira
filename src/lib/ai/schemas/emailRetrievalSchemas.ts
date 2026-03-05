@@ -48,6 +48,78 @@ export const EmailEvidenceQuoteSchema = z.object({
 
 export type EmailEvidenceQuoteDTO = z.infer<typeof EmailEvidenceQuoteSchema>;
 
+export const ExpandedInboxMessageSchema = z.object({
+  messageId: z.string().describe('Gmail message ID for this thread message'),
+  date: z.string().describe('ISO date string for the message'),
+  from: z.string().describe('Sender display name + email'),
+  to: z.array(z.string()).describe('Recipients in the To field'),
+  cc: z.array(z.string()).describe('Recipients in the Cc field'),
+  subject: z.string().describe('Message subject line'),
+  bodyText: z
+    .string()
+    .max(5000)
+    .describe('Bounded plain-text body content for this message'),
+  isAnchor: z
+    .boolean()
+    .describe('True when this is the ranked message selected as the expansion anchor'),
+  truncatedBody: z
+    .boolean()
+    .describe('True when the body text was truncated by expansion caps'),
+});
+
+export type ExpandedInboxMessageDTO = z.infer<typeof ExpandedInboxMessageSchema>;
+
+export const ExpandedInboxThreadSchema = z.object({
+  threadId: z.string().describe('Gmail thread ID for the expanded thread slice'),
+  mailboxId: z.string().optional().describe('Mailbox ID that owns this thread'),
+  mailboxEmail: z.string().optional().describe('Mailbox email address for context'),
+  anchorMessageId: z.string().describe('Message ID used as the expansion anchor'),
+  anchorSubject: z.string().describe('Subject of the anchor message'),
+  selectionRank: z
+    .number()
+    .int()
+    .min(1)
+    .describe('1-based rank of the anchor candidate in the ranked retrieval pool'),
+  anchorReason: z
+    .string()
+    .max(240)
+    .describe('Why this thread was selected for bounded expansion'),
+  hasMoreBefore: z
+    .boolean()
+    .describe('True when older messages exist before the returned slice'),
+  hasMoreAfter: z
+    .boolean()
+    .describe('True when newer messages exist after the returned slice'),
+  messagesReturned: z
+    .number()
+    .int()
+    .min(0)
+    .describe('Number of messages returned in this bounded slice'),
+  messages: z
+    .array(ExpandedInboxMessageSchema)
+    .describe('Oldest-to-newest bounded message slice around the anchor'),
+});
+
+export type ExpandedInboxThreadDTO = z.infer<typeof ExpandedInboxThreadSchema>;
+
+export const EmailEvidenceExpansionSchema = z.object({
+  applied: z
+    .boolean()
+    .describe('True when bounded full-thread expansion was attached to the evidence pack'),
+  mode: z
+    .enum(['compact', 'expanded'])
+    .describe('Whether the returned evidence pack stayed compact or included expanded threads'),
+  reasons: z
+    .array(z.string())
+    .describe('Deterministic reasons for the expansion decision'),
+  promotedCandidateRanks: z
+    .array(z.number().int().min(1))
+    .optional()
+    .describe('Candidate ranks promoted into expanded threads beyond the compact top matches'),
+});
+
+export type EmailEvidenceExpansionDTO = z.infer<typeof EmailEvidenceExpansionSchema>;
+
 export const EmailEvidenceCoverageSchema = z.object({
   action: z.enum(emailEvidenceActionValues).describe('Search action executed'),
   queriesTried: z.array(z.string()).describe('Retrieval queries or search plans executed'),
@@ -126,6 +198,13 @@ export const EmailEvidencePackSchema = z.object({
   action: z.enum(emailEvidenceActionValues).describe('Search action executed'),
   matches: z.array(EmailEvidenceMatchSchema).describe('Ranked best matches'),
   quotes: z.array(EmailEvidenceQuoteSchema).describe('Supporting quotes from matches'),
+  expandedThreads: z
+    .array(ExpandedInboxThreadSchema)
+    .optional()
+    .describe('Optional bounded full-thread slices attached for richer context'),
+  expansion: EmailEvidenceExpansionSchema
+    .optional()
+    .describe('Bounded thread-expansion decision metadata'),
   coverage: EmailEvidenceCoverageSchema.describe('Coverage metadata for the search'),
   confidence: z.enum(['low', 'medium', 'high']).describe('Overall confidence in the matches'),
   metadata: EmailEvidenceMetadataSchema.optional().describe('Additive retrieval metadata'),
