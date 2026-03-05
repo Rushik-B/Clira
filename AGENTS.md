@@ -332,6 +332,7 @@ For implementation summaries:
 - Keep internal technical documentation in Obsidian, not the repo, unless the file is operationally required for contributors or tooling.
 - In Obsidian, document what changed, why, and implications. Do not write step-by-step setup guides there.
 - Repo docs that are already present may be updated when they are directly tied to runtime or contributor operation.
+- ALWAYS Use the obsidian-cli to control obsidian. See the obsidian-cli skill for this!
 
 ---
 
