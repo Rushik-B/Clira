@@ -206,8 +206,8 @@ function createMockToolResultCache() {
   };
 }
 
-function createContext() {
-  return {
+function createContext(overrides: Record<string, unknown> = {}) {
+  const baseContext = {
     input: {
       userId: 'user-1',
       userEmail: 'user@example.com',
@@ -255,6 +255,15 @@ function createContext() {
     isBurstStable: () => true,
     onMemoryStored: vi.fn(),
     toolResultCache: createMockToolResultCache(),
+  };
+
+  return {
+    ...baseContext,
+    ...overrides,
+    input: {
+      ...baseContext.input,
+      ...((overrides.input as Record<string, unknown> | undefined) ?? {}),
+    },
   };
 }
 
@@ -354,6 +363,41 @@ describe('buildContextTools search_inbox_context', () => {
       counts: { total: 2, tool: 2 },
       budgetExceeded: true,
     });
+  });
+
+  test('runtime inbox cache key changes when the live user request changes', async () => {
+    const nextSubagentCallIndex = vi.fn(() => 0);
+    const sharedCache = createMockToolResultCache();
+    const args = {
+      action: 'find',
+      mode: 'quick',
+      queryText: 'Find the invoice thread',
+    };
+
+    const firstTools = buildContextTools({
+      context: createContext({
+        input: {
+          userRequest: 'Find the invoice thread',
+        },
+        toolResultCache: sharedCache,
+      }),
+      nextSubagentCallIndex,
+    }) as Record<string, { execute: (toolArgs: Record<string, unknown>) => Promise<unknown> }>;
+
+    const secondTools = buildContextTools({
+      context: createContext({
+        input: {
+          userRequest: 'What happened in the invoice thread?',
+        },
+        toolResultCache: sharedCache,
+      }),
+      nextSubagentCallIndex,
+    }) as Record<string, { execute: (toolArgs: Record<string, unknown>) => Promise<unknown> }>;
+
+    await firstTools.search_inbox_context.execute(args);
+    await secondTools.search_inbox_context.execute(args);
+
+    expect(retrievalMocks.runEmailRetrieval).toHaveBeenCalledTimes(2);
   });
 
   test('passes structured summarize_range filters through without natural-language date inference', async () => {
