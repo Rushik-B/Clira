@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { GmailPushService } from '@/lib/email/gmailPushService';
+import { getGmailPubSubTopic } from '@/lib/email/gmailIngestionConfig';
 
 export async function GET(request: NextRequest) {
   // Security: Only allow requests with the correct cron secret
@@ -13,6 +14,7 @@ export async function GET(request: NextRequest) {
   console.log('🔄 Starting Gmail watch renewal for all mailboxes...');
 
   try {
+    const topicName = getGmailPubSubTopic();
     const mailboxes = await prisma.mailbox.findMany({
       where: {
         provider: 'google',
@@ -41,9 +43,6 @@ export async function GET(request: NextRequest) {
 
         const pushService = new GmailPushService(mailbox.userId);
 
-        // Setup push notifications with the Cloud Pub/Sub topic
-        const topicName = `projects/${process.env.GOOGLE_CLOUD_PROJECT_ID}/topics/clira-email-updates`;
-        
         const result = await pushService.setupPushNotifications({
           userId: mailbox.userId,
           mailboxId: mailbox.id,

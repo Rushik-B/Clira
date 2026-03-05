@@ -7,6 +7,7 @@ import { encryptToken } from '@/lib/encryption';
 import { checkUserScopes } from '@/lib/auth/scope-utils';
 import { GmailPushService } from '@/lib/email/gmailPushService';
 import { enqueueInboxBackfillForMailboxIfReady } from '@/lib/services/inbox-search';
+import { getGmailPubSubTopic } from '@/lib/email/gmailIngestionConfig';
 import {
   createMailboxConnectAuthUrl,
   getBaseUrl,
@@ -212,16 +213,16 @@ export async function GET(request: NextRequest) {
     });
 
     if (mailboxStatus === 'CONNECTED') {
-      if (!process.env.GOOGLE_CLOUD_PROJECT_ID) {
-        console.warn('GOOGLE_CLOUD_PROJECT_ID is not set; skipping Gmail watch setup');
-      } else {
+      try {
+        const topicName = getGmailPubSubTopic();
         const pushService = new GmailPushService(session.userId);
-        const topicName = `projects/${process.env.GOOGLE_CLOUD_PROJECT_ID}/topics/clira-email-updates`;
         await pushService.setupPushNotifications({
           userId: session.userId,
           mailboxId: mailbox.id,
           topicName,
         });
+      } catch (error) {
+        console.warn('Skipping Gmail watch setup during mailbox connect due to ingestion config error', error);
       }
 
       try {
