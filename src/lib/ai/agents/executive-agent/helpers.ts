@@ -86,6 +86,60 @@ export function buildTerminalFallbackResponse(toolResults: unknown): string {
   return "I couldn't generate a response. Please try again.";
 }
 
+const TIMESTAMP_METADATA_LINE_PATTERN = /^\[Timestamp\]\s+\d{4}-\d{2}-\d{2}T/i;
+const TOOL_HISTORY_METADATA_LINE_PATTERN = /^\[Tool history\]\s+/i;
+
+function normalizeAssistantResponseWhitespace(value: string): string {
+  return value.replace(/\n{3,}/g, '\n\n').trim();
+}
+
+export function stripInternalMetadataFromAssistantResponse(
+  response: string,
+): { response: string; stripped: boolean } {
+  if (!response) {
+    return { response: '', stripped: false };
+  }
+
+  const cleanedLines: string[] = [];
+  const timestampBlockPayloadLines: string[] = [];
+  let stripped = false;
+  let insideTimestampBlock = false;
+
+  for (const line of response.split('\n')) {
+    const trimmed = line.trim();
+
+    if (TIMESTAMP_METADATA_LINE_PATTERN.test(trimmed)) {
+      stripped = true;
+      insideTimestampBlock = true;
+      continue;
+    }
+
+    if (TOOL_HISTORY_METADATA_LINE_PATTERN.test(trimmed)) {
+      stripped = true;
+      continue;
+    }
+
+    if (insideTimestampBlock) {
+      if (trimmed.length === 0) {
+        insideTimestampBlock = false;
+      } else {
+        timestampBlockPayloadLines.push(line);
+      }
+      stripped = true;
+      continue;
+    }
+
+    cleanedLines.push(line);
+  }
+
+  let cleanedResponse = normalizeAssistantResponseWhitespace(cleanedLines.join('\n'));
+  if (!cleanedResponse && timestampBlockPayloadLines.length > 0) {
+    cleanedResponse = normalizeAssistantResponseWhitespace(timestampBlockPayloadLines.join('\n'));
+  }
+
+  return { response: cleanedResponse, stripped };
+}
+
 export function isDateTimeTime(value: CalendarEventDraftDTO['start']): value is { dateTime: string; timeZone: string } {
   return Boolean(value && 'dateTime' in value);
 }

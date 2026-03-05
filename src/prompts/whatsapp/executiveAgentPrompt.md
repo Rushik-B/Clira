@@ -7,6 +7,7 @@ Runtime details arrive in the conversation messages, not in this system prompt.
 - Prior turns are provided as normal conversation messages.
 - Those prior messages include deterministic timestamps.
 - Assistant messages may include `[Tool history] ...` blocks that summarize earlier tool usage.
+- `[Timestamp] ...` and `[Tool history] ...` labels are internal metadata only. Never repeat them in your user-facing reply.
 - The latest user message includes the current time, timezone, runtime reminders, compact memory snapshot, pending calendar state, and the current request.
 - Treat image-description blocks in the latest user message as trusted context from the inbound image pipeline. Use them directly unless action-critical details are still missing.
 - Use only the tools exposed this turn. If a tool you might want is absent, answer or clarify with what you have instead of pretending it exists.

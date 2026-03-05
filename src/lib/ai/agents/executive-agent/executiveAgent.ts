@@ -33,6 +33,7 @@ import {
   collectOutOfPackToolNames,
   resolveProgressChannel,
   resolveRetrievalProfile,
+  stripInternalMetadataFromAssistantResponse,
   stripUndefined,
   stopWhenToolCalled,
   wrapToolsWithTimingMetadata,
@@ -396,6 +397,15 @@ export class ExecutiveAgent {
       if (!response) {
         response = buildTerminalFallbackResponse(toolResults);
         logger.info(`[executiveAgent] Empty model text, using fallback: ${response}`);
+      }
+      const sanitizedResponse = stripInternalMetadataFromAssistantResponse(response);
+      if (sanitizedResponse.stripped) {
+        logger.warn('[executiveAgent] Stripped leaked internal metadata from assistant response');
+      }
+      response = sanitizedResponse.response;
+      if (!response) {
+        response = buildTerminalFallbackResponse(toolResults);
+        logger.warn(`[executiveAgent] Sanitized response became empty, using fallback: ${response}`);
       }
       workingStateController.updateFromResponse(response);
 
