@@ -34,6 +34,7 @@ export {
 } from '@/lib/services/inbox-search/ingestion';
 export { indexInboxSearchEmail } from '@/lib/services/inbox-search/indexer';
 export { searchInboxDocuments, buildInboxSearchPlan } from '@/lib/services/inbox-search/search';
+export { fetchInboxThreadSlice } from '@/lib/services/inbox-search/thread-expansion';
 export {
   enqueueInboxBackfillForConnectedMailboxes,
   enqueueInboxBackfillForMailboxIfReady,
@@ -65,6 +66,8 @@ export type {
   InboxSearchSearchRequest,
   InboxSearchSearchResult,
   InboxSearchSortBy,
+  InboxThreadSliceMessage,
+  InboxThreadSliceResult,
   InboxSearchToolArgs,
 } from '@/lib/services/inbox-search/types';
 export type {

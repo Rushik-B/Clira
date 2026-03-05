@@ -123,6 +123,30 @@ export type InboxSearchCandidate = {
   semanticUnavailable: boolean;
 };
 
+export type InboxThreadSliceMessage = {
+  messageId: string;
+  date: string;
+  from: string;
+  to: string[];
+  cc: string[];
+  subject: string;
+  bodyText: string;
+  isAnchor: boolean;
+  truncatedBody: boolean;
+};
+
+export type InboxThreadSliceResult = {
+  threadId: string;
+  mailboxId: string;
+  mailboxEmail: string;
+  anchorMessageId: string;
+  hasMoreBefore: boolean;
+  hasMoreAfter: boolean;
+  messagesReturned: number;
+  bodyCharsUsed: number;
+  messages: InboxThreadSliceMessage[];
+};
+
 export type InboxSearchCoverage = {
   action: InboxSearchAction;
   queriesTried: string[];
