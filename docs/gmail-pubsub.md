@@ -1,73 +1,93 @@
-# Gmail Pub/Sub Setup
+# Gmail Pub/Sub Ingestion
 
-This guide configures Gmail push notifications that feed Clira's ingestion pipeline.
+Clira supports two Gmail ingestion modes:
 
-## Important Topic Name
+- `pull` (default): dedicated `gmail-pull-worker` consumes Pub/Sub subscription.
+- `push` (optional): Pub/Sub pushes to `POST /api/gmail-push/webhook`.
 
-Current code paths set up watches against topic:
+Both modes reuse `GmailPushService.processPushNotification` for downstream processing.
 
-- `projects/<GOOGLE_CLOUD_PROJECT_ID>/topics/clira-email-updates`
+## Required Topic Source Of Truth
 
-If you use the setup script, pass `--topic clira-email-updates` explicitly.
+All Gmail watch setup and renewal flows use:
+
+- `GMAIL_PUBSUB_TOPIC`
+
+Example:
+
+```env
+GMAIL_PUBSUB_TOPIC=projects/<project-id>/topics/clira-email-updates
+```
 
 ## Automated Setup (Recommended)
+
+Pull mode (default):
 
 ```bash
 npm run setup:google -- \
   --project-id YOUR_PROJECT_ID \
-  --domain your-domain.com \
-  --topic clira-email-updates
+  --mode pull
 ```
 
-This script:
+Push mode:
 
-- Enables required APIs
-- Creates Pub/Sub topic + push subscription
-- Grants Gmail publisher IAM role
-- Creates a service account key
+```bash
+npm run setup:google -- \
+  --project-id YOUR_PROJECT_ID \
+  --mode push \
+  --domain your-domain.com
+```
 
-## Manual Setup
+What the script configures:
 
-1. Enable APIs in GCP project:
-- Gmail API
-- Pub/Sub API
-- IAM API
+- Pub/Sub topic
+- Gmail publisher IAM binding
+- Service account + key
+- Subscription retry policy (`min 10s`, `max 600s`)
+- Pull mode only: DLQ topic/subscription + dead-letter policy
 
-2. Create topic:
-- `clira-email-updates`
+## Runtime Configuration
 
-3. Create push subscription:
-- Endpoint: `https://YOUR_DOMAIN/api/gmail-push/webhook`
+```env
+GMAIL_INGESTION_MODE=pull
+GMAIL_PUBSUB_TOPIC=projects/<project-id>/topics/clira-email-updates
+GMAIL_PUBSUB_PULL_SUBSCRIPTION=projects/<project-id>/subscriptions/clira-gmail-pull-sub
+GMAIL_PUBSUB_PULL_MAX_MESSAGES=25
+GMAIL_PUBSUB_PULL_MAX_BYTES=10485760
+GMAIL_PUBSUB_PULL_SHUTDOWN_TIMEOUT_MS=15000
+```
 
-4. Grant Gmail publish permissions on the topic:
-- Member: `gmail-api-push@system.gserviceaccount.com`
-- Role: `roles/pubsub.publisher`
+Push mode notes:
 
-5. Create a service account key for app runtime access.
-
-## Required Environment Variables
-
-- `GOOGLE_CLOUD_PROJECT_ID`
-- `GOOGLE_APPLICATION_CREDENTIALS`
-- `GOOGLE_CLIENT_ID`
-- `GOOGLE_CLIENT_SECRET`
+- Set `GMAIL_INGESTION_MODE=push`
+- `POST /api/gmail-push/webhook` is enabled only in push mode
+- In pull mode, webhook returns `404`
 
 ## Runtime Endpoints
 
 - `POST /api/gmail-push/setup` - configure watch for authenticated mailbox
-- `POST /api/gmail-push/webhook` - Pub/Sub delivery endpoint
-- `GET /api/cron/renew-gmail-watches` - periodic renewal
+- `GET /api/cron/renew-gmail-watches` - renew watches for all connected mailboxes
+- `POST /api/gmail-push/webhook` - push-mode delivery endpoint only
 
 ## Validation
 
-1. Connect Gmail account in app.
-2. Trigger watch setup (`/api/gmail-push/setup` or mailbox connect flow).
+Pull mode:
+
+1. Start `npm run start:gmail-pull-worker`.
+2. Connect mailbox or call `/api/gmail-push/setup`.
 3. Send a test email to connected inbox.
-4. Verify logs show webhook receipt and queue state updates.
+4. Verify pull worker logs message ack/nack and downstream processing.
+
+Push mode:
+
+1. Set `GMAIL_INGESTION_MODE=push`.
+2. Ensure public HTTPS domain reaches `/api/gmail-push/webhook`.
+3. Send a test email and verify webhook logs + processing.
 
 ## Common Failure Modes
 
-- 401/403 from Google APIs: token scopes or credential mismatch
-- Pub/Sub webhook retries: endpoint not reachable or non-200 response
-- No new emails processed: stale/invalid watch, renew via cron endpoint
-- Missing mailbox context: mailbox is disconnected or credentials expired
+- Missing `GMAIL_PUBSUB_TOPIC`: watch setup/renew fails fast.
+- Pull mode missing `GMAIL_PUBSUB_PULL_SUBSCRIPTION`: worker fails fast.
+- Malformed Pub/Sub payload: acknowledged and logged as non-retryable.
+- Retryable processing failure: message nacked; Pub/Sub retry policy applies.
+- Persistent failures: message dead-lettered when DLQ policy threshold is reached.

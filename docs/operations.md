@@ -6,6 +6,7 @@ Operational baseline for running Clira in a stable app + worker + cron topology.
 
 - `app`: Next.js server (`npm run start`)
 - `worker`: BullMQ worker (`npm run start:worker`)
+- `gmail-pull-worker`: Pub/Sub pull ingestion worker (`npm run start:gmail-pull-worker`)
 - `cron`: Local scheduler (`npm run start:cron`) that triggers cron endpoints
 - `db`: Postgres
 - `redis`: Redis
@@ -19,6 +20,7 @@ Telegram v1 runtime model:
 
 - App health: `GET /api/health`
 - Queue stream auth check: `GET /api/queue/stream` (requires session)
+- Health response includes `gmailIngestionMode` and pull-worker heartbeat status
 
 ## Cron Endpoints
 
@@ -33,6 +35,7 @@ Primary endpoints:
 - `POST /api/cron/sort` - enqueue always-on sorting jobs
 - `POST /api/cron/reminders` - enqueue due reminders and mark stale reminders
 - `GET /api/cron/renew-gmail-watches` - renew Gmail watch subscriptions
+- `POST /api/gmail-push/webhook` - active only when mode=`push`
 
 ## Suggested Cron Schedule
 
@@ -43,6 +46,7 @@ Primary endpoints:
 ## Queue and Worker Verification
 
 Worker startup should log queue workers for onboarding, replies, sorting, mapping, and memory bootstrap.
+Gmail pull worker startup should log subscription name, flow-control settings, and heartbeat updates.
 
 Operational checks:
 
@@ -60,6 +64,7 @@ Telegram-specific checks:
 ## Logging Focus Areas
 
 - Gmail push ingestion: `src/lib/email/gmailPushService.ts`
+- Gmail pull ingestion worker: `src/gmail-pull-worker.ts`, `src/lib/email/gmailPullWorker.ts`
 - Reply generation stages: `src/lib/services/core/replyGenerator.ts`
 - Twilio/WhatsApp webhooks: `src/app/api/twilio/webhook/route.ts`, `src/app/api/whatsapp/webhook/route.ts`
 - Telegram poller + processor: `src/lib/services/telegram/telegramClient.ts`, `src/lib/services/telegram/messageProcessor.ts`
