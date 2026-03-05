@@ -16,6 +16,17 @@ describe('Executive agent metadata persistence', () => {
               _cache: { hit: true, source: 'history' },
             },
           ],
+          expandedThreads: [
+            {
+              threadId: 'thread-1',
+              messages: [
+                {
+                  messageId: 'msg-1',
+                  bodyText: 'very long body',
+                },
+              ],
+            },
+          ],
           summary: 'one match',
           _cache: {
             hit: true,
@@ -29,10 +40,15 @@ describe('Executive agent metadata persistence', () => {
     ];
 
     const sanitized = stripCacheDebugMetadataForPersistence(payload) as Array<{
-      result?: { _cache?: unknown; matches?: Array<{ _cache?: unknown }> };
+      result?: {
+        _cache?: unknown;
+        matches?: Array<{ _cache?: unknown }>;
+        expandedThreads?: unknown;
+      };
     }>;
 
     expect(sanitized[0]?.result?._cache).toBeUndefined();
     expect(sanitized[0]?.result?.matches?.[0]?._cache).toBeUndefined();
+    expect(sanitized[0]?.result?.expandedThreads).toBeUndefined();
   });
 });
