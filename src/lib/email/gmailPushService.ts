@@ -1038,6 +1038,7 @@ export class GmailPushService {
       
     } catch (error) {
       console.error('❌ Error processing Gmail push notification:', error);
+      throw error;
     } finally {
       // Always release the per-mailbox lock and clear coalesced target
       GmailPushService.processingLocks.delete(mailboxKey);
