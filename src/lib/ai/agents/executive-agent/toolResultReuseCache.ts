@@ -135,6 +135,34 @@ function normalizeValue(value: unknown): unknown {
   return Object.fromEntries(normalizedEntries);
 }
 
+function deriveSearchInboxIntentFingerprint(args: unknown, result?: unknown): string {
+  const argsRecord = isRecord(args) ? args : null;
+  const resultRecord = isRecord(result) ? result : null;
+  const actionCandidate = argsRecord?.action ?? resultRecord?.action;
+  const action = typeof actionCandidate === 'string' && actionCandidate.trim()
+    ? actionCandidate.trim()
+    : 'find';
+
+  if (
+    argsRecord &&
+    typeof argsRecord.intentFingerprint === 'string' &&
+    argsRecord.intentFingerprint.trim().length > 0
+  ) {
+    return argsRecord.intentFingerprint.trim().toLowerCase();
+  }
+
+  const expansion = isRecord(resultRecord?.expansion) ? resultRecord?.expansion : null;
+  const modeCandidate = expansion?.mode;
+  const hasExpandedThreads =
+    Array.isArray(resultRecord?.expandedThreads) && resultRecord.expandedThreads.length > 0;
+  const shape =
+    modeCandidate === 'expanded' || hasExpandedThreads
+      ? 'expanded'
+      : 'compact';
+
+  return `${action}:${shape}`;
+}
+
 function normalizeToolArgs(toolName: CacheableToolName, args: unknown): unknown {
   const normalized = normalizeValue(args);
   if (!isRecord(normalized)) {
@@ -145,6 +173,7 @@ function normalizeToolArgs(toolName: CacheableToolName, args: unknown): unknown 
     return {
       ...normalized,
       mode: normalized.mode ?? 'quick',
+      intentFingerprint: deriveSearchInboxIntentFingerprint(normalized),
     };
   }
 
@@ -478,7 +507,15 @@ function extractToolResultsFromMessage(params: {
     const result = rawResult.result;
     if (!isResultCacheable(result)) continue;
 
-    extracted.push({ toolName, args, result });
+    const normalizedArgs =
+      toolName === 'search_inbox_context' && isRecord(args)
+        ? {
+            ...args,
+            intentFingerprint: deriveSearchInboxIntentFingerprint(args, result),
+          }
+        : args;
+
+    extracted.push({ toolName, args: normalizedArgs, result });
   }
 
   return extracted;

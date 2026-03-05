@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { logger } from '@/lib/logger';
 import { prisma } from '@/lib/prisma';
@@ -40,6 +41,22 @@ import type {
 const searchInboxContextToolDescription = readPromptFile(
   'executive-agent/searchInboxContextTool.md',
 );
+
+function normalizeIntentText(value: string | undefined): string {
+  return value?.trim().replace(/\s+/g, ' ').toLowerCase() ?? '';
+}
+
+function buildInboxIntentFingerprint(params: {
+  action: SearchInboxContextArgs['action'];
+  userRequestText?: string;
+}): string {
+  const normalizedUserRequest = normalizeIntentText(params.userRequestText);
+  const hashedRequest = createHash('sha1')
+    .update(normalizedUserRequest || '(empty)')
+    .digest('hex')
+    .slice(0, 12);
+  return `${params.action}:${hashedRequest}`;
+}
 
 function buildInvalidInboxSearchResult(args: unknown, message: string) {
   const action =
@@ -90,6 +107,7 @@ export function buildContextTools({
   const {
     input,
     retrievalProfile,
+    selectedPack,
     userTimezone,
     currentTimeUtc,
     currentTimeUserTz,
@@ -165,8 +183,13 @@ export function buildContextTools({
           }
 
           const mode = normalizedArgs.mode;
+          const intentFingerprint = buildInboxIntentFingerprint({
+            action: normalizedArgs.action,
+            userRequestText: input.userRequest,
+          });
           const cacheArgs = {
             ...normalizedArgs,
+            intentFingerprint,
           };
           const inboxMinStoredAtMs = await getInboxMinStoredAtMs();
           const cachedResult = toolResultCache.get('search_inbox_context', cacheArgs, {
@@ -222,6 +245,8 @@ export function buildContextTools({
                   filters: normalizedArgs.filters,
                   options: normalizedArgs.options,
                   profile: retrievalProfile,
+                  userRequestText: input.userRequest,
+                  selectedPack,
                 },
                 {
                   userId: input.userId,
