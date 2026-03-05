@@ -23,6 +23,7 @@
   "include": [
     "../src/backfill-worker.ts",
     "../src/cron.ts",
+    "../src/gmail-pull-worker.ts",
     "../src/worker.ts",
     "../src/lib/**/*",
     "../src/types/**/*"
