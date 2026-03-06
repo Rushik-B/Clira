@@ -1,4 +1,5 @@
 import type { InboxSearchFreshness } from '@/lib/services/inbox-search/types';
+import type { InboxSearchQueryIntent } from '@/lib/services/inbox-search/query-intent';
 
 const MAX_MATCHED_TERMS = 4;
 
@@ -76,6 +77,11 @@ export function buildInboxWhyRelevant(params: {
   matchedTerms: string[];
   exactSenderMatch: boolean;
   exactSubjectMatch: boolean;
+  literalSenderMatch?: boolean;
+  literalParticipantMatch?: boolean;
+  literalSubjectMatch?: boolean;
+  literalBodyMatch?: boolean;
+  directCorrespondence?: boolean;
   lexicalScore: number;
   semanticScore?: number | null;
 }): string {
@@ -87,6 +93,26 @@ export function buildInboxWhyRelevant(params: {
 
   if (params.exactSubjectMatch) {
     reasons.push('Subject phrase matched');
+  }
+
+  if (params.literalSenderMatch && !params.exactSenderMatch) {
+    reasons.push('Sender contained the query');
+  }
+
+  if (params.literalParticipantMatch) {
+    reasons.push('Recipients matched the query');
+  }
+
+  if (params.literalSubjectMatch && !params.exactSubjectMatch) {
+    reasons.push('Subject contained the query');
+  }
+
+  if (params.literalBodyMatch) {
+    reasons.push('Body contained the query');
+  }
+
+  if (params.directCorrespondence) {
+    reasons.push('Likely direct correspondence');
   }
 
   if (params.matchedTerms.length > 0) {
@@ -111,8 +137,12 @@ export function buildInboxWhyRelevant(params: {
 export function inferInboxSearchConfidence(params: {
   candidateCount: number;
   topScore: number;
+  secondScore?: number;
   freshness: InboxSearchFreshness;
   hasExactBoost: boolean;
+  queryIntent?: InboxSearchQueryIntent;
+  literalMatchCount?: number;
+  semanticOnlyCount?: number;
 }): 'low' | 'medium' | 'high' {
   if (params.candidateCount === 0) {
     return 'low';
@@ -122,9 +152,34 @@ export function inferInboxSearchConfidence(params: {
     return 'low';
   }
 
-  if (params.hasExactBoost || params.topScore >= 4) {
+  const focusedIntent =
+    params.queryIntent === 'contact_or_person' ||
+    params.queryIntent === 'email_or_domain' ||
+    params.queryIntent === 'exact_phrase' ||
+    params.queryIntent === 'entity_or_place';
+  const literalMatchCount = params.literalMatchCount ?? 0;
+  const semanticOnlyCount = params.semanticOnlyCount ?? 0;
+  const topScoreGap = params.topScore - (params.secondScore ?? 0);
+
+  if (focusedIntent && literalMatchCount === 0) {
+    return 'low';
+  }
+
+  if (focusedIntent && semanticOnlyCount >= Math.ceil(params.candidateCount / 2)) {
+    return 'low';
+  }
+
+  if (
+    params.hasExactBoost ||
+    (literalMatchCount > 0 && topScoreGap >= 0.75) ||
+    (literalMatchCount > 0 && params.topScore >= 3.2)
+  ) {
     return 'high';
   }
 
-  return 'medium';
+  if (focusedIntent && literalMatchCount <= 1) {
+    return 'low';
+  }
+
+  return params.topScore >= 2.2 ? 'medium' : 'low';
 }

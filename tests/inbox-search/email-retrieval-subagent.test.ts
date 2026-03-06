@@ -321,6 +321,46 @@ describe('runEmailRetrieval', () => {
     expect(EmailEvidencePackSchema.parse(result)).toBeTruthy();
   });
 
+  test('keeps focused-query confidence low when results are semantic-only', async () => {
+    inboxSearchMocks.searchInboxDocuments.mockResolvedValue({
+      action: 'find',
+      candidates: [
+        createCandidate({
+          from: 'Eventbrite <marketing@sparkpostmail.com>',
+          subject: 'Events worth stepping outside for.',
+          snippet: 'Find your reason to get out and explore.',
+          matchedTerms: [],
+          whyRelevant: 'Semantic similarity 0.910.',
+          exactSenderBoost: 0,
+          exactSubjectBoost: 0,
+          semanticScore: 0.91,
+          lexicalScore: null,
+          lexicalRank: 0,
+          totalScore: 2.1,
+        }),
+      ],
+      coverage: createCoverage({
+        lexicalCandidates: 0,
+        semanticCandidates: 12,
+      }),
+    });
+
+    const result = await runEmailRetrieval(
+      {
+        action: 'find',
+        queryText: 'whistler',
+        mode: 'quick',
+      },
+      {
+        userId: 'user-1',
+      },
+    );
+
+    expect(result.confidence).toBe('low');
+    expect(result.followUpQuestions).toHaveLength(1);
+    expect(EmailEvidencePackSchema.parse(result)).toBeTruthy();
+  });
+
   test('attaches expanded thread slices and records promoted candidate ranks', async () => {
     inboxSearchMocks.searchInboxDocuments.mockResolvedValue({
       action: 'find',

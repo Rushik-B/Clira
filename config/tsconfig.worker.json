@@ -26,6 +26,7 @@
     "../src/gmail-pull-worker.ts",
     "../src/worker.ts",
     "../src/lib/**/*",
+    "../src/scripts/**/*",
     "../src/types/**/*"
   ],
   "exclude": [

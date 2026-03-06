@@ -3,6 +3,10 @@ import { logger } from '@/lib/logger';
 import { embedInboxQueryText, serializeVectorLiteral } from '@/lib/services/inbox-search/embeddings';
 import { getInboxRetrievalFeatureFlags } from '@/lib/services/inbox-search/feature-flags';
 import {
+  analyzeInboxQueryIntent,
+  type InboxSearchQueryIntent,
+} from '@/lib/services/inbox-search/query-intent';
+import {
   addDaysToDateOnly,
   getDateOnlyInTimezone,
   startOfDayInTimezone,
@@ -31,92 +35,8 @@ import type {
   InboxSearchSortBy,
 } from '@/lib/services/inbox-search/types';
 
-const STOPWORDS = new Set([
-  'the',
-  'a',
-  'an',
-  'and',
-  'or',
-  'but',
-  'for',
-  'to',
-  'from',
-  'with',
-  'about',
-  'into',
-  'over',
-  'after',
-  'before',
-  'this',
-  'that',
-  'these',
-  'those',
-  'is',
-  'are',
-  'was',
-  'were',
-  'be',
-  'been',
-  'being',
-  'on',
-  'in',
-  'at',
-  'by',
-  'it',
-  'its',
-  'i',
-  'me',
-  'my',
-  'we',
-  'us',
-  'our',
-  'you',
-  'your',
-  'he',
-  'she',
-  'they',
-  'them',
-  'their',
-  'as',
-  'if',
-  'then',
-  'than',
-  'so',
-  'not',
-  'no',
-  'yes',
-  'just',
-  'can',
-  'could',
-  'should',
-  'would',
-]);
-
-const GENERIC_INBOX_INTENT_TOKENS = new Set([
-  'email',
-  'emails',
-  'mail',
-  'inbox',
-  'message',
-  'messages',
-  'received',
-  'receive',
-  'sent',
-  'search',
-  'find',
-  'show',
-  'tell',
-  'check',
-  'look',
-  'lookup',
-  'happened',
-]);
-
-const DATE_LIKE_TOKEN_REGEX =
-  /^(?:\d{1,2}(?:st|nd|rd|th)?|\d{4}-\d{2}-\d{2}|jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tomorrow|yesterday|week|month|quarter|year)$/i;
-
-const EMAIL_REGEX = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
-const QUOTED_PHRASE_REGEX = /"([^"]+)"/g;
+const PROMOTIONAL_SENDER_REGEX =
+  /(?:^|[<\s"])(?:no-?reply|noreply|news|newsletter|marketing|updates?|digest|announcements?|notifications?|hello|team)@/i;
 const EARLY_EXIT_BUFFER_MS = 3_000;
 const FRESH_INDEX_LAG_MINUTES = 10;
 const LAGGING_INDEX_LAG_MINUTES = 120;
@@ -128,9 +48,15 @@ function escapeLikePattern(value: string): string {
 
 type InboxSearchPlan = {
   action: InboxSearchAction;
+  queryIntent: InboxSearchQueryIntent;
   lexicalQuery: string | null;
   semanticQueryText: string | null;
   matchTerms: string[];
+  literalPriorityTerms: string[];
+  preferLiteralMatches: boolean;
+  suppressSemanticOnlyWeakMatches: boolean;
+  semanticSimilarityFloor: number;
+  semanticCandidateLimit: number;
   exactSenderTerms: string[];
   exactSubjectTerms: string[];
   appliedFilters: string[];
@@ -205,51 +131,52 @@ function reciprocalRank(rank: number): number {
   return 1 / (RRF_K + rank);
 }
 
-function extractQuotedPhrases(text: string): string[] {
-  const phrases: string[] = [];
-  let match: RegExpExecArray | null;
+function normalizeComparableValue(value: string): string {
+  return value.trim().toLowerCase().replace(/\s+/g, ' ');
+}
 
-  while ((match = QUOTED_PHRASE_REGEX.exec(text)) !== null) {
-    const phrase = match[1]?.trim();
-    if (phrase) {
-      phrases.push(phrase);
+function countLiteralMatches(value: string, terms: string[]): number {
+  if (!value || terms.length === 0) {
+    return 0;
+  }
+
+  const normalizedValue = normalizeComparableValue(value);
+  let matches = 0;
+  for (const term of terms) {
+    const normalizedTerm = normalizeComparableValue(term);
+    if (!normalizedTerm) {
+      continue;
     }
-    if (phrases.length >= 4) {
-      break;
+
+    if (normalizedValue.includes(normalizedTerm)) {
+      matches += 1;
     }
   }
 
-  return Array.from(new Set(phrases));
+  return matches;
 }
 
-function extractEmails(text: string): string[] {
-  const matches = text.match(EMAIL_REGEX) ?? [];
-  return Array.from(new Set(matches.map((email) => email.toLowerCase())));
-}
+function isLikelyDirectCorrespondence(params: {
+  baseRow: Pick<InboxSearchLexicalRow | InboxSearchSemanticRow, 'from' | 'to' | 'cc' | 'mailboxEmail'>;
+  senderLooksPromotional: boolean;
+}): boolean {
+  if (params.senderLooksPromotional) {
+    return false;
+  }
 
-function extractKeywords(text: string, limit = 6): string[] {
-  const tokens = text
-    .toLowerCase()
-    .split(/[^a-z0-9@._-]+/g)
-    .map((token) => token.trim())
-    .filter((token) => token.length > 2)
-    .filter((token) => !STOPWORDS.has(token));
+  const normalizedMailbox = normalizeComparableValue(params.baseRow.mailboxEmail);
+  const normalizedFrom = normalizeComparableValue(params.baseRow.from);
+  const participantCount = [params.baseRow.from, ...(params.baseRow.to ?? []), ...(params.baseRow.cc ?? [])]
+    .filter(Boolean).length;
+  const recipients = [...(params.baseRow.to ?? []), ...(params.baseRow.cc ?? [])].map((value) =>
+    normalizeComparableValue(value),
+  );
 
-  return Array.from(new Set(tokens)).slice(0, limit);
-}
+  if (participantCount > 6) {
+    return false;
+  }
 
-function extractLexicalKeywords(text: string, limit = 6): string[] {
-  return extractKeywords(text, limit).filter((token) => {
-    if (GENERIC_INBOX_INTENT_TOKENS.has(token)) {
-      return false;
-    }
-
-    if (DATE_LIKE_TOKEN_REGEX.test(token)) {
-      return false;
-    }
-
-    return true;
-  });
+  return normalizedFrom.includes(normalizedMailbox) || recipients.some((value) => value.includes(normalizedMailbox));
 }
 
 function parseDateInput(value?: string): { date: Date | null; isDateOnly: boolean } {
@@ -490,9 +417,13 @@ export function buildInboxSearchPlan(params: {
 }): InboxSearchPlan {
   const notes: string[] = [];
   const queryText = params.queryText?.trim() ?? '';
-  const quotedPhrases = extractQuotedPhrases(queryText);
-  const queryEmails = extractEmails(queryText);
-  const queryKeywords = extractLexicalKeywords(queryText);
+  const intent = analyzeInboxQueryIntent({
+    queryText,
+    filters: params.filters,
+  });
+  const quotedPhrases = intent.quotedPhrases;
+  const queryEmails = intent.queryEmails;
+  const queryKeywords = intent.queryKeywords;
   const constraintKeywords = (params.filters?.keywords ?? [])
     .map((keyword) => keyword.trim())
     .filter(Boolean)
@@ -512,6 +443,9 @@ export function buildInboxSearchPlan(params: {
   } else if (!lexicalQuery) {
     notes.push('Running a local filter-only search because no lexical query terms were provided.');
   }
+  if (intent.note) {
+    notes.push(intent.note);
+  }
 
   const appliedFilters = collectAppliedFilters(params.filters);
 
@@ -529,10 +463,10 @@ export function buildInboxSearchPlan(params: {
   );
 
   const exactSenderTerms = Array.from(
-    new Set([...(senderHint ? [senderHint] : []), ...queryEmails]),
+    new Set([...(senderHint ? [senderHint] : []), ...intent.exactSenderTerms]),
   );
   const exactSubjectTerms = Array.from(
-    new Set([...(subjectContains ? [subjectContains] : []), ...quotedPhrases]),
+    new Set([...(subjectContains ? [subjectContains] : []), ...intent.exactSubjectTerms]),
   );
 
   const timeWindow = resolveTimeWindow({
@@ -548,6 +482,7 @@ export function buildInboxSearchPlan(params: {
 
   return {
     action: params.action,
+    queryIntent: intent.intent,
     lexicalQuery,
     semanticQueryText: buildSemanticQueryText({
       queryText,
@@ -555,6 +490,11 @@ export function buildInboxSearchPlan(params: {
       semanticRequested,
     }),
     matchTerms,
+    literalPriorityTerms: intent.literalPriorityTerms,
+    preferLiteralMatches: intent.preferLiteralMatches,
+    suppressSemanticOnlyWeakMatches: intent.suppressSemanticOnlyWeakMatches,
+    semanticSimilarityFloor: intent.semanticSimilarityFloor,
+    semanticCandidateLimit: intent.semanticCandidateLimit,
     exactSenderTerms,
     exactSubjectTerms,
     appliedFilters,
@@ -579,6 +519,8 @@ export function buildInboxSearchPlan(params: {
 
 function buildSnippet(params: {
   headline: string | null;
+  from: string;
+  subject: string;
   snippet: string | null;
   bodyText: string;
   semanticChunkText?: string | null;
@@ -592,14 +534,39 @@ function buildSnippet(params: {
       : headline;
   }
 
-  const source = (
-    params.semanticChunkText ??
-    params.snippet ??
+  const senderAndSubject = `From: ${params.from} Subject: ${params.subject}`.trim();
+  const lowerSenderAndSubject = senderAndSubject.toLowerCase();
+  const senderOrSubjectMatch = params.matchedTerms.find((term) =>
+    lowerSenderAndSubject.includes(term.toLowerCase()),
+  );
+  if (senderOrSubjectMatch) {
+    return senderAndSubject.length > params.maxChars
+      ? `${senderAndSubject.slice(0, params.maxChars - 3)}...`
+      : senderAndSubject;
+  }
+
+  const bodySource = (
     params.bodyText ??
+    params.snippet ??
     ''
   )
     .replace(/\s+/g, ' ')
     .trim();
+  const semanticSource = (params.semanticChunkText ?? '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const lowerBodySource = bodySource.toLowerCase();
+  const lowerSemanticSource = semanticSource.toLowerCase();
+  const preferredMatchedTerm = params.matchedTerms.find((term) => {
+    const normalized = term.toLowerCase();
+    return lowerBodySource.includes(normalized) || lowerSemanticSource.includes(normalized);
+  });
+  const source =
+    preferredMatchedTerm && lowerBodySource.includes(preferredMatchedTerm.toLowerCase())
+      ? bodySource
+      : preferredMatchedTerm && lowerSemanticSource.includes(preferredMatchedTerm.toLowerCase())
+        ? semanticSource
+        : bodySource || semanticSource;
 
   if (!source) {
     return '';
@@ -753,8 +720,15 @@ async function fetchLexicalCandidatesAndCheckpoints(params: {
       plan: params.plan,
     });
 
+    const lexicalSource = Prisma.sql`
+      COALESCE(d."subject", '') || ' ' ||
+      COALESCE(d."from", '') || ' ' ||
+      array_to_string(COALESCE(d."to", ARRAY[]::text[]), ' ') || ' ' ||
+      array_to_string(COALESCE(d."cc", ARRAY[]::text[]), ' ') || ' ' ||
+      COALESCE(d."bodyText", '')
+    `;
     const lexicalVector = Prisma.sql`
-      to_tsvector('english', COALESCE(d."subject", '') || ' ' || COALESCE(d."bodyText", ''))
+      to_tsvector('english', ${lexicalSource})
     `;
 
     if (params.lexicalQuery) {
@@ -792,7 +766,7 @@ async function fetchLexicalCandidatesAndCheckpoints(params: {
             ? Prisma.sql`
               ts_headline(
                 'english',
-                COALESCE(d."bodyText", ''),
+                ${lexicalSource},
                 websearch_to_tsquery('english', ${params.lexicalQuery}),
                 'MaxFragments=2, MaxWords=20, MinWords=6, StartSel=<<, StopSel=>>'
               )
@@ -1376,8 +1350,8 @@ export async function searchInboxDocuments(
     params.mode === 'deep' ? 80 : 40,
   );
   const semanticLimit = Math.max(
-    plan.limit * 2,
-    params.mode === 'deep' ? 80 : 40,
+    plan.limit,
+    params.mode === 'deep' ? plan.semanticCandidateLimit : Math.ceil(plan.semanticCandidateLimit / 2),
   );
 
   const lexicalPromise = freshnessPromise.then(({ rows, checkpoints }) => ({
@@ -1498,6 +1472,8 @@ export async function searchInboxDocuments(
     ]),
   );
   const rankingNow = runtime.now();
+  let lowSimilaritySemanticDrops = 0;
+  let weakSemanticOnlyDrops = 0;
 
   const candidates: InboxSearchCandidate[] = documentIds
     .map((documentId) => {
@@ -1527,21 +1503,128 @@ export async function searchInboxDocuments(
         baseRow.subject,
         plan.exactSubjectTerms,
       );
-      const recencyBoost = calculateInboxRecencyBoost(baseRow.sentAt, rankingNow);
-      const exactSenderBoost = exactSenderMatch ? 3 : 0;
-      const exactSubjectBoost = exactSubjectMatch ? 2 : 0;
       const lexicalRank = lexicalRankByDocumentId.get(documentId) ?? 0;
       const semanticRank = semanticRankByDocumentId.get(documentId) ?? null;
       const lexicalScore = lexicalRow ? roundInboxScore(lexicalRow.lexicalScore) : null;
       const semanticScore = semanticRow
         ? roundInboxScore(semanticRow.semanticScore)
         : null;
+      const senderLooksPromotional = PROMOTIONAL_SENDER_REGEX.test(baseRow.from);
+      const literalSenderMatches = countLiteralMatches(
+        baseRow.from,
+        plan.literalPriorityTerms,
+      );
+      const literalParticipantMatches = countLiteralMatches(
+        [...(baseRow.to ?? []), ...(baseRow.cc ?? [])].join(' '),
+        plan.literalPriorityTerms,
+      );
+      const literalSubjectMatches = countLiteralMatches(
+        baseRow.subject,
+        plan.literalPriorityTerms,
+      );
+      const literalBodyMatches = countLiteralMatches(
+        [baseRow.snippet ?? '', semanticRow?.semanticChunkText ?? '', baseRow.bodyText]
+          .filter(Boolean)
+          .join(' '),
+        plan.literalPriorityTerms,
+      );
+      const literalFieldHits =
+        (literalSenderMatches > 0 ? 1 : 0) +
+        (literalParticipantMatches > 0 ? 1 : 0) +
+        (literalSubjectMatches > 0 ? 1 : 0) +
+        (literalBodyMatches > 0 ? 1 : 0);
+      const hasLiteralMatch = literalFieldHits > 0;
+      const directCorrespondence = isLikelyDirectCorrespondence({
+        baseRow,
+        senderLooksPromotional,
+      });
+
+      if (
+        plan.suppressSemanticOnlyWeakMatches &&
+        lexicalRows.length >= 3 &&
+        lexicalRank === 0 &&
+        !hasLiteralMatch
+      ) {
+        weakSemanticOnlyDrops += 1;
+        return null;
+      }
+
+      if (
+        lexicalRank === 0 &&
+        typeof semanticScore === 'number' &&
+        semanticScore < plan.semanticSimilarityFloor
+      ) {
+        lowSimilaritySemanticDrops += 1;
+        return null;
+      }
+
+      const recencyBoostRaw = calculateInboxRecencyBoost(baseRow.sentAt, rankingNow);
+      const recencyBoost = roundInboxScore(
+        recencyBoostRaw *
+          (exactSenderMatch || exactSubjectMatch || literalFieldHits >= 2
+            ? 0.15
+            : lexicalRank > 0 || hasLiteralMatch
+              ? 0.08
+              : 0.02),
+      );
+      const exactSenderBoost = exactSenderMatch ? 2.5 : 0;
+      const exactSubjectBoost = exactSubjectMatch ? 1.75 : 0;
+      const literalBoost = roundInboxScore(
+        literalSenderMatches * 1.5 +
+          literalParticipantMatches * 0.8 +
+          literalSubjectMatches * 1.2 +
+          Math.min(literalBodyMatches, 2) * 0.35 +
+          (literalFieldHits >= 2 ? 0.6 : 0),
+      );
+      const lexicalEvidenceBoost = lexicalScore
+        ? roundInboxScore(Math.min(lexicalScore, 1.5) * 0.5)
+        : 0;
+      const semanticEvidenceBoost =
+        semanticScore && (lexicalRank > 0 || hasLiteralMatch)
+          ? roundInboxScore(Math.max(semanticScore - plan.semanticSimilarityFloor, 0) * 0.45)
+          : 0;
+      const directCorrespondenceBoost =
+        directCorrespondence &&
+        (hasLiteralMatch || lexicalRank > 0)
+          ? 0.5
+          : 0;
       const rrfScore = roundInboxScore(
         (lexicalRank ? reciprocalRank(lexicalRank) : 0) +
           (semanticRank ? reciprocalRank(semanticRank) : 0),
       );
+      const weakSemanticOnlyPenalty =
+        lexicalRank === 0
+          ? !hasLiteralMatch
+            ? plan.preferLiteralMatches
+              ? 2.2
+              : 0.8
+            : plan.preferLiteralMatches
+              ? 0.45
+              : 0.15
+          : 0;
+      const promotionalPenalty =
+        senderLooksPromotional &&
+        !exactSenderMatch &&
+        !exactSubjectMatch &&
+        literalSenderMatches === 0 &&
+        literalParticipantMatches === 0 &&
+        literalSubjectMatches === 0 &&
+        literalBodyMatches <= 1
+          ? plan.preferLiteralMatches
+            ? 1.0
+            : 0.35
+          : 0;
       const totalScore = roundInboxScore(
-        rrfScore + recencyBoost + exactSenderBoost + exactSubjectBoost,
+        rrfScore +
+          recencyBoost +
+          exactSenderBoost +
+          exactSubjectBoost +
+          literalBoost +
+          lexicalEvidenceBoost +
+          semanticEvidenceBoost +
+          directCorrespondenceBoost -
+          weakSemanticOnlyPenalty -
+          promotionalPenalty,
       );
 
       return {
@@ -1555,6 +1638,8 @@ export async function searchInboxDocuments(
         subject: baseRow.subject || '(no subject)',
         snippet: buildSnippet({
           headline: lexicalRow?.headline ?? null,
+          from: baseRow.from,
+          subject: baseRow.subject || '(no subject)',
           snippet: baseRow.snippet,
           bodyText: baseRow.bodyText,
           semanticChunkText: semanticRow?.semanticChunkText ?? null,
@@ -1566,6 +1651,11 @@ export async function searchInboxDocuments(
           matchedTerms,
           exactSenderMatch,
           exactSubjectMatch,
+          literalSenderMatch: literalSenderMatches > 0,
+          literalParticipantMatch: literalParticipantMatches > 0,
+          literalSubjectMatch: literalSubjectMatches > 0,
+          literalBodyMatch: literalBodyMatches > 0,
+          directCorrespondence,
           lexicalScore: lexicalScore ?? 0,
           semanticScore,
         }),
@@ -1574,7 +1664,7 @@ export async function searchInboxDocuments(
         semanticScore,
         semanticRank,
         rrfScore,
-        recencyBoost: roundInboxScore(recencyBoost),
+        recencyBoost,
         exactSenderBoost,
         exactSubjectBoost,
         totalScore,
@@ -1590,6 +1680,26 @@ export async function searchInboxDocuments(
       return new Date(right.date).getTime() - new Date(left.date).getTime();
     })
     .slice(0, params.maxCandidates);
+
+  if (lowSimilaritySemanticDrops > 0) {
+    budgetNotes.push(
+      `Dropped ${lowSimilaritySemanticDrops} low-similarity semantic candidate${lowSimilaritySemanticDrops === 1 ? '' : 's'} for the ${plan.queryIntent} query.`,
+    );
+  }
+  if (weakSemanticOnlyDrops > 0) {
+    budgetNotes.push(
+      `Dropped ${weakSemanticOnlyDrops} weak semantic-only candidate${weakSemanticOnlyDrops === 1 ? '' : 's'} because the query needed stronger literal evidence.`,
+    );
+  }
+  if (
+    plan.preferLiteralMatches &&
+    candidates.length > 0 &&
+    candidates.slice(0, Math.min(3, candidates.length)).every((candidate) => candidate.exactSenderBoost === 0 && candidate.exactSubjectBoost === 0 && candidate.matchedTerms.length === 0)
+  ) {
+    budgetNotes.push(
+      `Top results for the ${plan.queryIntent} query relied on weak literal evidence; confidence should stay conservative.`,
+    );
+  }
 
   const uniqueThreadIds = new Set(candidates.map((candidate) => candidate.threadId));
   const fusionMethod: InboxSearchCoverage['fusionMethod'] =

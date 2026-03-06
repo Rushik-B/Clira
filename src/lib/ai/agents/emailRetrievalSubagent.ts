@@ -24,6 +24,7 @@ import {
   type InboxSearchRetrievalProfile,
   type InboxSearchScopedMailbox,
 } from '@/lib/services/inbox-search';
+import { analyzeInboxQueryIntent } from '@/lib/services/inbox-search/query-intent';
 import { inferInboxSearchConfidence } from '@/lib/services/inbox-search/scoring';
 import { getMailboxesForUser } from '@/lib/services/mailbox';
 
@@ -263,6 +264,8 @@ function createDeterministicEvidencePack(params: {
   candidates: InboxSearchCandidate[];
   coverage: RetrievalCoverage;
   mode: EmailRetrievalMode;
+  queryText?: string;
+  filters?: EmailRetrievalFilters;
   metadata?: RetrievalMetadata;
   includeQuotes?: boolean;
   includeSnippets?: boolean;
@@ -273,20 +276,41 @@ function createDeterministicEvidencePack(params: {
     candidates,
     coverage,
     mode,
+    queryText,
+    filters,
     metadata,
     includeQuotes = true,
     includeSnippets = true,
     summary,
   } = params;
   const topCandidates = candidates.slice(0, COMPACT_MATCH_LIMIT);
+  const queryIntent = analyzeInboxQueryIntent({
+    queryText,
+    filters,
+  }).intent;
   const confidence = inferInboxSearchConfidence({
     candidateCount: topCandidates.length,
     topScore: topCandidates[0]?.totalScore ?? 0,
+    secondScore: topCandidates[1]?.totalScore ?? 0,
     freshness: coverage.indexFreshness ?? 'unknown',
     hasExactBoost: topCandidates.some(
       (candidate) =>
         candidate.exactSenderBoost > 0 || candidate.exactSubjectBoost > 0,
     ),
+    queryIntent,
+    literalMatchCount: topCandidates.filter(
+      (candidate) =>
+        candidate.exactSenderBoost > 0 ||
+        candidate.exactSubjectBoost > 0 ||
+        candidate.matchedTerms.length > 0,
+    ).length,
+    semanticOnlyCount: topCandidates.filter(
+      (candidate) =>
+        candidate.matchedTerms.length === 0 &&
+        candidate.exactSenderBoost === 0 &&
+        candidate.exactSubjectBoost === 0 &&
+        typeof candidate.semanticScore === 'number',
+    ).length,
   });
 
   return {
@@ -949,6 +973,8 @@ export async function runEmailRetrieval(
             candidates: activeSearchResult.candidates,
             coverage: buildQuickEscalationCoverage(activeSearchResult.coverage),
             mode: 'deep',
+            queryText: request.queryText,
+            filters: request.filters,
             metadata: activeMetadata,
             includeQuotes: request.options?.includeQuotes,
             includeSnippets: request.options?.includeSnippets,
@@ -964,6 +990,8 @@ export async function runEmailRetrieval(
           candidates: activeSearchResult.candidates,
           coverage: activeSearchResult.coverage,
           mode,
+          queryText: request.queryText,
+          filters: request.filters,
           includeQuotes: request.options?.includeQuotes,
           includeSnippets: request.options?.includeSnippets,
         });
@@ -988,6 +1016,8 @@ export async function runEmailRetrieval(
               candidates: activeSearchResult.candidates,
               coverage: buildQuickEscalationCoverage(activeSearchResult.coverage),
               mode: 'deep',
+              queryText: request.queryText,
+              filters: request.filters,
               metadata: activeMetadata,
               includeQuotes: request.options?.includeQuotes,
               includeSnippets: request.options?.includeSnippets,
@@ -1016,6 +1046,8 @@ export async function runEmailRetrieval(
               : 'Used deterministic summary because LLM compression was not required.',
           ]),
           mode,
+          queryText: request.queryText,
+          filters: request.filters,
           includeQuotes: request.options?.includeQuotes,
           includeSnippets: request.options?.includeSnippets,
         });
@@ -1027,6 +1059,8 @@ export async function runEmailRetrieval(
             'Skipped deep LLM compression because the remaining time budget was low.',
           ]),
           mode,
+          queryText: request.queryText,
+          filters: request.filters,
           includeQuotes: request.options?.includeQuotes,
           includeSnippets: request.options?.includeSnippets,
         });
@@ -1038,6 +1072,8 @@ export async function runEmailRetrieval(
             'Skipped deep LLM compression because a newer user message superseded this run.',
           ]),
           mode,
+          queryText: request.queryText,
+          filters: request.filters,
           includeQuotes: request.options?.includeQuotes,
           includeSnippets: request.options?.includeSnippets,
         });
