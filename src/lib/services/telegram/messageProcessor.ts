@@ -408,6 +408,12 @@ export async function processTelegramMessage(
   });
 
   if (orchestrationDecision.kind === 'skip') {
+    logger.info('[telegramProcessor] Orchestrator skip accepted as terminal', {
+      conversationId: conversation.id,
+      chatId,
+      messageId,
+      reason: orchestrationDecision.reason,
+    });
     return { success: true, response: '' };
   }
 
@@ -553,7 +559,9 @@ async function runExecutiveAgent(
             runId: options.runContext.runId,
             burstId: options.runContext.burstId,
             classifierDecision: options.runContext.classifierDecision,
+            priorPack: options.runContext.priorPack,
             droppedSummary: options.runContext.droppedSummary,
+            setSelectedPack: options.runContext.setSelectedPack,
             isRunCurrent: options.runContext.isRunCurrent,
             isBurstStable: options.runContext.isBurstStable,
             consumeSteerEvents: options.runContext.consumeSteerEvents,

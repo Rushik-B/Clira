@@ -20,6 +20,7 @@ export interface EmailData {
   isSent: boolean
   isDraft: boolean
   date: Date
+  hasAttachments: boolean
   labelIds?: string[] // Gmail label IDs
   gmailCategories?: ('PROMOTIONS'|'SOCIAL'|'UPDATES'|'FORUMS'|'PERSONAL')[] // Gmail's automatic categories
 
@@ -41,8 +42,14 @@ interface GmailMessage {
     body?: { data?: string }
     parts?: Array<{
       mimeType: string
-      body?: { data?: string }
-      parts?: any[]
+      filename?: string
+      body?: { data?: string; attachmentId?: string }
+      parts?: Array<{
+        mimeType: string
+        filename?: string
+        body?: { data?: string; attachmentId?: string }
+        parts?: any[]
+      }>
     }>
   }
   snippet: string
@@ -801,6 +808,7 @@ export class GmailService {
       // Determine if email is sent or received
       const isSent = message.labelIds?.includes('SENT') || false
       const isDraft = message.labelIds?.includes('DRAFT') || false
+      const hasAttachments = this.detectAttachments(message.payload)
 
       return {
         messageId: message.id,
@@ -818,6 +826,7 @@ export class GmailService {
         isSent,
         isDraft,
         date: dateHeader ? new Date(dateHeader) : new Date(),
+        hasAttachments,
         labelIds: message.labelIds,
         gmailCategories: extractGmailCategories(message.labelIds)
       }
@@ -825,6 +834,23 @@ export class GmailService {
       console.error('Error parsing email message:', error)
       return null
     }
+  }
+
+  private detectAttachments(payload: GmailMessage['payload']): boolean {
+    const parts = payload.parts;
+    if (!parts) return false;
+    return parts.some((part) => {
+      if (part.filename && part.filename.length > 0) return true;
+      if (part.body?.attachmentId) return true;
+      if (part.parts) {
+        return part.parts.some(
+          (sub) =>
+            (sub.filename && sub.filename.length > 0) ||
+            !!sub.body?.attachmentId,
+        );
+      }
+      return false;
+    });
   }
 
   /**
@@ -934,12 +960,18 @@ export class GmailService {
 
       await this.refreshTokenIfNeeded();
 
-      const listResponse = await this.gmail.users.threads.list({
-        userId: 'me',
-        maxResults,
-        q: query,
-        pageToken: options.pageToken,
-      });
+      const listResponse = await this.withBackoff(
+        `threads.list:${query}:${options.pageToken ?? 'first-page'}`,
+        async () =>
+          this.gmail.users.threads.list({
+            userId: 'me',
+            maxResults,
+            q: query,
+            pageToken: options.pageToken,
+          }),
+        5,
+        { swallowPermissionError: false },
+      );
 
       const nextPageToken = listResponse.data.nextPageToken ?? undefined;
       const threadList = listResponse.data.threads ?? [];
@@ -1117,7 +1149,13 @@ export class GmailService {
   /**
    * Generic backoff for Gmail 429/5xx and network errors, with jitter.
    */
-  private async withBackoff<T>(label: string, fn: () => Promise<T>, maxRetries: number = 5): Promise<T> {
+  private async withBackoff<T>(
+    label: string,
+    fn: () => Promise<T>,
+    maxRetries: number = 5,
+    options?: { swallowPermissionError?: boolean },
+  ): Promise<T> {
+    const swallowPermissionError = options?.swallowPermissionError ?? true;
     let attempt = 0;
     let lastErr: any = null;
     while (attempt <= maxRetries) {
@@ -1126,6 +1164,9 @@ export class GmailService {
       } catch (error: any) {
         // Insufficient permission: don't retry
         if (error?.status === 403 && String(error?.message || '').includes('Insufficient Permission')) {
+          if (!swallowPermissionError) {
+            throw error;
+          }
           console.warn(`[GMAIL] Permission error for ${label}. Skipping.`);
           // @ts-expect-error intentionally returning undefined on permission error to skip gracefully
           return; // do not throw
@@ -1520,12 +1561,18 @@ export class GmailService {
       await this.refreshTokenIfNeeded()
 
       // Step 1: Get thread metadata with message IDs
-      const threadResponse = await this.gmail.users.threads.get({
-        userId: 'me',
-        id: threadId,
-        format: 'minimal',
-        fields: 'id,messages(id,internalDate)'
-      })
+      const threadResponse = await this.withBackoff(
+        `threads.get:${threadId}`,
+        async () =>
+          this.gmail.users.threads.get({
+            userId: 'me',
+            id: threadId,
+            format: 'minimal',
+            fields: 'id,messages(id,internalDate)'
+          }),
+        5,
+        { swallowPermissionError: false },
+      )
 
       const messages = threadResponse.data?.messages
       if (!messages || messages.length === 0) {
@@ -1544,11 +1591,17 @@ export class GmailService {
 
         const batchPromises = batch.map(async (message: { id: string; internalDate?: string }) => {
           try {
-            const messageResponse = await this.gmail.users.messages.get({
-              userId: 'me',
-              id: message.id,
-              format: 'full'
-            })
+            const messageResponse = await this.withBackoff(
+              `messages.get:${message.id}`,
+              async () =>
+                this.gmail.users.messages.get({
+                  userId: 'me',
+                  id: message.id,
+                  format: 'full'
+                }),
+              5,
+              { swallowPermissionError: false },
+            )
 
             return this.parseEmailMessage(messageResponse.data)
           } catch (error) {

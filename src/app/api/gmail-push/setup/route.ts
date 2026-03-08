@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth/auth';
 import { GmailPushService } from '@/lib/email/gmailPushService';
+import { getGmailPubSubTopic } from '@/lib/email/gmailIngestionConfig';
 import { getMailboxById, getPrimaryMailbox } from '@/lib/services/mailbox/getPrimaryMailbox';
 
 export async function POST(request: Request) {
@@ -26,8 +27,7 @@ export async function POST(request: Request) {
     // Create Gmail push service
     const pushService = new GmailPushService(session.userId);
 
-    // Setup push notifications with the Cloud Pub/Sub topic
-    const topicName = `projects/${process.env.GOOGLE_CLOUD_PROJECT_ID}/topics/clira-email-updates`;
+    const topicName = getGmailPubSubTopic();
     
     const result = await pushService.setupPushNotifications({
       userId: session.userId,

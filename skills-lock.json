@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "skills": {
+    "Nia": {
+      "source": "nozomio-labs/nia-skill",
+      "sourceType": "github",
+      "computedHash": "45279af1bc178b36440e16a36e4204175e9ca249daa9db9948be09cb9f81b1dc"
+    }
+  }
+}

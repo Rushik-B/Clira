@@ -3,6 +3,7 @@ import { afterEach, vi } from 'vitest';
 // Suppress noisy info/debug logs in tests (orchestrator run-started lines, etc.).
 // Only errors and warnings will print
 process.env.LOG_LEVEL = 'error';
+process.env.DATABASE_URL ??= 'postgresql://test:test@localhost:5432/test';
 
 // Guard against leaked fake timers across test files.
 afterEach(() => {

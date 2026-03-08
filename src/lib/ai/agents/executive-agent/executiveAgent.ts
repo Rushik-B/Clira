@@ -33,6 +33,7 @@ import {
   collectOutOfPackToolNames,
   resolveProgressChannel,
   resolveRetrievalProfile,
+  stripInternalMetadataFromAssistantResponse,
   stripUndefined,
   stopWhenToolCalled,
   wrapToolsWithTimingMetadata,
@@ -55,6 +56,7 @@ import {
   type ExecutiveToolResultCacheStats,
 } from './toolResultReuseCache';
 import { stripCacheDebugMetadataForPersistence } from './persistence';
+import { normalizeExecutiveAgentToolsForModel } from './tool-schema-normalization';
 import { createInitialWorkingState, createWorkingStateController } from './workingState';
 import type {
   ExecutiveAgentInput,
@@ -167,6 +169,7 @@ export class ExecutiveAgent {
         features: activeTurnFeatures,
       });
       const activePack = selection.packId;
+      input.runContext?.setSelectedPack?.(activePack);
       selectedPack = activePack;
       selectorReasons = selection.reasons;
 
@@ -287,8 +290,15 @@ export class ExecutiveAgent {
           }
         },
       });
+      const modelTools = normalizeExecutiveAgentToolsForModel(
+        timedTools as Record<string, any>,
+      );
 
-      const stopConditions = [stopWhenToolCalled('send_email')];
+      const stopConditions = [
+        stopWhenToolCalled('send_email'),
+        stopWhenToolCalled('plan_calendar_change'),
+        stopWhenToolCalled('commit_calendar_change'),
+      ];
 
       const isNotificationFlow =
         input.userRequest.startsWith('REMINDER DELIVERY:') ||
@@ -314,7 +324,7 @@ export class ExecutiveAgent {
             model: models.execAgent(),
             system: promptSystemPrompt,
             messages,
-            tools: timedTools,
+            tools: modelTools,
             timeLeftMs: () => toolAbort!.timeLeftMs(),
             maxSteps: MESSAGING_MAX_STEPS,
             maxToolCallsTotal: MESSAGING_MAX_TOOL_CALLS_TOTAL,
@@ -333,7 +343,7 @@ export class ExecutiveAgent {
             model: models.execAgent(),
             system: promptSystemPrompt,
             messages,
-            tools: timedTools,
+            tools: modelTools,
             maxSteps: MESSAGING_MAX_STEPS,
             maxToolCallsTotal: MESSAGING_MAX_TOOL_CALLS_TOTAL,
             maxToolCallsPerTool: activeToolBudgets,
@@ -388,6 +398,15 @@ export class ExecutiveAgent {
       if (!response) {
         response = buildTerminalFallbackResponse(toolResults);
         logger.info(`[executiveAgent] Empty model text, using fallback: ${response}`);
+      }
+      const sanitizedResponse = stripInternalMetadataFromAssistantResponse(response);
+      if (sanitizedResponse.stripped) {
+        logger.warn('[executiveAgent] Stripped leaked internal metadata from assistant response');
+      }
+      response = sanitizedResponse.response;
+      if (!response) {
+        response = buildTerminalFallbackResponse(toolResults);
+        logger.warn(`[executiveAgent] Sanitized response became empty, using fallback: ${response}`);
       }
       workingStateController.updateFromResponse(response);
 

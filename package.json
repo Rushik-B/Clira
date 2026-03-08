@@ -9,8 +9,12 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build && tsc -p config/tsconfig.worker.json && tsc-alias -p config/tsconfig.worker.json",
+    "build:worker": "tsc -p config/tsconfig.worker.json && tsc-alias -p config/tsconfig.worker.json",
+    "dev:worker:watch": "npx nodemon --watch src --ext ts --ignore src/app --ignore src/components --ignore src/hooks --ignore src/lib/mocks --exec \"npm run build:worker\"",
     "start": "node server.js",
     "start:worker": "node dist/worker.js",
+    "start:backfill-worker": "node dist/backfill-worker.js",
+    "start:gmail-pull-worker": "node dist/gmail-pull-worker.js",
     "start:cron": "node dist/cron.js",
     "lint": "next lint",
     "postinstall": "prisma generate",
@@ -33,6 +37,7 @@
     "@aws-sdk/client-kms": "^3.893.0",
     "@aws-sdk/client-s3": "^3.845.0",
     "@aws-sdk/lib-storage": "^3.845.0",
+    "@google-cloud/pubsub": "^5.3.0",
     "@google/generative-ai": "^0.21.0",
     "@grammyjs/runner": "^2.0.3",
     "@prisma/adapter-pg": "^7.2.0",
@@ -81,6 +86,7 @@
     "zod": "^3.25.76"
   },
   "devDependencies": {
+    "nodemon": "^3.1.9",
     "@eslint/eslintrc": "^3",
     "@remotion/cli": "^4.0.409",
     "@remotion/google-fonts": "^4.0.409",

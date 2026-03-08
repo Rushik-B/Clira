@@ -18,7 +18,7 @@ import { getDateOnlyInTimezone } from '@/lib/utils/timezone';
 import { logger } from '@/lib/logger';
 import { buildRunContextPromptFragment } from '@/lib/services/messaging-orchestration';
 
-export const EXECUTIVE_AGENT_PROMPT_VERSION = 'ea-prompt-v1';
+export const EXECUTIVE_AGENT_PROMPT_VERSION = 'ea-prompt-v2';
 
 function buildCurrentTurnMessage(params: {
   input: ExecutiveAgentInput;

@@ -6,6 +6,7 @@ import { GmailPushService } from "../email/gmailPushService"
 import { encryptToken } from '@/lib/encryption'
 import { DEFAULT_CALENDAR_TIMEZONE } from '@/constants/time'
 import { checkUserScopes } from '@/lib/auth/scope-utils'
+import { getGmailPubSubTopic } from '@/lib/email/gmailIngestionConfig'
 
 const isProduction = process.env.NODE_ENV === 'production'
 // Secure cookies require HTTPS. Disable for local Docker (plain HTTP on localhost).
@@ -158,18 +159,14 @@ export const authOptions: NextAuthOptions = {
               console.warn(`⚠️ Skipping Gmail watch setup for mailbox ${mailbox.id} (status=${mailboxStatus})`)
             } else {
               try {
-                if (!process.env.GOOGLE_CLOUD_PROJECT_ID) {
-                  console.warn("GOOGLE_CLOUD_PROJECT_ID is not set; skipping Gmail watch setup")
-                } else {
-                  const pushService = new GmailPushService(dbUser.id)
-                  const topicName = `projects/${process.env.GOOGLE_CLOUD_PROJECT_ID}/topics/clira-email-updates`
-                  await pushService.setupPushNotifications({
-                    userId: dbUser.id,
-                    mailboxId: mailbox.id,
-                    topicName,
-                  })
-                  console.log(`✅ Gmail watch initialized on sign-in for user ${dbUser.id}, mailbox ${mailbox.id}`)
-                }
+                const topicName = getGmailPubSubTopic()
+                const pushService = new GmailPushService(dbUser.id)
+                await pushService.setupPushNotifications({
+                  userId: dbUser.id,
+                  mailboxId: mailbox.id,
+                  topicName,
+                })
+                console.log(`✅ Gmail watch initialized on sign-in for user ${dbUser.id}, mailbox ${mailbox.id}`)
               } catch (e) {
                 console.error("❌ Failed to setup Gmail watch on sign-in:", e)
               }

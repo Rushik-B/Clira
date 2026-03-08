@@ -4,6 +4,7 @@ import { authOptions } from '@/lib/auth/auth';
 import { prisma } from '@/lib/prisma';
 import { emailQueue } from '@/lib/services/utils/queues';
 import { enqueueSupermemoryBootstrap } from '@/lib/services/supermemory/queueHelpers';
+import { enqueueInboxBackfillForConnectedMailboxes } from '@/lib/services/inbox-search';
 
 export async function POST(request: NextRequest) {
   try {
@@ -56,6 +57,20 @@ export async function POST(request: NextRequest) {
       }
     } else {
       console.log(`⚠️ Not triggering Gmail labels job: step=${step}, hasFolders=${!!reviewedFolders}`);
+    }
+
+    try {
+      const backfillEnqueue = await enqueueInboxBackfillForConnectedMailboxes(session.userId as string);
+      console.log(
+        `📚 Inbox backfill enqueue result for user ${session.userId}: ` +
+        `${backfillEnqueue.enqueuedCount} mailbox job(s)` +
+        (backfillEnqueue.skippedReason ? `, skippedReason=${backfillEnqueue.skippedReason}` : ''),
+      );
+    } catch (error) {
+      console.warn(
+        `⚠️ Failed to enqueue inbox backfill for user ${session.userId}:`,
+        error,
+      );
     }
 
     // Always enqueue Supermemory bootstrap once onboarding completes.

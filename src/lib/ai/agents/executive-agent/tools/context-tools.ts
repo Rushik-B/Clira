@@ -1,21 +1,28 @@
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { logger } from '@/lib/logger';
 import { prisma } from '@/lib/prisma';
+import { readPromptFile } from '@/lib/prompts';
 import {
   getCalendarSnapshot,
   gatherMemoryContextForReply,
 } from '@/lib/services/core/replyContextTools';
 import {
+  addDaysToDateOnly,
   endOfDayInTimezone,
   endOfTodayInTimezone,
   getDateOnlyInTimezone,
-  addDaysToDateOnly,
   normalizeIsoDateInputToUtc,
   startOfDayInTimezone,
 } from '@/lib/utils/timezone';
 import { runCalendarAnalysis } from '@/lib/ai/agents/calendarAnalysisSubagent';
 import { runCalendarSearch } from '@/lib/ai/agents/calendarSearchSubagent';
 import { runEmailRetrieval } from '@/lib/ai/agents/emailRetrievalSubagent';
+import {
+  normalizeSearchInboxContextArgs,
+  searchInboxContextArgsSchema,
+  searchInboxContextProviderSchema,
+} from '../search-inbox-context-contract';
 import { isSupermemoryConfigured } from '@/lib/services/supermemory/client';
 import {
   CALENDAR_SEARCH_MIN_BUDGET_MS,
@@ -31,6 +38,65 @@ import type {
   SearchInboxContextArgs,
 } from '../types';
 
+const searchInboxContextToolDescription = readPromptFile(
+  'executive-agent/searchInboxContextTool.md',
+);
+
+function normalizeIntentText(value: string | undefined): string {
+  return value?.trim().replace(/\s+/g, ' ').toLowerCase() ?? '';
+}
+
+function buildInboxIntentFingerprint(params: {
+  action: SearchInboxContextArgs['action'];
+  userRequestText?: string;
+}): string {
+  const normalizedUserRequest = normalizeIntentText(params.userRequestText);
+  const hashedRequest = createHash('sha1')
+    .update(normalizedUserRequest || '(empty)')
+    .digest('hex')
+    .slice(0, 12);
+  return `${params.action}:${hashedRequest}`;
+}
+
+function buildInvalidInboxSearchResult(args: unknown, message: string) {
+  const action =
+    args && typeof args === 'object' && typeof (args as { action?: unknown }).action === 'string'
+      ? (args as { action: 'find' | 'summarize_range' | 'count' | 'aggregate' }).action
+      : 'find';
+
+  return {
+    action,
+    matches: [],
+    quotes: [],
+    coverage: {
+      action,
+      queriesTried: [],
+      threadsScanned: 0,
+      messagesScanned: 0,
+      timeWindow: 'unknown',
+      pagesFetched: 0,
+      truncated: false,
+      filterOnly: true,
+      appliedFilters: [],
+      budgetNotes: [message],
+      engineVersion: 'inbox-search-v2-hybrid' as const,
+      indexFreshness: 'unknown' as const,
+      retrievalLatencyMs: 0,
+      lexicalCandidates: 0,
+      semanticCandidates: 0,
+      fusionMethod: 'lexical-only' as const,
+      indexLag: null,
+      semanticUnavailable: true,
+    },
+    confidence: 'low' as const,
+    metadata: {
+      validationError: true,
+    },
+    summary: message,
+    followUpQuestions: [message],
+  };
+}
+
 export function buildContextTools({
   context,
   nextSubagentCallIndex,
@@ -41,6 +107,7 @@ export function buildContextTools({
   const {
     input,
     retrievalProfile,
+    selectedPack,
     userTimezone,
     currentTimeUtc,
     currentTimeUserTz,
@@ -96,40 +163,33 @@ export function buildContextTools({
       // Tool 1: Search Inbox Context
       // ─────────────────────────────────────────────────────────────────────────
       search_inbox_context: {
-        description:
-          'Search the user inbox and return a compact evidence pack with ranked matches, quotes, and coverage. ' +
-          'Use deep for analytical, quantitative, or aggregative questions (totals, counts, sums, patterns, temporal summaries, or any question requiring data from many emails)—deep returns broader coverage for accurate calculation. Use quick for simple lookup (one email, recent thread, contact). Also use deep for exact wording, attachments, or when quick results are weak. This tool does not dump raw emails. You may perform any analysis over the evidence (aggregations, calculations, inference) and report clearly.',
-        inputSchema: z
-          .object({
-            mode: z.enum(['quick', 'deep']).optional().describe('Use "deep" for analytical/aggregative questions or broad coverage; "quick" for simple lookup. Default: quick.'),
-            intent: z
-              .string()
-              .min(1)
-              .max(500)
-              .describe('Natural language description of the email to find'),
-            constraints: z
-              .object({
-                sender: z.string().optional().describe('Sender email or name'),
-                recipient: z.string().optional().describe('Recipient email or name'),
-                keywords: z.array(z.string()).max(8).optional().describe('Keywords or phrases'),
-                subject: z.string().optional().describe('Subject hint or fragment'),
-                timeWindow: z
-                  .enum(['recent', 'last_month', 'last_year', 'all_time'])
-                  .optional()
-                  .describe('Time window hint'),
-                startDate: z.string().optional().describe('ISO start date'),
-                endDate: z.string().optional().describe('ISO end date'),
-                hasAttachment: z.boolean().optional().describe('Require attachments'),
-              })
-              .optional(),
-          }),
+        description: searchInboxContextToolDescription,
+        inputSchema: searchInboxContextArgsSchema,
+        providerInputSchema: searchInboxContextProviderSchema,
         execute: async (args: SearchInboxContextArgs) => {
-          const mode = args.mode ?? 'quick';
-          const intent = args.intent?.trim() || input.userRequest;
+          let normalizedArgs;
+          try {
+            normalizedArgs = normalizeSearchInboxContextArgs(args, {
+              defaultTimezone: userTimezone,
+            });
+          } catch (error) {
+            const message = error instanceof Error ? error.message : 'Invalid inbox search request.';
+            logger.warn('[executiveAgent] search_inbox_context invalid args', {
+              userId: input.userId,
+              message,
+              args,
+            });
+            return buildInvalidInboxSearchResult(args, message);
+          }
+
+          const mode = normalizedArgs.mode;
+          const intentFingerprint = buildInboxIntentFingerprint({
+            action: normalizedArgs.action,
+            userRequestText: input.userRequest,
+          });
           const cacheArgs = {
-            mode,
-            intent,
-            constraints: args.constraints,
+            ...normalizedArgs,
+            intentFingerprint,
           };
           const inboxMinStoredAtMs = await getInboxMinStoredAtMs();
           const cachedResult = toolResultCache.get('search_inbox_context', cacheArgs, {
@@ -137,7 +197,7 @@ export function buildContextTools({
           });
           if (cachedResult) {
             logger.info(
-              `[executiveAgent] search_inbox_context cache hit: mode=${mode} intent="${truncate(intent, 80)}"`,
+              `[executiveAgent] search_inbox_context cache hit: action=${normalizedArgs.action} mode=${mode} query="${truncate(normalizedArgs.queryText ?? '(none)', 80)}"`,
             );
             return cachedResult;
           }
@@ -164,7 +224,7 @@ export function buildContextTools({
           }
 
           logger.info(
-            `[executiveAgent] search_inbox_context: mode=${mode} intent="${truncate(intent, 80)}"`,
+            `[executiveAgent] search_inbox_context: action=${normalizedArgs.action} mode=${mode} query="${truncate(normalizedArgs.queryText ?? '(none)', 80)}"`,
           );
 
           const toolCallIndex = nextSubagentCallIndex();
@@ -177,10 +237,16 @@ export function buildContextTools({
             run: (budgetContext) =>
               runEmailRetrieval(
                 {
-                  intent,
+                  action: normalizedArgs.action,
                   mode,
-                  constraints: args.constraints,
+                  mailboxId: normalizedArgs.mailboxId,
+                  mailboxEmail: normalizedArgs.mailboxEmail,
+                  queryText: normalizedArgs.queryText,
+                  filters: normalizedArgs.filters,
+                  options: normalizedArgs.options,
                   profile: retrievalProfile,
+                  userRequestText: input.userRequest,
+                  selectedPack,
                 },
                 {
                   userId: input.userId,
@@ -468,6 +534,7 @@ export function buildContextTools({
             abortSignal: toolAbortSignal,
             toolCallIndex,
             minBudgetMs: CALENDAR_SEARCH_MIN_BUDGET_MS,
+            maxBudgetMs: CALENDAR_SEARCH_MIN_BUDGET_MS,
             uncappedBudget: true,
             run: (budgetContext) =>
               runCalendarSearch(

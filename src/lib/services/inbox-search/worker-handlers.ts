@@ -1,0 +1,83 @@
+import type { Job } from 'bullmq';
+import { logger } from '@/lib/logger';
+import { runInboxMailboxBackfill } from '@/lib/services/inbox-search/backfill';
+import { retryInboxDocumentEmbeddings } from '@/lib/services/inbox-search/embed-retry';
+import { indexStoredInboxEmail } from '@/lib/services/inbox-search/ingestion';
+import { enqueueInboxEmbeddingBackfillSweep } from '@/lib/services/inbox-search/queue';
+import type {
+  InboxBackfillJobData,
+  InboxEmbedRetryJobData,
+  InboxIndexJobData,
+} from '@/lib/services/utils/queues';
+
+export async function processInboxIndexJob(job: Job<InboxIndexJobData>) {
+  const { userId, mailboxId, messageId } = job.data;
+
+  const result = await indexStoredInboxEmail({
+    userId,
+    mailboxId,
+    messageId,
+  });
+
+  return result;
+}
+
+export async function processInboxBackfillJob(job: Job<InboxBackfillJobData>) {
+  const { userId, mailboxId } = job.data;
+  logger.info('[InboxSearchBackfillWorker] mailbox backfill start', {
+    jobId: job.id,
+    userId,
+    mailboxId,
+  });
+
+  const result = await runInboxMailboxBackfill({ userId, mailboxId });
+  if (result.status === 'complete') {
+    const embeddingSweep = await enqueueInboxEmbeddingBackfillSweep({
+      userId,
+      mailboxId,
+      pageSize: 100,
+      maxPages: 5,
+    });
+
+    logger.info('[InboxSearchBackfillWorker] embedding backfill sweep scheduled', {
+      jobId: job.id,
+      userId,
+      mailboxId,
+      ...embeddingSweep,
+    });
+  }
+
+  logger.info('[InboxSearchBackfillWorker] mailbox backfill complete', {
+    jobId: job.id,
+    userId,
+    mailboxId,
+    status: result.status,
+    startedFrom: result.startedFrom,
+    backfillState: result.backfillState,
+    pagesProcessed: result.pagesProcessed,
+    emailsSeen: result.emailsSeen,
+    indexedCount: result.indexedCount,
+    skippedCount: result.skippedCount,
+  });
+
+  return result;
+}
+
+export async function processInboxEmbedRetryJob(job: Job<InboxEmbedRetryJobData>) {
+  logger.info('[InboxSearchBackfillWorker] embedding retry start', {
+    jobId: job.id,
+    ...job.data,
+  });
+
+  const result = await retryInboxDocumentEmbeddings(job.data);
+
+  logger.info('[InboxSearchBackfillWorker] embedding retry complete', {
+    jobId: job.id,
+    ...job.data,
+    status: result.status,
+    embeddedCount: result.embeddedCount,
+    documentId: result.documentId,
+  });
+
+  return result;
+}

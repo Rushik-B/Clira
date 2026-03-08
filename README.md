@@ -20,13 +20,13 @@ Clira is a self-hosted AI email assistant focused on safe automation and draft-f
 ## Architecture At A Glance
 
 ```text
-Gmail Pub/Sub/Webhook
-        |
-        v
-/api/gmail-push/webhook
-        |
-        v
-GmailPushService
+Gmail Pub/Sub Topic
+   |                         (mode=push only)
+   |--> gmail-pull-worker --> /api/gmail-push/webhook
+                 |                    |
+                 +---------+----------+
+                           v
+                    GmailPushService
   -> filtering (deterministic)
   -> routing and queue state
   -> reply-generation jobs (BullMQ)
@@ -47,7 +47,7 @@ Prerequisites:
 - Node.js 22.x
 - npm 10.x
 - Docker + Docker Compose
-- Google Cloud project with Gmail API + Pub/Sub (for push ingestion)
+- Google Cloud project with Gmail API + Pub/Sub
 
 1. Install dependencies
 
@@ -75,11 +75,12 @@ docker compose up -d db redis
 npm run migrate:deploy
 ```
 
-5. Start app, worker, and local cron (separate terminals)
+5. Start app, worker, Gmail pull worker, and local cron (separate terminals)
 
 ```bash
 npm run dev
 npm run start:worker
+npm run start:gmail-pull-worker
 npm run start:cron
 ```
 
@@ -105,7 +106,9 @@ This starts `app`, `worker`, `cron`, `db`, and `redis` using the production imag
 | `NEXTAUTH_URL` | Canonical app URL |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Google OAuth for mailbox auth |
 | `GOOGLE_GENERATIVE_AI_API_KEY` | Gemini key for AI generation |
-| `GOOGLE_CLOUD_PROJECT_ID` | GCP project for Gmail push/watch setup |
+| `GMAIL_INGESTION_MODE` | `pull` (default) or `push` |
+| `GMAIL_PUBSUB_TOPIC` | Gmail watch Pub/Sub topic (source of truth) |
+| `GMAIL_PUBSUB_PULL_SUBSCRIPTION` | Required when `GMAIL_INGESTION_MODE=pull` |
 
 ## Optional Integrations And Flags
 
@@ -122,6 +125,7 @@ This starts `app`, `worker`, `cron`, `db`, and `redis` using the production imag
 | --- | --- |
 | `npm run dev` | Start Next.js app |
 | `npm run start:worker` | Start BullMQ worker process |
+| `npm run start:gmail-pull-worker` | Start Gmail pull ingestion worker |
 | `npm run start:cron` | Start local cron scheduler that triggers `/api/cron/*` |
 | `npm run build` | Build app + worker bundle |
 | `npm run lint` | Run lint checks |
@@ -132,10 +136,11 @@ This starts `app`, `worker`, `cron`, `db`, and `redis` using the production imag
 
 ## Operational Endpoints
 
-- `GET /api/health` - app health + env validation
+- `GET /api/health` - app health + env validation + Gmail ingestion mode/heartbeat
 - `POST /api/cron/sort` - always-on sorting trigger (requires `Authorization: Bearer $CRON_SECRET`)
 - `POST /api/cron/reminders` - enqueue due reminders (same auth)
 - `GET /api/cron/renew-gmail-watches` - renew Gmail watch subscriptions (same auth)
+- `POST /api/gmail-push/webhook` - only active when `GMAIL_INGESTION_MODE=push`
 
 ## Documentation
 

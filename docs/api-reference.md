@@ -14,7 +14,7 @@ This document lists all application API routes under `src/app/api` and their exp
 
 - Health: `GET /api/health`
 - Queue stream (SSE): `GET /api/queue/stream`
-- Gmail push webhook: `POST /api/gmail-push/webhook`
+- Gmail push webhook: `POST /api/gmail-push/webhook` (only when `GMAIL_INGESTION_MODE=push`)
 - Gmail watch setup: `POST /api/gmail-push/setup`
 - Always-on sorting trigger: `POST /api/cron/sort`
 - Reminder cron trigger: `POST /api/cron/reminders`

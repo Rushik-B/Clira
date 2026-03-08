@@ -237,6 +237,10 @@ export function createWorkingStateController(initialState: ExecutiveWorkingState
 
       if (toolName === 'plan_calendar_change') {
         const pendingChange = record?.pendingChange;
+        const plan =
+          record?.plan && typeof record.plan === 'object'
+            ? (record.plan as Record<string, unknown>)
+            : null;
         if (pendingChange && typeof pendingChange === 'object') {
           const pendingId = (pendingChange as Record<string, unknown>).pendingId;
           state = {
@@ -252,6 +256,11 @@ export function createWorkingStateController(initialState: ExecutiveWorkingState
         }
 
         if (record?.ok === false) {
+          setPhase('clarify', 'Ask one short clarification and stop.');
+          return;
+        }
+
+        if (plan?.action === 'clarify') {
           setPhase('clarify', 'Ask one short clarification and stop.');
           return;
         }

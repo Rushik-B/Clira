@@ -8,7 +8,7 @@ This guide gets Clira running locally with the same app/worker/cron topology use
 - npm 10.x
 - Docker + Docker Compose
 - Postgres and Redis ports available (`15432`, `16379`)
-- Google Cloud project (Gmail API + Pub/Sub) for push ingestion
+- Google Cloud project (Gmail API + Pub/Sub)
 
 ## 1) Install and configure
 
@@ -31,7 +31,7 @@ docker compose up -d db redis
 npm run migrate:deploy
 ```
 
-## 4) Start app, worker, and cron
+## 4) Start app, worker, Gmail pull worker, and cron
 
 Terminal A:
 
@@ -48,6 +48,12 @@ npm run start:worker
 Terminal C:
 
 ```bash
+npm run start:gmail-pull-worker
+```
+
+Terminal D:
+
+```bash
 npm run start:cron
 ```
 
@@ -56,11 +62,12 @@ npm run start:cron
 - App loads at `http://localhost:3000`
 - Health endpoint: `GET /api/health` returns `healthy`
 - Worker logs show startup and queue readiness
+- Gmail pull worker logs show subscription startup and heartbeat writes
 - Cron logs show scheduled triggers for `/api/cron/reminders`, `/api/cron/sort`, and `/api/cron/renew-gmail-watches`
 
-## 6) Configure Gmail push
+## 6) Configure Gmail ingestion
 
-Use `docs/gmail-pubsub.md` to configure Pub/Sub and webhook delivery.
+Use `docs/gmail-pubsub.md` to configure pull-default or push-mode ingestion.
 
 ## 7) Optional: Telegram setup (first-time, beginner path)
 
@@ -84,7 +91,7 @@ If running full Docker stack:
 docker compose up -d --force-recreate app worker cron
 ```
 
-If running local `npm run dev` + `npm run start:worker` + `npm run start:cron`, restart all three terminals.
+If running local `npm run dev` + `npm run start:worker` + `npm run start:gmail-pull-worker` + `npm run start:cron`, restart all four terminals.
 
 ### User pairing flow (per user)
 
@@ -111,4 +118,4 @@ If running local `npm run dev` + `npm run start:worker` + `npm run start:cron`, 
 - Use strong `NEXTAUTH_SECRET` and `CRON_SECRET`
 - Keep app and worker as separate processes
 - Configure persistent Postgres and Redis volumes
-- Configure webhook URLs with HTTPS
+- Configure webhook URLs with HTTPS if using push mode

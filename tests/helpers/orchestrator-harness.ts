@@ -23,12 +23,19 @@ export type OrchestratorHarness = {
   orchestrator: MessagingOrchestrator;
   sleepCalls: number[];
   getState: (channel: OrchestrationChannel, conversationId: string) => BurstState;
+  setState: (
+    channel: OrchestrationChannel,
+    conversationId: string,
+    state: BurstState,
+  ) => void;
   getEvents: () => EmittedEvent[];
   filterEvents: (name: string) => EmittedEvent[];
 };
 
 export function createOrchestratorHarness(params?: {
-  classify?: (input: ClassifierInput) => RelevanceClassification;
+  classify?: (
+    input: ClassifierInput,
+  ) => RelevanceClassification | Promise<RelevanceClassification>;
   beforeUpdate?: (args: {
     conversationKey: string;
     callCount: number;
@@ -118,6 +125,9 @@ export function createOrchestratorHarness(params?: {
     sleepCalls,
     getState: (channel, conversationId) =>
       structuredClone(getOrInitState(`${channel}:${conversationId}`)),
+    setState: (channel, conversationId, state) => {
+      states.set(`${channel}:${conversationId}`, structuredClone(state));
+    },
     getEvents: () => structuredClone(events),
     filterEvents: (name: string) =>
       structuredClone(events.filter((e) => e.event === name)),

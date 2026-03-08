@@ -22,6 +22,14 @@ export type RelevanceClassification = {
 
 export type RunPhase = 'running' | 'commit_boundary' | 'completed';
 
+export type RunPackId =
+  | 'core_recall_pack'
+  | 'inbox_context_pack'
+  | 'calendar_query_pack'
+  | 'calendar_mutation_pack'
+  | 'reminder_alert_pack'
+  | 'email_send_pack';
+
 export type SteerEvent = {
   seq: number;
   revision: number;
@@ -64,8 +72,10 @@ export type RunContext = {
   channel: OrchestrationChannel;
   conversationId: string;
   classifierDecision: RelevanceDecision | null;
+  priorPack: RunPackId | null;
   droppedSummary: string[];
   abortSignal: AbortSignal;
+  setSelectedPack: (packId: RunPackId) => void;
   isRunCurrent: () => Promise<boolean>;
   isBurstStable: () => boolean;
   canEmitProgress: () => boolean;

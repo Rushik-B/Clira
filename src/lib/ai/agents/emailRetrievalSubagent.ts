@@ -1,45 +1,60 @@
-import { readPromptFile } from '@/lib/prompts';
 import { callObject } from '@/lib/ai/callLlm';
+import { z } from 'zod';
 import { models } from '@/lib/ai/models';
-import { logger } from '@/lib/logger';
-import { createGmailServiceForUser } from '@/lib/security/getUserGmailCredentials';
-import { getMailboxesForUser } from '@/lib/services/mailbox';
-import { addDaysToDateOnly } from '@/lib/utils/timezone';
 import {
   EmailEvidencePackSchema,
+  type EmailEvidenceExpansionDTO,
+  type EmailEvidenceMetadataDTO,
   type EmailEvidencePackDTO,
+  type ExpandedInboxThreadDTO,
 } from '@/lib/ai/schemas/emailRetrievalSchemas';
-import type { EmailData } from '@/lib/email/gmail';
+import { logger } from '@/lib/logger';
+import { readPromptFile } from '@/lib/prompts';
+import {
+  fetchInboxThreadSlice,
+  getInboxRetrievalFeatureFlags,
+  searchInboxDocuments,
+  type InboxSearchAction,
+  type InboxSearchAggregate,
+  type InboxSearchCandidate,
+  type InboxSearchCoverage,
+  type InboxSearchFilters,
+  type InboxSearchQueryMode,
+  type InboxSearchOptions,
+  type InboxSearchRetrievalProfile,
+  type InboxSearchScopedMailbox,
+} from '@/lib/services/inbox-search';
+import { analyzeInboxQueryIntent } from '@/lib/services/inbox-search/query-intent';
+import { inferInboxSearchConfidence } from '@/lib/services/inbox-search/scoring';
+import { getMailboxesForUser } from '@/lib/services/mailbox';
 
-// ─────────────────────────────────────────────────────────────────────────────
 // Email Retrieval Subagent
 //
-// A specialized retrieval + compression pipeline that searches Gmail using a
-// multi-query plan, enforces budgets, and compresses results into a compact
-// EmailEvidencePack for the Executive Agent.
-// ─────────────────────────────────────────────────────────────────────────────
+// Phase 3 replaces the Gmail live search hot path with local-only retrieval over
+// inbox projection tables. Quick mode is deterministic; deep mode may optionally
+// use the LLM over already-ranked local candidates.
 
-export type EmailRetrievalMode = 'quick' | 'deep';
-export type EmailRetrievalProfile = 'default' | 'messaging' | 'whatsapp' | 'telegram';
-
-export type EmailRetrievalConstraints = {
-  sender?: string;
-  recipient?: string;
-  keywords?: string[];
-  subject?: string;
-  timeWindow?: 'recent' | 'last_month' | 'last_year' | 'all_time';
-  startDate?: string;
-  endDate?: string;
-  hasAttachment?: boolean;
-};
+export type EmailRetrievalMode = InboxSearchQueryMode;
+export type EmailRetrievalProfile =
+  | 'default'
+  | 'messaging'
+  | 'whatsapp'
+  | 'telegram';
+export type EmailRetrievalAction = InboxSearchAction;
+export type EmailRetrievalFilters = InboxSearchFilters;
+export type EmailRetrievalOptions = InboxSearchOptions;
 
 export type EmailRetrievalRequest = {
-  intent: string;
+  action: EmailRetrievalAction;
   mode?: EmailRetrievalMode;
-  constraints?: EmailRetrievalConstraints;
+  queryText?: string;
+  filters?: EmailRetrievalFilters;
+  options?: EmailRetrievalOptions;
   profile?: EmailRetrievalProfile;
   mailboxId?: string;
   mailboxEmail?: string;
+  userRequestText?: string;
+  selectedPack?: string;
 };
 
 type EmailRetrievalDependencies = {
@@ -49,460 +64,102 @@ type EmailRetrievalDependencies = {
 };
 
 type RetrievalBudgets = {
-  maxQueries: number;
-  maxPagesPerQuery: number;
-  maxThreads: number;
-  maxMessages: number;
   maxCandidates: number;
-  maxBodyChars: number;
-  pageSize: number;
   snippetChars: number;
 };
 
-type SearchPlan = {
-  queries: string[];
-  timeWindowLabel: string;
-  matchTerms: string[];
-  notes: string[];
+type ExpansionBudgets = {
+  candidatePoolSize: number;
+  maxThreads: number;
+  maxMessagesPerThread: number;
+  maxMessageChars: number;
+  maxExpandedChars: number;
 };
 
-type EmailRetrievalCandidate = {
-  threadId: string;
-  messageId: string;
-  mailboxId: string;
-  mailboxEmail: string;
-  date: string;
-  from: string;
-  subject: string;
-  snippet: string;
-  matchedTerms: string[];
-  matchScore: number;
-};
+type RetrievalCoverage = InboxSearchCoverage;
+type RetrievalMetadata = EmailEvidenceMetadataDTO;
 
-type MailboxSearchContext = {
-  mailboxId: string;
-  mailboxEmail: string;
-  gmail: { searchThreadsPaged: GmailSearchPaged };
-};
-
-type RetrievalCoverage = {
-  queriesTried: string[];
-  threadsScanned: number;
-  messagesScanned: number;
-  timeWindow: string;
-  pagesFetched: number;
-  truncated: boolean;
-  budgetNotes: string[];
-};
-
-type GmailSearchPaged = (query: string, options: { maxResults?: number; pageToken?: string }) => Promise<{
-  threads: Array<{ threadId: string; emails: EmailData[] }>;
-  nextPageToken?: string;
-}>;
-
-const STOPWORDS = new Set([
-  'the',
-  'a',
-  'an',
-  'and',
-  'or',
-  'but',
-  'for',
-  'to',
-  'from',
-  'with',
-  'about',
-  'into',
-  'over',
-  'after',
-  'before',
-  'this',
-  'that',
-  'these',
-  'those',
-  'is',
-  'are',
-  'was',
-  'were',
-  'be',
-  'been',
-  'being',
-  'on',
-  'in',
-  'at',
-  'by',
-  'it',
-  'its',
-  'i',
-  'me',
-  'my',
-  'we',
-  'us',
-  'our',
-  'you',
-  'your',
-  'he',
-  'she',
-  'they',
-  'them',
-  'their',
-  'as',
-  'if',
-  'then',
-  'than',
-  'so',
-  'not',
-  'no',
-  'yes',
-  'just',
-  'can',
-  'could',
-  'should',
-  'would',
-]);
-
-type EffectiveEmailRetrievalProfile = 'default' | 'messaging';
-
-const RETRIEVAL_BUDGETS_BY_PROFILE: Record<EffectiveEmailRetrievalProfile, Record<EmailRetrievalMode, RetrievalBudgets>> =
-  {
-    default: {
-      quick: {
-        maxQueries: 3,
-        maxPagesPerQuery: 1,
-        maxThreads: 16,
-        maxMessages: 60,
-        maxCandidates: 24,
-        maxBodyChars: 20000,
-        pageSize: 12,
-        snippetChars: 220,
-      },
-      deep: {
-        maxQueries: 6,
-        maxPagesPerQuery: 4,
-        maxThreads: 60,
-        maxMessages: 200,
-        maxCandidates: 60,
-        maxBodyChars: 70000,
-        pageSize: 15,
-        snippetChars: 240,
-      },
+const RETRIEVAL_BUDGETS_BY_PROFILE: Record<
+  InboxSearchRetrievalProfile,
+  Record<EmailRetrievalMode, RetrievalBudgets>
+> = {
+  default: {
+    quick: {
+      maxCandidates: 24,
+      snippetChars: 220,
     },
-    messaging: {
-      quick: {
-        maxQueries: 2,
-        maxPagesPerQuery: 1,
-        maxThreads: 12,
-        maxMessages: 50,
-        maxCandidates: 18,
-        maxBodyChars: 15000,
-        pageSize: 10,
-        snippetChars: 200,
-      },
-      deep: {
-        maxQueries: 3,
-        maxPagesPerQuery: 2,
-        maxThreads: 35,
-        maxMessages: 120,
-        maxCandidates: 40,
-        maxBodyChars: 45000,
-        pageSize: 12,
-        snippetChars: 220,
-      },
+    deep: {
+      maxCandidates: 60,
+      snippetChars: 240,
     },
-  };
+  },
+  messaging: {
+    quick: {
+      maxCandidates: 18,
+      snippetChars: 200,
+    },
+    deep: {
+      maxCandidates: 40,
+      snippetChars: 220,
+    },
+  },
+};
 
-function normalizeRetrievalProfile(profile: EmailRetrievalProfile | undefined): EffectiveEmailRetrievalProfile {
-  if (!profile || profile === 'default') return 'default';
-  return 'messaging';
-}
-
-const EMAIL_REGEX = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
-const QUOTED_PHRASE_REGEX = /"([^"]+)"/g;
-const GMAIL_SEARCH_TIMEOUT_MS = 8_000;
 const EARLY_EXIT_BUFFER_MS = 3_000;
+const COMPACT_MATCH_LIMIT = 5;
+const COMPACT_QUOTE_LIMIT = 2;
+const EXPANSION_EARLY_EXIT_BUFFER_MS = 4_000;
 
-function normalizeWhitespace(text: string): string {
-  return text.replace(/\s+/g, ' ').trim();
+const EXPANSION_BUDGETS_BY_MODE: Record<EmailRetrievalMode, ExpansionBudgets> = {
+  quick: {
+    candidatePoolSize: 8,
+    maxThreads: 1,
+    maxMessagesPerThread: 4,
+    maxMessageChars: 3000,
+    maxExpandedChars: 9000,
+  },
+  deep: {
+    candidatePoolSize: 16,
+    maxThreads: 2,
+    maxMessagesPerThread: 6,
+    maxMessageChars: 5000,
+    maxExpandedChars: 24000,
+  },
+};
+
+const EmailExpansionDecisionSchema = z.object({
+  shouldExpand: z.boolean(),
+  reasons: z.array(z.string()).min(1).max(4),
+  preferredAnchorRanks: z.array(z.number().int().min(1)).max(4).optional(),
+});
+
+type EmailExpansionDecisionDTO = z.infer<typeof EmailExpansionDecisionSchema>;
+
+function normalizeRetrievalProfile(
+  profile: EmailRetrievalProfile | undefined,
+): InboxSearchRetrievalProfile {
+  if (!profile || profile === 'default') {
+    return 'default';
+  }
+
+  return 'messaging';
 }
 
 function isTimeLow(deadlineAt?: number, bufferMs = EARLY_EXIT_BUFFER_MS): boolean {
   return typeof deadlineAt === 'number' && deadlineAt - Date.now() < bufferMs;
 }
 
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
-  let timeoutId: ReturnType<typeof setTimeout> | undefined;
-  const timeoutPromise = new Promise<{ status: 'timeout' }>((resolve) => {
-    timeoutId = setTimeout(() => resolve({ status: 'timeout' }), timeoutMs);
-  });
-
-  const guardedPromise = promise
-    .then((value) => ({ status: 'fulfilled' as const, value }))
-    .catch((error) => ({ status: 'rejected' as const, error }));
-
-  const result = await Promise.race([guardedPromise, timeoutPromise]);
-  if (timeoutId) clearTimeout(timeoutId);
-
-  if (result.status === 'timeout') {
-    throw new Error(`${label} timed out after ${timeoutMs}ms`);
-  }
-  if (result.status === 'rejected') {
-    throw result.error;
-  }
-  return result.value;
-}
-
-function stripHtml(input: string): string {
-  return normalizeWhitespace(input.replace(/<[^>]*>/g, ' '));
-}
-
-function extractQuotedPhrases(text: string): string[] {
-  const phrases: string[] = [];
-  let match: RegExpExecArray | null;
-
-  while ((match = QUOTED_PHRASE_REGEX.exec(text)) !== null) {
-    const phrase = match[1]?.trim();
-    if (phrase) phrases.push(phrase);
-    if (phrases.length >= 4) break;
-  }
-
-  return Array.from(new Set(phrases));
-}
-
-function extractEmails(text: string): string[] {
-  const matches = text.match(EMAIL_REGEX) ?? [];
-  return Array.from(new Set(matches.map((email) => email.toLowerCase())));
-}
-
-function extractKeywords(text: string, limit = 6): string[] {
-  const tokens = text
-    .toLowerCase()
-    .split(/[^a-z0-9@._-]+/g)
-    .map((token) => token.trim())
-    .filter((token) => token.length > 2)
-    .filter((token) => !STOPWORDS.has(token));
-
-  const deduped = Array.from(new Set(tokens));
-  return deduped.slice(0, limit);
-}
-
-function formatDateForGmail(dateString?: string): string | null {
-  if (!dateString) return null;
-  const match = dateString.match(/^(\d{4})-(\d{2})-(\d{2})/);
-  if (match) {
-    return `${match[1]}/${match[2]}/${match[3]}`;
-  }
-
-  const date = new Date(dateString);
-  if (Number.isNaN(date.getTime())) return null;
-  const year = date.getUTCFullYear();
-  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
-  const day = String(date.getUTCDate()).padStart(2, '0');
-  return `${year}/${month}/${day}`;
-}
-
-function wrapQuoted(term: string): string {
-  const normalized = term.replace(/"/g, '').trim();
-  return normalized.includes(' ') ? `"${normalized}"` : normalized;
-}
-
-function buildTimeFilters(
-  constraints: EmailRetrievalConstraints | undefined,
-  mode: EmailRetrievalMode,
-  profile: EffectiveEmailRetrievalProfile,
-): { filters: string[]; label: string } {
-  const start = formatDateForGmail(constraints?.startDate);
-  const end = formatDateForGmail(constraints?.endDate);
-  const endExclusive = (() => {
-    if (!constraints?.endDate) return null;
-    const dateOnly = constraints.endDate.match(/^(\d{4}-\d{2}-\d{2})/)?.[1];
-    if (!dateOnly) return end;
-    return formatDateForGmail(addDaysToDateOnly(dateOnly, 1));
-  })();
-
-  if (start || endExclusive) {
-    const parts: string[] = [];
-    if (start) parts.push(`after:${start}`);
-    if (endExclusive) parts.push(`before:${endExclusive}`);
-    const label = `${start ?? '...'} to ${end ?? '...'}`;
-    return { filters: [parts.join(' ')], label };
-  }
-
-  const timeWindow = constraints?.timeWindow;
-  if (timeWindow && timeWindow !== 'all_time') {
-    const days = timeWindow === 'recent' ? 30 : timeWindow === 'last_month' ? 30 : 365;
-    return { filters: [`newer_than:${days}d`], label: `last ${days} days` };
-  }
-
-  if (timeWindow === 'all_time') {
-    return { filters: [''], label: 'all time' };
-  }
-
-  if (mode === 'deep') {
-    if (profile === 'messaging') {
-      return {
-        filters: ['newer_than:60d', 'newer_than:180d'],
-        label: 'last 60/180 days',
-      };
-    }
-    return {
-      filters: ['newer_than:30d', 'newer_than:180d', 'newer_than:365d', ''],
-      label: '30d, 180d, 365d, all time',
-    };
-  }
-
-  if (profile === 'messaging') {
-    return { filters: ['newer_than:90d'], label: 'last 90 days' };
-  }
-
-  return { filters: ['newer_than:180d'], label: 'last 180 days' };
-}
-
-function buildSearchPlan(
-  intent: string,
-  constraints: EmailRetrievalConstraints | undefined,
-  mode: EmailRetrievalMode,
-  profile: EffectiveEmailRetrievalProfile,
-): SearchPlan {
-  const notes: string[] = [];
-  const phrases = extractQuotedPhrases(intent);
-  const intentEmails = extractEmails(intent);
-  const intentKeywords = extractKeywords(intent);
-
-  const constraintKeywords = (constraints?.keywords ?? [])
-    .map((keyword) => keyword.trim())
-    .filter(Boolean)
-    .slice(0, 6);
-
-  const subjectHint = constraints?.subject?.trim();
-  const peopleTerms = new Set<string>();
-
-  if (constraints?.sender) peopleTerms.add(constraints.sender.trim());
-  if (constraints?.recipient) peopleTerms.add(constraints.recipient.trim());
-  intentEmails.forEach((email) => peopleTerms.add(email));
-
-  const keywordTerms = Array.from(new Set([...constraintKeywords, ...intentKeywords]));
-
-  const { filters, label } = buildTimeFilters(constraints, mode, profile);
-
-  const clauses: string[] = [];
-
-  if (peopleTerms.size > 0) {
-    const peopleClause = Array.from(peopleTerms)
-      .map((term) => {
-        const safeTerm = wrapQuoted(term);
-        return `{from:${safeTerm} OR to:${safeTerm}}`;
-      })
-      .join(' OR ');
-    clauses.push(`(${peopleClause})`);
-  }
-
-  if (subjectHint) {
-    clauses.push(`subject:${wrapQuoted(subjectHint)}`);
-  }
-
-  if (phrases.length > 0) {
-    clauses.push(`(${phrases.map(wrapQuoted).join(' OR ')})`);
-  }
-
-  if (keywordTerms.length > 0) {
-    clauses.push(`(${keywordTerms.map(wrapQuoted).join(' OR ')})`);
-  }
-
-  if (clauses.length === 0) {
-    notes.push('No specific search terms found in intent or constraints.');
-    return { queries: [], timeWindowLabel: label, matchTerms: [], notes };
-  }
-
-  const combined = clauses.join(' ');
-  const baseQueries = clauses.length > 1 ? [combined, ...clauses] : [combined];
-
-  const queries = new Set<string>();
-  for (const baseQuery of baseQueries) {
-    for (const timeFilter of filters) {
-      const parts = [
-        baseQuery,
-        timeFilter,
-        constraints?.hasAttachment ? 'has:attachment' : '',
-        '-in:spam -in:trash',
-      ].filter(Boolean);
-      queries.add(parts.join(' '));
-    }
-  }
-
-  const matchTerms = Array.from(new Set([...phrases, ...keywordTerms, subjectHint].filter(Boolean) as string[]));
-
-  return {
-    queries: Array.from(queries),
-    timeWindowLabel: label,
-    matchTerms,
-    notes,
-  };
-}
-
-function extractSnippet(text: string, terms: string[], maxChars: number): string {
-  const cleanText = stripHtml(text);
-  if (terms.length === 0) {
-    return cleanText.length > maxChars ? `${cleanText.slice(0, maxChars - 3)}...` : cleanText;
-  }
-
-  const lower = cleanText.toLowerCase();
-  const term = terms
-    .map((t) => t.toLowerCase())
-    .find((t) => t && lower.includes(t));
-
-  if (!term) {
-    return cleanText.length > maxChars ? `${cleanText.slice(0, maxChars - 3)}...` : cleanText;
-  }
-
-  const index = lower.indexOf(term);
-  const start = Math.max(0, index - Math.floor(maxChars / 3));
-  const end = Math.min(cleanText.length, start + maxChars);
-  const snippet = cleanText.slice(start, end).trim();
-
-  if (start === 0 && end >= cleanText.length) return snippet;
-  if (start === 0) return `${snippet}...`;
-  if (end >= cleanText.length) return `...${snippet}`;
-  return `...${snippet}...`;
-}
-
-function scoreMatch(subject: string, body: string, terms: string[]): { score: number; matched: string[] } {
-  if (terms.length === 0) {
-    return { score: 1, matched: [] };
-  }
-
-  const lowerSubject = subject.toLowerCase();
-  const lowerBody = body.toLowerCase();
-  const matched: string[] = [];
-  let score = 0;
-
-  for (const term of terms) {
-    const lowerTerm = term.toLowerCase();
-    let hit = false;
-
-    if (lowerSubject.includes(lowerTerm)) {
-      score += 3;
-      hit = true;
-    }
-
-    if (lowerBody.includes(lowerTerm)) {
-      score += 1;
-      hit = true;
-    }
-
-    if (hit) matched.push(term);
-  }
-
-  return { score, matched };
-}
-
 function buildEmailRetrievalPrompt(input: {
   request: EmailRetrievalRequest;
   coverage: RetrievalCoverage;
-  candidates: EmailRetrievalCandidate[];
+  candidates: InboxSearchCandidate[];
 }): string {
   const template = readPromptFile('core-processing/emailRetrievalPrompt.md');
-  const constraintsJson = input.request.constraints
-    ? JSON.stringify(input.request.constraints, null, 2)
+  const filtersJson = input.request.filters
+    ? JSON.stringify(input.request.filters, null, 2)
+    : '(none)';
+  const optionsJson = input.request.options
+    ? JSON.stringify(input.request.options, null, 2)
     : '(none)';
   const coverageJson = JSON.stringify(input.coverage, null, 2);
   const candidatesJson =
@@ -511,412 +168,980 @@ function buildEmailRetrievalPrompt(input: {
       : '(none)';
 
   return template
-    .replace('{userRequest}', input.request.intent)
+    .replace('{action}', input.request.action)
+    .replace('{queryText}', input.request.queryText ?? '(none)')
     .replace('{mode}', input.request.mode ?? 'quick')
-    .replace('{constraintsJson}', constraintsJson)
+    .replace('{filtersJson}', filtersJson)
+    .replace('{optionsJson}', optionsJson)
     .replace('{coverageJson}', coverageJson)
     .replace('{candidatesJson}', candidatesJson);
 }
 
+function createEmptyCoverage(
+  action: EmailRetrievalAction,
+  budgetNotes: string[],
+  overrides?: Partial<RetrievalCoverage>,
+): RetrievalCoverage {
+  return {
+    action,
+    queriesTried: [],
+    threadsScanned: 0,
+    messagesScanned: 0,
+    timeWindow: 'unknown',
+    pagesFetched: 0,
+    truncated: false,
+    filterOnly: true,
+    appliedFilters: [],
+    budgetNotes,
+    engineVersion: 'inbox-search-v2-hybrid',
+    indexFreshness: 'unknown',
+    retrievalLatencyMs: 0,
+    lexicalCandidates: 0,
+    semanticCandidates: 0,
+    fusionMethod: 'rrf_k60',
+    indexLag: null,
+    semanticUnavailable: true,
+    ...overrides,
+  };
+}
+
 function createEmptyEvidencePack(
+  action: EmailRetrievalAction,
   coverage: RetrievalCoverage,
   followUpQuestions: string[],
+  metadata?: RetrievalMetadata,
 ): EmailEvidencePackDTO {
   return {
+    action,
     matches: [],
     quotes: [],
     coverage,
     confidence: 'low',
+    metadata,
+    summary: coverage.budgetNotes?.[0] ?? 'No matching email evidence found.',
     followUpQuestions,
   };
 }
 
-function createQuickEvidencePack(
-  candidates: EmailRetrievalCandidate[],
-  coverage: RetrievalCoverage,
-): EmailEvidencePackDTO {
-  const matches = candidates.slice(0, 5).map((candidate) => ({
-    threadId: candidate.threadId,
-    messageId: candidate.messageId,
-    mailboxId: candidate.mailboxId,
-    mailboxEmail: candidate.mailboxEmail,
-    from: candidate.from,
-    subject: candidate.subject,
-    date: candidate.date,
-    whyRelevant:
-      candidate.matchedTerms.length > 0
-        ? `Matched terms: ${candidate.matchedTerms.join(', ')}`
-        : 'Matched on keyword overlap.',
-    quote: candidate.snippet.slice(0, 360),
-  }));
+function appendCoverageBudgetNotes<T extends { budgetNotes?: string[] }>(
+  coverage: T,
+  notes: string[],
+): T {
+  if (notes.length === 0) {
+    return coverage;
+  }
 
   return {
-    matches,
-    quotes: [],
-    coverage: {
-      ...coverage,
-      truncated: true,
-      budgetNotes: [...coverage.budgetNotes, 'Quick pack: time-constrained'],
-    },
-    confidence: matches.length > 0 ? 'medium' : 'low',
-    followUpQuestions: ['Want me to search deeper?'],
+    ...coverage,
+    budgetNotes: [...(coverage.budgetNotes ?? []), ...notes],
+  } as T;
+}
+
+function createDeterministicSummary(
+  action: EmailRetrievalAction,
+  candidates: InboxSearchCandidate[],
+  coverage: RetrievalCoverage,
+): string | undefined {
+  if (candidates.length === 0) {
+    return undefined;
+  }
+
+  if (action === 'summarize_range') {
+    const topCandidate = candidates[0]!;
+    return `Found ${candidates.length} matching email${candidates.length === 1 ? '' : 's'} across ${coverage.timeWindow}. Top thread: ${topCandidate.subject}.`;
+  }
+
+  if (action === 'find') {
+    const topCandidate = candidates[0]!;
+    return `Top match: ${topCandidate.subject} from ${topCandidate.from}.`;
+  }
+
+  return `Found ${candidates.length} matching email${candidates.length === 1 ? '' : 's'}.`;
+}
+
+function createDeterministicEvidencePack(params: {
+  action: EmailRetrievalAction;
+  candidates: InboxSearchCandidate[];
+  coverage: RetrievalCoverage;
+  mode: EmailRetrievalMode;
+  queryText?: string;
+  filters?: EmailRetrievalFilters;
+  metadata?: RetrievalMetadata;
+  includeQuotes?: boolean;
+  includeSnippets?: boolean;
+  summary?: string;
+}): EmailEvidencePackDTO {
+  const {
+    action,
+    candidates,
+    coverage,
+    mode,
+    queryText,
+    filters,
+    metadata,
+    includeQuotes = true,
+    includeSnippets = true,
+    summary,
+  } = params;
+  const topCandidates = candidates.slice(0, COMPACT_MATCH_LIMIT);
+  const queryIntent = analyzeInboxQueryIntent({
+    queryText,
+    filters,
+  }).intent;
+  const confidence = inferInboxSearchConfidence({
+    candidateCount: topCandidates.length,
+    topScore: topCandidates[0]?.totalScore ?? 0,
+    secondScore: topCandidates[1]?.totalScore ?? 0,
+    freshness: coverage.indexFreshness ?? 'unknown',
+    hasExactBoost: topCandidates.some(
+      (candidate) =>
+        candidate.exactSenderBoost > 0 || candidate.exactSubjectBoost > 0,
+    ),
+    queryIntent,
+    literalMatchCount: topCandidates.filter(
+      (candidate) =>
+        candidate.exactSenderBoost > 0 ||
+        candidate.exactSubjectBoost > 0 ||
+        candidate.matchedTerms.length > 0,
+    ).length,
+    semanticOnlyCount: topCandidates.filter(
+      (candidate) =>
+        candidate.matchedTerms.length === 0 &&
+        candidate.exactSenderBoost === 0 &&
+        candidate.exactSubjectBoost === 0 &&
+        typeof candidate.semanticScore === 'number',
+    ).length,
+  });
+
+  return {
+    action,
+    matches: topCandidates.map((candidate) => ({
+      threadId: candidate.threadId,
+      messageId: candidate.messageId,
+      mailboxId: candidate.mailboxId,
+      mailboxEmail: candidate.mailboxEmail,
+      from: candidate.from,
+      subject: candidate.subject,
+      date: candidate.date,
+      whyRelevant: candidate.whyRelevant,
+      quote: includeSnippets ? candidate.snippet.slice(0, 360) : '',
+    })),
+    quotes: includeQuotes
+      ? topCandidates.slice(0, COMPACT_QUOTE_LIMIT).map((candidate) => ({
+          threadId: candidate.threadId,
+          messageId: candidate.messageId,
+          mailboxId: candidate.mailboxId,
+          mailboxEmail: candidate.mailboxEmail,
+          quote: candidate.snippet.slice(0, 360),
+          note: candidate.whyRelevant.slice(0, 200),
+        }))
+      : [],
+    coverage,
+    confidence,
+    metadata,
+    summary: summary ?? createDeterministicSummary(action, topCandidates, coverage),
+    followUpQuestions:
+      confidence === 'low'
+        ? [
+            mode === 'quick'
+              ? 'Want me to search deeper across the local inbox index?'
+              : 'Can you share a sender, subject, or date range to narrow this down?',
+          ]
+        : [],
   };
 }
 
-async function resolveMailboxSearchContexts(params: {
+function createCountOrAggregateEvidencePack(params: {
+  action: Extract<EmailRetrievalAction, 'count' | 'aggregate'>;
+  coverage: RetrievalCoverage;
+  count: number;
+  aggregates?: InboxSearchAggregate[];
+  groupBy?: EmailRetrievalOptions['groupBy'];
+}): EmailEvidencePackDTO {
+  const { action, coverage, count, aggregates, groupBy } = params;
+  const topBucket = aggregates?.[0];
+  const summary =
+    action === 'count'
+      ? groupBy && topBucket
+        ? `Found ${count} matching emails. Top ${groupBy}: ${topBucket.key} (${topBucket.count}).`
+        : `Found ${count} matching emails.`
+      : topBucket
+        ? `Top ${groupBy ?? 'bucket'}: ${topBucket.key} (${topBucket.count}).`
+        : `No aggregate buckets matched.`;
+
+  return {
+    action,
+    matches: [],
+    quotes: [],
+    coverage,
+    confidence: count > 0 ? 'high' : 'low',
+    summary,
+    count,
+    aggregates,
+    groupBy,
+    followUpQuestions:
+      count === 0
+        ? ['Want to narrow this with a sender, mailbox, or date range?']
+        : [],
+  };
+}
+
+type ExpansionAnchorCandidate = {
+  candidate: InboxSearchCandidate;
+  selectionRank: number;
+  anchorReason: string;
+  score: number;
+  promoted: boolean;
+};
+
+function normalizeIntentText(value: string | undefined): string {
+  return value?.trim().replace(/\s+/g, ' ') ?? '';
+}
+
+function buildCompactExpansionMetadata(reasons: string[]): EmailEvidenceExpansionDTO {
+  return {
+    applied: false,
+    mode: 'compact',
+    reasons,
+  };
+}
+
+function buildExpansionDecisionPrompt(params: {
+  request: EmailRetrievalRequest;
+  compactPack: EmailEvidencePackDTO;
+  candidates: InboxSearchCandidate[];
+  requestedMode: EmailRetrievalMode;
+}): string {
+  const candidateSummary =
+    params.candidates.length === 0
+      ? '(none)'
+      : params.candidates
+          .map(
+            (candidate, index) =>
+              `${index + 1}. subject="${candidate.subject}" from="${candidate.from}" why="${candidate.whyRelevant}"`,
+          )
+          .join('\n');
+
+  return [
+    `User request: ${normalizeIntentText(params.request.userRequestText) || '(none)'}`,
+    `Tool query: ${normalizeIntentText(params.request.queryText) || '(none)'}`,
+    `Selected pack: ${params.request.selectedPack ?? '(none)'}`,
+    `Action: ${params.request.action}`,
+    `Mode: ${params.requestedMode}`,
+    `Compact confidence: ${params.compactPack.confidence}`,
+    `Compact summary: ${params.compactPack.summary ?? '(none)'}`,
+    'Ranked candidates:',
+    candidateSummary,
+    '',
+    'Decide whether bounded full-thread expansion would materially improve the final answer.',
+    'Return preferredAnchorRanks only for the 1-based candidate ranks that should anchor thread expansion.',
+    'Prefer compact=false only when snippets are already sufficient for the user request.',
+  ].join('\n');
+}
+
+async function runExpansionDecision(params: {
+  request: EmailRetrievalRequest;
+  compactPack: EmailEvidencePackDTO;
+  candidates: InboxSearchCandidate[];
+  requestedMode: EmailRetrievalMode;
+  abortSignal?: AbortSignal;
+}): Promise<EmailExpansionDecisionDTO> {
+  const candidatePool = params.candidates.slice(
+    0,
+    EXPANSION_BUDGETS_BY_MODE[params.requestedMode].candidatePoolSize,
+  );
+
+  const { object } = await callObject<EmailExpansionDecisionDTO>({
+    model: models.emailRetrieval(),
+    system:
+      'You decide whether an email retrieval result needs bounded full-thread expansion. Use the user request, compact evidence, and ranked candidates only. Prefer compact results when snippets are already sufficient. Never invent candidate ranks.',
+    prompt: buildExpansionDecisionPrompt({
+      request: params.request,
+      compactPack: params.compactPack,
+      candidates: candidatePool,
+      requestedMode: params.requestedMode,
+    }),
+    schema: EmailExpansionDecisionSchema,
+    temperature: 0,
+    abortSignal: params.abortSignal,
+    op: 'email.retrieval.expansion_decision',
+    concurrency: { key: 'email.retrieval.expansion_decision', maxConcurrency: 4 },
+    retry: { maxAttempts: 2, baseDelayMs: 250 },
+  });
+
+  return object;
+}
+
+function buildAnchorReason(params: {
+  compactMatchIndex: number;
+  explicitlyPreferred: boolean;
+  promoted: boolean;
+}): string {
+  if (params.explicitlyPreferred && params.promoted) {
+    return 'Selected by the expansion decision and promoted from the ranked candidate pool.';
+  }
+
+  if (params.explicitlyPreferred) {
+    return 'Selected by the expansion decision for bounded thread context.';
+  }
+
+  if (params.compactMatchIndex === 0) {
+    return 'Top compact match selected for bounded thread context.';
+  }
+
+  if (params.compactMatchIndex >= 0) {
+    return 'Compact match selected for bounded thread context.';
+  }
+
+  return 'Highest-ranked remaining candidate selected for bounded thread context.';
+}
+
+function selectExpansionAnchors(params: {
+  compactPack: EmailEvidencePackDTO;
+  candidates: InboxSearchCandidate[];
+  budgets: ExpansionBudgets;
+  decision: EmailExpansionDecisionDTO;
+}): ExpansionAnchorCandidate[] {
+  const compactMessageIds = new Set(
+    params.compactPack.matches.map((match) => match.messageId),
+  );
+  const compactMatchIndexByMessageId = new Map(
+    params.compactPack.matches.map((match, index) => [match.messageId, index] as const),
+  );
+  const preferredRanks = new Set(params.decision.preferredAnchorRanks ?? []);
+  const pool = params.candidates.slice(0, params.budgets.candidatePoolSize);
+
+  return pool
+    .map((candidate, index) => {
+      const compactMatchIndex = compactMatchIndexByMessageId.get(candidate.messageId) ?? -1;
+      const explicitlyPreferred = preferredRanks.has(index + 1);
+      const promoted = !compactMessageIds.has(candidate.messageId);
+      const score =
+        (explicitlyPreferred ? 500 : 0) +
+        (params.budgets.candidatePoolSize - index) * 6 +
+        Math.round(candidate.totalScore * 10) +
+        (compactMatchIndex >= 0 ? 30 - compactMatchIndex * 4 : 0);
+
+      return {
+        candidate,
+        selectionRank: index + 1,
+        anchorReason: buildAnchorReason({
+          compactMatchIndex,
+          explicitlyPreferred,
+          promoted,
+        }),
+        score,
+        promoted,
+      };
+    })
+    .sort((left, right) => {
+      if (right.score !== left.score) {
+        return right.score - left.score;
+      }
+
+      return left.selectionRank - right.selectionRank;
+    })
+    .filter((item, index, items) =>
+      items.findIndex(
+        (candidate) =>
+          candidate.candidate.threadId === item.candidate.threadId &&
+          candidate.candidate.mailboxId === item.candidate.mailboxId,
+      ) === index,
+    )
+    .slice(0, params.budgets.maxThreads);
+}
+
+async function applyAdaptiveExpansion(params: {
+  request: EmailRetrievalRequest;
+  compactPack: EmailEvidencePackDTO;
+  candidates: InboxSearchCandidate[];
+  requestedMode: EmailRetrievalMode;
+  userId: string;
+  deadlineAt?: number;
+  abortSignal?: AbortSignal;
+}): Promise<EmailEvidencePackDTO> {
+  if (params.request.action === 'count' || params.request.action === 'aggregate') {
+    return {
+      ...params.compactPack,
+      expansion: buildCompactExpansionMetadata([
+        'Count and aggregate requests stay compact by design.',
+      ]),
+    };
+  }
+
+  if (params.compactPack.matches.length === 0 || params.candidates.length === 0) {
+    return {
+      ...params.compactPack,
+      expansion: buildCompactExpansionMetadata([
+        'No ranked matches were available for bounded thread expansion.',
+      ]),
+    };
+  }
+
+  if (params.abortSignal?.aborted) {
+    const note = 'Skipped bounded thread expansion because a newer user message superseded this run.';
+    return {
+      ...params.compactPack,
+      coverage: appendCoverageBudgetNotes(params.compactPack.coverage, [note]),
+      expansion: buildCompactExpansionMetadata([note]),
+    };
+  }
+
+  if (isTimeLow(params.deadlineAt, EXPANSION_EARLY_EXIT_BUFFER_MS)) {
+    const note = 'Skipped bounded thread expansion because the remaining time budget was low.';
+    return {
+      ...params.compactPack,
+      coverage: appendCoverageBudgetNotes(params.compactPack.coverage, [note]),
+      expansion: buildCompactExpansionMetadata([note]),
+    };
+  }
+
+  let decision: EmailExpansionDecisionDTO;
+  try {
+    decision = await runExpansionDecision({
+      request: params.request,
+      compactPack: params.compactPack,
+      candidates: params.candidates,
+      requestedMode: params.requestedMode,
+      abortSignal: params.abortSignal,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown expansion decision error';
+    const note = `Skipped bounded thread expansion because the expansion decision step failed (${message}).`;
+    logger.warn('[emailRetrievalSubagent] expansion decision failed', {
+      userId: params.userId,
+      action: params.request.action,
+      mode: params.requestedMode,
+      message,
+    });
+    return {
+      ...params.compactPack,
+      coverage: appendCoverageBudgetNotes(params.compactPack.coverage, [note]),
+      expansion: buildCompactExpansionMetadata([note]),
+    };
+  }
+
+  if (!decision.shouldExpand) {
+    return {
+      ...params.compactPack,
+      expansion: buildCompactExpansionMetadata(decision.reasons),
+    };
+  }
+
+  const budgets = EXPANSION_BUDGETS_BY_MODE[params.requestedMode];
+  const anchors = selectExpansionAnchors({
+    compactPack: params.compactPack,
+    candidates: params.candidates,
+    budgets,
+    decision,
+  });
+
+  if (anchors.length === 0) {
+    const note = 'Expansion was requested, but no bounded thread anchor could be selected.';
+    return {
+      ...params.compactPack,
+      coverage: appendCoverageBudgetNotes(params.compactPack.coverage, [note]),
+      expansion: buildCompactExpansionMetadata([...decision.reasons, note]),
+    };
+  }
+
+  const expandedThreads: ExpandedInboxThreadDTO[] = [];
+  const promotedCandidateRanks: number[] = [];
+  const expansionNotes: string[] = [];
+  let remainingChars = budgets.maxExpandedChars;
+
+  for (const anchor of anchors) {
+    if (remainingChars <= 0) {
+      expansionNotes.push('Expansion caps prevented additional thread slices from being attached.');
+      break;
+    }
+
+    try {
+      const slice = await fetchInboxThreadSlice({
+        userId: params.userId,
+        mailboxId: anchor.candidate.mailboxId,
+        threadId: anchor.candidate.threadId,
+        anchorMessageId: anchor.candidate.messageId,
+        maxMessages: budgets.maxMessagesPerThread,
+        maxBodyCharsPerMessage: budgets.maxMessageChars,
+        maxTotalBodyChars: remainingChars,
+      });
+
+      if (!slice || slice.messagesReturned === 0) {
+        expansionNotes.push(
+          `Skipped bounded thread slice for ${anchor.candidate.subject} because no messages fit the current expansion caps.`,
+        );
+        continue;
+      }
+
+      remainingChars -= slice.bodyCharsUsed;
+      expandedThreads.push({
+        threadId: slice.threadId,
+        mailboxId: slice.mailboxId,
+        mailboxEmail: slice.mailboxEmail,
+        anchorMessageId: slice.anchorMessageId,
+        anchorSubject: anchor.candidate.subject,
+        selectionRank: anchor.selectionRank,
+        anchorReason: anchor.anchorReason,
+        hasMoreBefore: slice.hasMoreBefore,
+        hasMoreAfter: slice.hasMoreAfter,
+        messagesReturned: slice.messagesReturned,
+        messages: slice.messages,
+      });
+
+      if (anchor.promoted) {
+        promotedCandidateRanks.push(anchor.selectionRank);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown thread expansion error';
+      expansionNotes.push(
+        `Failed to fetch a bounded thread slice for ${anchor.candidate.subject} (${message}).`,
+      );
+      logger.warn('[emailRetrievalSubagent] bounded thread expansion failed', {
+        userId: params.userId,
+        threadId: anchor.candidate.threadId,
+        mailboxId: anchor.candidate.mailboxId,
+        message,
+      });
+    }
+  }
+
+  if (expandedThreads.length === 0) {
+    const note =
+      expansionNotes[0] ??
+      'Expansion was requested, but thread and character caps prevented any bounded slices.';
+
+    return {
+      ...params.compactPack,
+      coverage: appendCoverageBudgetNotes(params.compactPack.coverage, [note]),
+      expansion: buildCompactExpansionMetadata([...decision.reasons, ...expansionNotes]),
+    };
+  }
+
+  return {
+    ...params.compactPack,
+    expandedThreads,
+    expansion: {
+      applied: true,
+      mode: 'expanded',
+      reasons: [...decision.reasons, ...expansionNotes],
+      promotedCandidateRanks:
+        promotedCandidateRanks.length > 0 ? promotedCandidateRanks : undefined,
+    },
+  };
+}
+
+async function resolveMailboxScope(params: {
   userId: string;
   mailboxId?: string;
   mailboxEmail?: string;
-  purpose: string;
-}): Promise<MailboxSearchContext[]> {
+}): Promise<InboxSearchScopedMailbox[]> {
   const mailboxes = await getMailboxesForUser({
     userId: params.userId,
-    status: 'CONNECTED',
-    provider: 'google',
   });
 
   let filtered = mailboxes;
   if (params.mailboxId) {
     filtered = mailboxes.filter((mailbox) => mailbox.id === params.mailboxId);
   } else if (params.mailboxEmail) {
-    const normalized = params.mailboxEmail.toLowerCase();
+    const normalizedEmail = params.mailboxEmail.toLowerCase();
     filtered = mailboxes.filter(
-      (mailbox) => mailbox.emailAddress.toLowerCase() === normalized,
+      (mailbox) => mailbox.emailAddress.toLowerCase() === normalizedEmail,
     );
   }
 
-  if (filtered.length === 0) {
-    return [];
-  }
-
-  const contexts: MailboxSearchContext[] = [];
-  for (const mailbox of filtered) {
-    const gmailContext = await createGmailServiceForUser({
-      userId: params.userId,
-      mailboxId: mailbox.id,
-      purpose: params.purpose,
-      requester: 'emailRetrievalSubagent.resolveMailboxSearchContexts',
-    });
-
-    if (!gmailContext) {
-      logger.warn(
-        `[emailRetrievalSubagent] Gmail credentials missing for mailbox ${mailbox.emailAddress}`,
-      );
-      continue;
-    }
-
-    contexts.push({
-      mailboxId: mailbox.id,
-      mailboxEmail: mailbox.emailAddress,
-      gmail: gmailContext.gmail,
-    });
-  }
-
-  return contexts;
+  return filtered.map((mailbox) => ({
+    id: mailbox.id,
+    emailAddress: mailbox.emailAddress,
+    status: mailbox.status,
+    isPrimary: mailbox.isPrimary,
+  }));
 }
 
-async function collectCandidates(
-  mailboxes: MailboxSearchContext[],
-  plan: SearchPlan,
-  budgets: RetrievalBudgets,
-  deadlineAt?: number,
-): Promise<{ candidates: EmailRetrievalCandidate[]; coverage: RetrievalCoverage }> {
-  const coverage: RetrievalCoverage = {
-    queriesTried: [],
-    threadsScanned: 0,
-    messagesScanned: 0,
-    timeWindow: plan.timeWindowLabel,
-    pagesFetched: 0,
-    truncated: false,
-    budgetNotes: [...plan.notes],
+function shouldEscalateQuickResult(result: EmailEvidencePackDTO): boolean {
+  return result.confidence === 'low' && result.matches.length < 2;
+}
+
+function buildQuickEscalationCoverage(coverage: RetrievalCoverage): RetrievalCoverage {
+  return {
+    ...coverage,
+    budgetNotes: [
+      ...(coverage.budgetNotes ?? []),
+      'Escalated from quick to deep local retrieval because the initial quick result was weak.',
+    ],
   };
-
-  const seenThreadIds = new Set<string>();
-  const seenMessageIds = new Set<string>();
-  const candidates: EmailRetrievalCandidate[] = [];
-  let totalBodyChars = 0;
-
-  if (mailboxes.length > 0) {
-    coverage.budgetNotes.push(
-      `Mailboxes searched: ${mailboxes.map((m) => m.mailboxEmail).join(', ')}`,
-    );
-  }
-
-  const maxQueries = Math.min(plan.queries.length, budgets.maxQueries);
-
-  for (let queryIndex = 0; queryIndex < maxQueries; queryIndex += 1) {
-    if (isTimeLow(deadlineAt)) {
-      coverage.truncated = true;
-      coverage.budgetNotes.push('Time budget low, returning partial results.');
-      return { candidates, coverage };
-    }
-
-    const query = plan.queries[queryIndex];
-    for (const mailbox of mailboxes) {
-      if (isTimeLow(deadlineAt)) {
-        coverage.truncated = true;
-        coverage.budgetNotes.push('Time budget low, returning partial results.');
-        return { candidates, coverage };
-      }
-
-      coverage.queriesTried.push(`${query} (mailbox: ${mailbox.mailboxEmail})`);
-
-      let pageToken: string | undefined = undefined;
-      let pagesFetchedForQuery = 0;
-
-      while (pagesFetchedForQuery < budgets.maxPagesPerQuery) {
-        if (isTimeLow(deadlineAt)) {
-          coverage.truncated = true;
-          coverage.budgetNotes.push('Time budget low, returning partial results.');
-          return { candidates, coverage };
-        }
-
-        let response: Awaited<ReturnType<GmailSearchPaged>>;
-        try {
-          response = await withTimeout(
-            mailbox.gmail.searchThreadsPaged(query, {
-              maxResults: budgets.pageSize,
-              pageToken,
-            }),
-            GMAIL_SEARCH_TIMEOUT_MS,
-            'Gmail search',
-          );
-        } catch (error) {
-          const message = error instanceof Error ? error.message : 'Unknown error';
-          coverage.truncated = true;
-          coverage.budgetNotes.push(`Gmail search failed (${mailbox.mailboxEmail}): ${message}`);
-          break;
-        }
-
-        const threads: Array<{ threadId: string; emails: EmailData[] }> = response?.threads ?? [];
-        const nextPageToken: string | undefined = response?.nextPageToken ?? undefined;
-
-        coverage.pagesFetched += 1;
-        pagesFetchedForQuery += 1;
-
-        for (const thread of threads) {
-          if (coverage.threadsScanned >= budgets.maxThreads) {
-            coverage.truncated = true;
-            coverage.budgetNotes.push('Thread budget reached.');
-            return { candidates, coverage };
-          }
-
-          const threadKey = `${mailbox.mailboxId}:${thread.threadId}`;
-          if (seenThreadIds.has(threadKey)) {
-            continue;
-          }
-
-          seenThreadIds.add(threadKey);
-          coverage.threadsScanned += 1;
-
-          for (const email of thread.emails) {
-            if (coverage.messagesScanned >= budgets.maxMessages) {
-              coverage.truncated = true;
-              coverage.budgetNotes.push('Message budget reached.');
-              return { candidates, coverage };
-            }
-
-            const messageKey = `${mailbox.mailboxId}:${email.messageId}`;
-            if (seenMessageIds.has(messageKey)) {
-              continue;
-            }
-
-            coverage.messagesScanned += 1;
-            const remainingChars = budgets.maxBodyChars - totalBodyChars;
-            if (remainingChars <= 0) {
-              coverage.truncated = true;
-              coverage.budgetNotes.push('Body char budget reached.');
-              return { candidates, coverage };
-            }
-
-            const body = email.body || email.snippet || '';
-            const bodySlice = stripHtml(body.slice(0, remainingChars));
-            totalBodyChars += bodySlice.length;
-
-            const { score, matched } = scoreMatch(email.subject || '', bodySlice, plan.matchTerms);
-            if (plan.matchTerms.length > 0 && score === 0) {
-              seenMessageIds.add(messageKey);
-              continue;
-            }
-            const snippet = extractSnippet(bodySlice, matched, budgets.snippetChars);
-
-            const candidate: EmailRetrievalCandidate = {
-              threadId: thread.threadId,
-              messageId: email.messageId,
-              mailboxId: mailbox.mailboxId,
-              mailboxEmail: mailbox.mailboxEmail,
-              date: email.date.toISOString(),
-              from: email.from,
-              subject: email.subject || '(no subject)',
-              snippet,
-              matchedTerms: matched,
-              matchScore: score,
-            };
-
-            candidates.push(candidate);
-            seenMessageIds.add(messageKey);
-
-            if (candidates.length >= budgets.maxCandidates) {
-              coverage.truncated = true;
-              coverage.budgetNotes.push('Candidate budget reached.');
-              return { candidates, coverage };
-            }
-          }
-        }
-
-        if (!nextPageToken) break;
-        if (pagesFetchedForQuery >= budgets.maxPagesPerQuery) {
-          coverage.truncated = true;
-          coverage.budgetNotes.push('Page budget reached.');
-          break;
-        }
-        pageToken = nextPageToken;
-      }
-    }
-  }
-
-  if (plan.queries.length > budgets.maxQueries) {
-    coverage.truncated = true;
-    coverage.budgetNotes.push('Query budget reached.');
-  }
-
-  return { candidates, coverage };
 }
 
-function sortCandidates(candidates: EmailRetrievalCandidate[]): EmailRetrievalCandidate[] {
-  return candidates.sort((a, b) => {
-    if (b.matchScore !== a.matchScore) return b.matchScore - a.matchScore;
-    return new Date(b.date).getTime() - new Date(a.date).getTime();
+async function runEscalatedQuickSearch(params: {
+  request: EmailRetrievalRequest;
+  userId: string;
+  profile: InboxSearchRetrievalProfile;
+  deadlineAt?: number;
+}): Promise<{
+  result: Awaited<ReturnType<typeof runLocalInboxSearch>>;
+  metadata: RetrievalMetadata;
+}> {
+  logger.info('[emailRetrievalSubagent] escalating weak quick retrieval to deep local search', {
+    userId: params.userId,
+    action: params.request.action,
+    queryText: params.request.queryText ?? null,
+    mailboxId: params.request.mailboxId ?? null,
+    mailboxEmail: params.request.mailboxEmail ?? null,
   });
+
+  return {
+    result: await runLocalInboxSearch({
+      request: params.request,
+      userId: params.userId,
+      profile: params.profile,
+      mode: 'deep',
+      budgets: RETRIEVAL_BUDGETS_BY_PROFILE[params.profile].deep,
+      deadlineAt: params.deadlineAt,
+    }),
+    metadata: { escalation: 'quick_to_deep' },
+  };
+}
+
+async function runLocalInboxSearch(params: {
+  request: EmailRetrievalRequest;
+  userId: string;
+  profile: InboxSearchRetrievalProfile;
+  mode: EmailRetrievalMode;
+  budgets: RetrievalBudgets;
+  deadlineAt?: number;
+}): Promise<{
+  scopedMailboxes: InboxSearchScopedMailbox[];
+  searchResult: Awaited<ReturnType<typeof searchInboxDocuments>>;
+}> {
+  const scopedMailboxes = await resolveMailboxScope({
+    userId: params.userId,
+    mailboxId: params.request.mailboxId,
+    mailboxEmail: params.request.mailboxEmail,
+  });
+
+  if (scopedMailboxes.length === 0) {
+    return {
+      scopedMailboxes,
+      searchResult: {
+        action: params.request.action,
+        candidates: [],
+        coverage: createEmptyCoverage(
+          params.request.action,
+          [
+            params.request.mailboxId || params.request.mailboxEmail
+              ? 'The requested mailbox is not available for local inbox retrieval.'
+              : 'No mailboxes are available for local inbox retrieval.',
+          ],
+        ),
+      },
+    };
+  }
+
+  const expandedCandidateLimit =
+    params.request.action === 'find' || params.request.action === 'summarize_range'
+      ? Math.max(
+          params.request.options?.limit ?? 0,
+          EXPANSION_BUDGETS_BY_MODE[params.mode].candidatePoolSize,
+        )
+      : params.request.options?.limit;
+
+  const searchResult = await searchInboxDocuments({
+    userId: params.userId,
+    action: params.request.action,
+    mode: params.mode,
+    profile: params.profile,
+    queryText: params.request.queryText,
+    filters: params.request.filters,
+    options: {
+      ...params.request.options,
+      limit: expandedCandidateLimit,
+    },
+    mailboxes: scopedMailboxes,
+    maxCandidates: params.budgets.maxCandidates,
+    snippetChars: params.budgets.snippetChars,
+    deadlineAt: params.deadlineAt,
+  });
+
+  return {
+    scopedMailboxes,
+    searchResult,
+  };
 }
 
 /**
  * Runs the Email Retrieval Subagent.
  *
- * Executes a deterministic Gmail search plan, applies budgets, and compresses
- * results into a compact EmailEvidencePack schema for the Executive Agent.
+ * Uses the local inbox projection tables only. Gmail live retrieval is no
+ * longer used in the hot path.
  */
 export async function runEmailRetrieval(
   request: EmailRetrievalRequest,
   dependencies: EmailRetrievalDependencies,
 ): Promise<EmailEvidencePackDTO> {
+  const action = request.action;
   const mode: EmailRetrievalMode = request.mode ?? 'quick';
-  const profile: EffectiveEmailRetrievalProfile = normalizeRetrievalProfile(request.profile);
+  const profile = normalizeRetrievalProfile(request.profile);
   const budgets = RETRIEVAL_BUDGETS_BY_PROFILE[profile][mode];
+  const featureFlags = getInboxRetrievalFeatureFlags();
 
-  const plan = buildSearchPlan(request.intent, request.constraints, mode, profile);
-  if (plan.queries.length === 0) {
-    const coverage: RetrievalCoverage = {
-      queriesTried: [],
-      threadsScanned: 0,
-      messagesScanned: 0,
-      timeWindow: plan.timeWindowLabel,
-      pagesFetched: 0,
-      truncated: false,
-      budgetNotes: plan.notes,
-    };
-
-    return createEmptyEvidencePack(coverage, [
-      'Which sender, subject, or exact phrase should I look for?',
-    ]);
-  }
-
-  const mailboxContexts = await resolveMailboxSearchContexts({
-    userId: dependencies.userId,
-    mailboxId: request.mailboxId,
-    mailboxEmail: request.mailboxEmail,
-    purpose: `${profile}:email-retrieval:${mode}`,
-  });
-
-  if (mailboxContexts.length === 0) {
-    const coverage: RetrievalCoverage = {
-      queriesTried: plan.queries.slice(0, budgets.maxQueries),
-      threadsScanned: 0,
-      messagesScanned: 0,
-      timeWindow: plan.timeWindowLabel,
-      pagesFetched: 0,
-      truncated: false,
-      budgetNotes: [
-        ...plan.notes,
-        request.mailboxId || request.mailboxEmail
-          ? 'No Gmail credentials for the requested mailbox.'
-          : 'No connected Gmail mailboxes available.',
-      ],
-    };
-
-    return createEmptyEvidencePack(coverage, [
-      request.mailboxId || request.mailboxEmail
-        ? 'I cannot access that mailbox right now. Want to reconnect it or choose another mailbox?'
-        : 'I cannot access Gmail right now. Want to reconnect your account and retry?',
-    ]);
+  if (!featureFlags.retrievalV2Enabled) {
+    return createEmptyEvidencePack(
+      action,
+      createEmptyCoverage(action, [
+        'Local inbox retrieval is disabled by INBOX_RETRIEVAL_V2_ENABLED=false.',
+      ], {
+        fusionMethod: 'lexical-only',
+        semanticUnavailable: true,
+      }),
+      ['Inbox retrieval is temporarily disabled. Want to retry after rollout is re-enabled?'],
+    );
   }
 
   try {
-    logger.info(
-      `[emailRetrievalSubagent] profile=${profile} mode=${mode} queries=${plan.queries.length} window=${plan.timeWindowLabel}`,
-    );
+    logger.info('[emailRetrievalSubagent] retrieval flags', {
+      userId: dependencies.userId,
+      action,
+      mode,
+      profile,
+      retrievalV2Enabled: featureFlags.retrievalV2Enabled,
+      vectorEnabled: featureFlags.vectorEnabled,
+      llmRerankDeepOnly: featureFlags.llmRerankDeepOnly,
+    });
 
-    const { candidates, coverage } = await collectCandidates(
-      mailboxContexts,
-      plan,
+    const localSearch = await runLocalInboxSearch({
+      request,
+      userId: dependencies.userId,
+      profile,
+      mode,
       budgets,
-      dependencies.deadlineAt,
-    );
+      deadlineAt: dependencies.deadlineAt,
+    });
+    const { scopedMailboxes } = localSearch;
+    let activeSearchResult = localSearch.searchResult;
+    let activeMetadata: RetrievalMetadata | undefined;
 
-    logger.info(
-      `[emailRetrievalSubagent] candidates=${candidates.length} threads=${coverage.threadsScanned} messages=${coverage.messagesScanned} truncated=${coverage.truncated}`,
-    );
-
-    if (candidates.length === 0) {
-      return createEmptyEvidencePack(coverage, [
-        'I did not spot it yet. Can you share a sender, subject, or phrase to tighten the search?',
+    if (scopedMailboxes.length === 0) {
+      return createEmptyEvidencePack(action, activeSearchResult.coverage, [
+        request.mailboxId || request.mailboxEmail
+          ? 'I cannot find that mailbox locally yet. Want to choose another mailbox?'
+          : 'I do not have any indexed mailbox data yet. Want to reconnect or wait for indexing?',
       ]);
     }
 
-    const rankedCandidates = sortCandidates(candidates).slice(0, budgets.maxCandidates);
-    if (isTimeLow(dependencies.deadlineAt, 5_000)) {
-      return createQuickEvidencePack(rankedCandidates, coverage);
+    logger.info(
+      `[emailRetrievalSubagent] local retrieval profile=${profile} action=${action} mode=${mode} mailboxes=${scopedMailboxes.length}`,
+    );
+
+    logger.info(
+      `[emailRetrievalSubagent] local candidates=${activeSearchResult.candidates.length} scanned=${activeSearchResult.coverage.messagesScanned} freshness=${activeSearchResult.coverage.indexFreshness}`,
+    );
+
+    let compactPack: EmailEvidencePackDTO;
+
+    if (action === 'count' || action === 'aggregate') {
+      compactPack = createCountOrAggregateEvidencePack({
+        action,
+        coverage: activeSearchResult.coverage,
+        count: activeSearchResult.count ?? 0,
+        aggregates: activeSearchResult.aggregates,
+        groupBy: activeSearchResult.groupBy,
+      });
+    } else if (mode === 'quick') {
+      if (activeSearchResult.candidates.length === 0) {
+        if (!isTimeLow(dependencies.deadlineAt, 6_000)) {
+          const escalated = await runEscalatedQuickSearch({
+            request,
+            userId: dependencies.userId,
+            profile,
+            deadlineAt: dependencies.deadlineAt,
+          });
+
+          activeSearchResult = escalated.result.searchResult;
+          activeMetadata = escalated.metadata;
+
+          if (activeSearchResult.candidates.length === 0) {
+            return createEmptyEvidencePack(
+              action,
+              buildQuickEscalationCoverage(activeSearchResult.coverage),
+              ['I did not find a local match yet. Can you share a sender, subject, or timeframe?'],
+              activeMetadata,
+            );
+          }
+
+          compactPack = createDeterministicEvidencePack({
+            action,
+            candidates: activeSearchResult.candidates,
+            coverage: buildQuickEscalationCoverage(activeSearchResult.coverage),
+            mode: 'deep',
+            queryText: request.queryText,
+            filters: request.filters,
+            metadata: activeMetadata,
+            includeQuotes: request.options?.includeQuotes,
+            includeSnippets: request.options?.includeSnippets,
+          });
+        } else {
+          return createEmptyEvidencePack(action, activeSearchResult.coverage, [
+            'I did not find a local match yet. Can you share a sender, subject, or timeframe?',
+          ]);
+        }
+      } else {
+        compactPack = createDeterministicEvidencePack({
+          action,
+          candidates: activeSearchResult.candidates,
+          coverage: activeSearchResult.coverage,
+          mode,
+          queryText: request.queryText,
+          filters: request.filters,
+          includeQuotes: request.options?.includeQuotes,
+          includeSnippets: request.options?.includeSnippets,
+        });
+
+        if (
+          action === 'find' &&
+          shouldEscalateQuickResult(compactPack) &&
+          !isTimeLow(dependencies.deadlineAt, 6_000)
+        ) {
+          const escalated = await runEscalatedQuickSearch({
+            request,
+            userId: dependencies.userId,
+            profile,
+            deadlineAt: dependencies.deadlineAt,
+          });
+
+          if (escalated.result.searchResult.candidates.length > 0) {
+            activeSearchResult = escalated.result.searchResult;
+            activeMetadata = escalated.metadata;
+            compactPack = createDeterministicEvidencePack({
+              action,
+              candidates: activeSearchResult.candidates,
+              coverage: buildQuickEscalationCoverage(activeSearchResult.coverage),
+              mode: 'deep',
+              queryText: request.queryText,
+              filters: request.filters,
+              metadata: activeMetadata,
+              includeQuotes: request.options?.includeQuotes,
+              includeSnippets: request.options?.includeSnippets,
+            });
+          }
+        }
+      }
+    } else {
+      if (activeSearchResult.candidates.length === 0) {
+        return createEmptyEvidencePack(action, activeSearchResult.coverage, [
+          'I did not find a local match yet. Can you share a sender, subject, or timeframe?',
+        ]);
+      }
+
+      const shouldUseLlm =
+        action === 'summarize_range' ||
+        (action === 'find' && featureFlags.llmRerankDeepOnly);
+
+      if (!shouldUseLlm) {
+        compactPack = createDeterministicEvidencePack({
+          action,
+          candidates: activeSearchResult.candidates,
+          coverage: appendCoverageBudgetNotes(activeSearchResult.coverage, [
+            action === 'find'
+              ? 'Skipped deep LLM rerank because INBOX_LLM_RERANK_DEEP_ONLY=false.'
+              : 'Used deterministic summary because LLM compression was not required.',
+          ]),
+          mode,
+          queryText: request.queryText,
+          filters: request.filters,
+          includeQuotes: request.options?.includeQuotes,
+          includeSnippets: request.options?.includeSnippets,
+        });
+      } else if (isTimeLow(dependencies.deadlineAt, 5_000)) {
+        compactPack = createDeterministicEvidencePack({
+          action,
+          candidates: activeSearchResult.candidates,
+          coverage: appendCoverageBudgetNotes(activeSearchResult.coverage, [
+            'Skipped deep LLM compression because the remaining time budget was low.',
+          ]),
+          mode,
+          queryText: request.queryText,
+          filters: request.filters,
+          includeQuotes: request.options?.includeQuotes,
+          includeSnippets: request.options?.includeSnippets,
+        });
+      } else if (dependencies.abortSignal?.aborted) {
+        compactPack = createDeterministicEvidencePack({
+          action,
+          candidates: activeSearchResult.candidates,
+          coverage: appendCoverageBudgetNotes(activeSearchResult.coverage, [
+            'Skipped deep LLM compression because a newer user message superseded this run.',
+          ]),
+          mode,
+          queryText: request.queryText,
+          filters: request.filters,
+          includeQuotes: request.options?.includeQuotes,
+          includeSnippets: request.options?.includeSnippets,
+        });
+      } else {
+        const prompt = buildEmailRetrievalPrompt({
+          request: { ...request, mode },
+          coverage: activeSearchResult.coverage,
+          candidates: activeSearchResult.candidates,
+        });
+
+        const { object } = await callObject<EmailEvidencePackDTO>({
+          model: models.emailRetrieval(),
+          system:
+            'You are an email retrieval specialist. Use only the provided local inbox candidates and return a precise evidence pack. Do not invent details or new filters.',
+          prompt,
+          schema: EmailEvidencePackSchema,
+          temperature: 0.2,
+          abortSignal: dependencies.abortSignal,
+          op: 'email.retrieval',
+          concurrency: { key: 'email.retrieval', maxConcurrency: 4 },
+          retry: { maxAttempts: 2, baseDelayMs: 500 },
+        });
+
+        compactPack = {
+          ...object,
+          action,
+          matches: object.matches.slice(0, COMPACT_MATCH_LIMIT),
+          quotes: object.quotes.slice(0, COMPACT_QUOTE_LIMIT),
+          coverage: activeSearchResult.coverage,
+          metadata: activeMetadata
+            ? {
+                ...(object.metadata ?? {}),
+                ...activeMetadata,
+              }
+            : object.metadata,
+          summary:
+            object.summary ??
+            createDeterministicSummary(
+              action,
+              activeSearchResult.candidates,
+              activeSearchResult.coverage,
+            ),
+          expandedThreads: undefined,
+          expansion: undefined,
+        };
+      }
     }
 
-    const prompt = buildEmailRetrievalPrompt({
-      request: { ...request, mode },
-      coverage,
-      candidates: rankedCandidates,
-    });
-
-    const { object } = await callObject<EmailEvidencePackDTO>({
-      model: models.emailRetrieval(),
-      system:
-        'You are an email retrieval specialist. Use only the provided candidate emails and return a precise evidence pack. Do not invent details.',
-      prompt,
-      schema: EmailEvidencePackSchema,
-      temperature: 0.2,
+    return applyAdaptiveExpansion({
+      request: {
+        ...request,
+        mode,
+      },
+      compactPack,
+      candidates: activeSearchResult.candidates,
+      requestedMode: mode,
+      userId: dependencies.userId,
+      deadlineAt: dependencies.deadlineAt,
       abortSignal: dependencies.abortSignal,
-      op: 'email.retrieval',
-      concurrency: { key: 'email.retrieval', maxConcurrency: 4 },
-      retry: { maxAttempts: 2, baseDelayMs: 500 },
     });
-
-    return {
-      ...object,
-      coverage,
-    };
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown error';
     logger.error(`[emailRetrievalSubagent] Retrieval failed: ${message}`);
 
-    const fallbackCoverage: RetrievalCoverage = {
-      queriesTried: plan.queries.slice(0, budgets.maxQueries),
-      threadsScanned: 0,
-      messagesScanned: 0,
-      timeWindow: plan.timeWindowLabel,
-      pagesFetched: 0,
-      truncated: false,
-      budgetNotes: [`Retrieval error: ${message}`],
-    };
-
-    return createEmptyEvidencePack(fallbackCoverage, [
-      'Something went wrong while searching. Want me to try again with a sender or timeframe?',
-    ]);
+    return createEmptyEvidencePack(
+      action,
+      createEmptyCoverage(action, [`Local retrieval error: ${message}`]),
+      ['Something went wrong while searching. Want to retry with a sender or timeframe?'],
+    );
   }
 }

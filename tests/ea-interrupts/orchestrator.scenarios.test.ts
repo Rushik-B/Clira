@@ -3,6 +3,7 @@ import {
   EA_MICRO_BUFFER_MS,
   EA_QUEUE_CAP,
   type OrchestrationDecision,
+  type RelevanceClassification,
   type RunSkip,
   type RunStart,
 } from '@/lib/services/messaging-orchestration/types';
@@ -16,6 +17,16 @@ function expectStart(decision: OrchestrationDecision): RunStart {
 function expectSkip(decision: OrchestrationDecision): RunSkip {
   expect(decision.kind).toBe('skip');
   return decision as RunSkip;
+}
+
+function createDeferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
 }
 
 describe('MessagingOrchestrator scenarios', () => {
@@ -275,7 +286,7 @@ describe('Cooperative steering scenarios', () => {
     });
   });
 
-  test('scenario 13: steering enqueue race recovers to queued followup instead of steered in-run', async () => {
+  test('scenario 13: steering enqueue race reclassifies against the replacement run', async () => {
     await withEnv({ EA_STEER_COOPERATIVE: 'true' }, async () => {
       const harness = createOrchestratorHarness({
         classify: ({ incomingText }) => ({
@@ -309,14 +320,15 @@ describe('Cooperative steering scenarios', () => {
         userRequest: 'actually, keep this very short',
       }));
 
-      expect(incoming.reason).toBe('queued_followup');
+      expect(incoming.reason).toBe('steered_in_run');
 
       const state = harness.getState('twilio', 'conv-13');
-      expect(state.queuedIntentText).toBe('actually, keep this very short');
-      expect(state.steerMailbox).toHaveLength(0);
+      expect(state.queuedIntentText).toBeNull();
+      expect(state.steerMailbox).toHaveLength(1);
+      expect(state.steerMailbox[0]?.text).toBe('actually, keep this very short');
 
       const enqueued = harness.filterEvents('orchestrator.steer.enqueued');
-      expect(enqueued).toHaveLength(0);
+      expect(enqueued).toHaveLength(1);
     });
   });
 
@@ -426,6 +438,81 @@ describe('Steering lifecycle events', () => {
   });
 });
 
+describe('Classifier revalidation regressions', () => {
+  test('scenario 15: late followup after finalize becomes a fresh run instead of a ghost queue entry', async () => {
+    const classifierGate = createDeferred<RelevanceClassification>();
+    const harness = createOrchestratorHarness({
+      classify: () => classifierGate.promise,
+    });
+
+    const first = expectStart(await harness.orchestrator.prepareRun({
+      channel: 'telegram',
+      conversationId: 'conv-15',
+      userRequest: 'Add those study blocks',
+    }));
+
+    const pendingDecision = harness.orchestrator.prepareRun({
+      channel: 'telegram',
+      conversationId: 'conv-15',
+      userRequest: 'What is my schedule on Tuesday?',
+    });
+
+    const finalized = await harness.orchestrator.finalizeRun({ runContext: first.runContext });
+    expect(finalized.nextRun).toBeUndefined();
+
+    classifierGate.resolve({
+      decision: 'followup',
+      confidence: 0.9,
+      explanation: 'late followup',
+      latestIntentText: 'What is my schedule on Tuesday?',
+    });
+
+    const promoted = expectStart(await pendingDecision);
+
+    expect(promoted.runContext.runId).not.toBe(first.runContext.runId);
+    expect(promoted.runContext.classifierDecision).toBeNull();
+    expect(promoted.userRequest).toBe('What is my schedule on Tuesday?');
+
+    const state = harness.getState('telegram', 'conv-15');
+    expect(state.activeRunId).toBe(promoted.runContext.runId);
+    expect(state.queuedIntentText).toBeNull();
+    expect(state.classifierDecision).toBeNull();
+    expect(state.latestIntentText).toBe('What is my schedule on Tuesday?');
+
+    const discarded = harness.filterEvents('orchestrator.classifier.discarded');
+    expect(discarded).toHaveLength(1);
+    expect(discarded[0]?.payload.reason).toBe('active_run_missing_after_classify');
+
+    const promotedEvents = harness.filterEvents('orchestrator.classifier.promoted_to_fresh_run');
+    expect(promotedEvents).toHaveLength(1);
+    expect(promotedEvents[0]?.payload.priorRunId).toBe(first.runContext.runId);
+  });
+
+  test('scenario 16: fresh run does not inherit stale classifier state from prior burst state', async () => {
+    const harness = createOrchestratorHarness();
+    const seeded = harness.getState('telegram', 'conv-16');
+
+    harness.setState('telegram', 'conv-16', {
+      ...seeded,
+      revision: 7,
+      windowEndsAt: 0,
+      latestIntentText: 'stale followup',
+      classifierDecision: 'followup',
+    });
+
+    const decision = expectStart(await harness.orchestrator.prepareRun({
+      channel: 'telegram',
+      conversationId: 'conv-16',
+      userRequest: 'Start a brand new task',
+    }));
+
+    const state = harness.getState('telegram', 'conv-16');
+    expect(decision.runContext.classifierDecision).toBeNull();
+    expect(state.classifierDecision).toBeNull();
+    expect(state.latestIntentText).toBe('Start a brand new task');
+  });
+});
+
 describe('Channel adapter parity', () => {
   test('scenario 10: telegram adapter path matches burst-steering behavior', async () => {
     const harness = createOrchestratorHarness({
@@ -455,4 +542,42 @@ describe('Channel adapter parity', () => {
     expect(await first.runContext.isRunCurrent()).toBe(false);
     expect(correction.runContext.channel).toBe('telegram');
   });
+
+  test.each(['telegram', 'twilio', 'whatsapp'] as const)(
+    'scenario 17: %s adapter queues explicit followup safely until finalize',
+    async (channel) => {
+      const harness = createOrchestratorHarness({
+        classify: () => ({
+          decision: 'followup',
+          confidence: 0.9,
+          explanation: 'separate request',
+          latestIntentText: 'Separate task: after this, check calendar conflicts',
+        }),
+      });
+
+      const adapter = {
+        channel,
+        conversationId: () => `conv-17-${channel}`,
+      };
+
+      const first = expectStart(await harness.orchestrator.prepareRunWithAdapter({
+        adapter,
+        userRequest: 'Summarize my inbox',
+      }));
+
+      const queued = expectSkip(await harness.orchestrator.prepareRunWithAdapter({
+        adapter,
+        userRequest: 'Separate task: after this, check calendar conflicts',
+      }));
+
+      expect(queued.reason).toBe('queued_followup');
+
+      const state = harness.getState(channel, `conv-17-${channel}`);
+      expect(state.queuedIntentText).toBe('Separate task: after this, check calendar conflicts');
+
+      const finalized = await harness.orchestrator.finalizeRun({ runContext: first.runContext });
+      expect(finalized.nextRun?.userRequest).toBe('Separate task: after this, check calendar conflicts');
+      expect(finalized.nextRun?.runContext.channel).toBe(channel);
+    },
+  );
 });

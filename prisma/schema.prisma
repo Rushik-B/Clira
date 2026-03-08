@@ -94,6 +94,66 @@ model Email {
   @@index([mailboxId])
 }
 
+model InboxSearchDocument {
+  id            String             @id @default(cuid())
+  userId        String
+  mailboxId     String
+  threadId      String
+  messageId     String
+  from          String
+  to            String[]
+  cc            String[]           @default([])
+  subject       String
+  snippet       String?
+  bodyText      String
+  sentAt        DateTime
+  hasAttachment Boolean            @default(false)
+  contentHash   String
+  indexedAt     DateTime           @default(now())
+  isDeleted     Boolean            @default(false)
+  chunks        InboxSearchChunk[]
+  user          User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  mailbox       Mailbox            @relation(fields: [mailboxId], references: [id], onDelete: Cascade)
+
+  @@unique([mailboxId, messageId], name: "InboxSearchDocument_mailboxId_messageId_key")
+  @@index([userId, sentAt(sort: Desc)], name: "InboxSearchDocument_userId_sentAt_idx")
+  @@index([userId, mailboxId, sentAt(sort: Desc)], name: "InboxSearchDocument_userId_mailboxId_sentAt_idx")
+  @@index([userId, from], name: "InboxSearchDocument_userId_from_idx")
+}
+
+model InboxSearchChunk {
+  id             String                      @id @default(cuid())
+  documentId     String
+  chunkIndex     Int
+  chunkText      String
+  tokenCount     Int
+  embedding      Unsupported("vector(768)")?
+  embeddingModel String?
+  embeddedAt     DateTime?
+  document       InboxSearchDocument         @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@unique([documentId, chunkIndex], name: "InboxSearchChunk_documentId_chunkIndex_key")
+  @@index([documentId], name: "InboxSearchChunk_documentId_idx")
+}
+
+model InboxSearchCheckpoint {
+  id                   String             @id @default(cuid())
+  userId               String
+  mailboxId            String
+  lastHistoryIdIndexed String?
+  backfillState        InboxBackfillState @default(PENDING)
+  lastBackfillCursor   String?
+  lastIndexedAt        DateTime?
+  lagEstimate          Int?
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+  user                 User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  mailbox              Mailbox            @relation(fields: [mailboxId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, mailboxId], name: "InboxSearchCheckpoint_userId_mailboxId_key")
+  @@index([backfillState, lastIndexedAt], name: "InboxSearchCheckpoint_backfillState_lastIndexedAt_idx")
+}
+
 model EmailCategorizationResult {
   id                   String   @id @default(cuid())
   userId               String   @unique
@@ -251,13 +311,15 @@ model Mailbox {
   updatedAt DateTime @updatedAt
 
   // Relations
-  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
-  oauthAccount  OAuthAccount?
-  emails        Email[]
-  threads       Thread[]
-  labels        Label[]
-  emailMappings EmailMapping[]
-  emailSorts    EmailSort[]
+  user                   User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  oauthAccount           OAuthAccount?
+  emails                 Email[]
+  threads                Thread[]
+  labels                 Label[]
+  emailMappings          EmailMapping[]
+  emailSorts             EmailSort[]
+  inboxSearchDocuments   InboxSearchDocument[]
+  inboxSearchCheckpoints InboxSearchCheckpoint[]
 
   @@unique([userId, provider, providerAccountId])
   @@index([userId])
@@ -332,9 +394,9 @@ model MasterPrompt {
 }
 
 model OAuthAccount {
-  id                String    @id @default(cuid())
+  id                String   @id @default(cuid())
   userId            String
-  mailboxId         String?   @unique // Optional for backcompat; will be required after migration
+  mailboxId         String?  @unique // Optional for backcompat; will be required after migration
   provider          String
   providerAccountId String
   // OAuth tokens — encrypted at rest using AES-256-GCM (see src/lib/encryption.ts)
@@ -343,26 +405,26 @@ model OAuthAccount {
   scope             String?
   tokenType         String?
   expiresAt         Int?
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
-  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  mailbox           Mailbox?  @relation(fields: [mailboxId], references: [id], onDelete: SetNull)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  mailbox           Mailbox? @relation(fields: [mailboxId], references: [id], onDelete: SetNull)
 
   @@unique([provider, providerAccountId])
 }
 
 model Thread {
-  id            String    @id @default(uuid())
+  id            String   @id @default(uuid())
   userId        String
   mailboxId     String? // Optional for backcompat; will be required after migration
   subject       String
   snippet       String?
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
   gmailThreadId String?
   emails        Email[]
-  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  mailbox       Mailbox?  @relation(fields: [mailboxId], references: [id], onDelete: SetNull)
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  mailbox       Mailbox? @relation(fields: [mailboxId], references: [id], onDelete: SetNull)
 
   // Compound uniqueness: same gmailThreadId can exist in different mailboxes
   @@unique([mailboxId, gmailThreadId])
@@ -438,6 +500,8 @@ model User {
   mailboxes                          Mailbox[]
   masterPrompts                      MasterPrompt[]
   accounts                           OAuthAccount[]
+  inboxSearchDocuments               InboxSearchDocument[]
+  inboxSearchCheckpoints             InboxSearchCheckpoint[]
   emailAlerts                        EmailAlert[]
   reminders                          Reminder[]
   pendingCalendarChanges             PendingCalendarChange[]
@@ -446,45 +510,45 @@ model User {
   tokenAccessAudits                  TokenAccessAudit[]
   telegramLink                       TelegramLink?
   telegramConversations              TelegramConversation[]
-  telegramPairingApprovals           TelegramPairingRequest[]    @relation("TelegramPairingRequestApprovedByUser")
+  telegramPairingApprovals           TelegramPairingRequest[]   @relation("TelegramPairingRequestApprovedByUser")
 }
 
 model UserSettings {
-  id                         String             @id @default(cuid())
-  userId                     String             @unique
-  autonomyLevel              Int                @default(0)
-  createdAt                  DateTime           @default(now())
-  updatedAt                  DateTime           @updatedAt
-  gmailHistoryId             String?
-  allowedSenders             String[]           @default([])
-  blockedSenders             String[]           @default([])
-  enablePushNotifications    Boolean            @default(true)
-  replyScope                 ReplyScope         @default(CONTACTS_ONLY)
-  preferencesSaved           Boolean            @default(false)
+  id                          String                      @id @default(cuid())
+  userId                      String                      @unique
+  autonomyLevel               Int                         @default(0)
+  createdAt                   DateTime                    @default(now())
+  updatedAt                   DateTime                    @updatedAt
+  gmailHistoryId              String?
+  allowedSenders              String[]                    @default([])
+  blockedSenders              String[]                    @default([])
+  enablePushNotifications     Boolean                     @default(true)
+  replyScope                  ReplyScope                  @default(CONTACTS_ONLY)
+  preferencesSaved            Boolean                     @default(false)
   /// IANA timezone identifier (e.g. "America/New_York") used for calendar context
-  calendarTimezone           String?
+  calendarTimezone            String?
   /// Google Calendar IDs to include when building scheduling context
-  calendarContextCalendarIds String[]           @default([])
-  autoFileLowPriority        Int                @default(50)
-  autoSendConfidence         Int                @default(95)
-  newOnboardingCompleted     Boolean            @default(false)
-  autoSortingEnabled         Boolean            @default(false)
-  onboardingStep             String?
-  persona                    OnboardingPersona?
+  calendarContextCalendarIds  String[]                    @default([])
+  autoFileLowPriority         Int                         @default(50)
+  autoSendConfidence          Int                         @default(95)
+  newOnboardingCompleted      Boolean                     @default(false)
+  autoSortingEnabled          Boolean                     @default(false)
+  onboardingStep              String?
+  persona                     OnboardingPersona?
   /// WhatsApp phone number in E.164 format (e.g. "+16505551234")
-  whatsappPhoneNumber        String?
+  whatsappPhoneNumber         String?
   /// Whether the WhatsApp phone number has been verified
-  whatsappVerified           Boolean            @default(false)
+  whatsappVerified            Boolean                     @default(false)
   /// Twilio phone number in E.164 format (e.g. "+16505551234")
-  twilioPhoneNumber          String?
+  twilioPhoneNumber           String?
   /// Whether the Twilio phone number has been verified
-  twilioVerified             Boolean            @default(false)
+  twilioVerified              Boolean                     @default(false)
   /// Whether the user has seen the WhatsApp feature promotion card
-  whatsappPromoSeen          Boolean            @default(false)
+  whatsappPromoSeen           Boolean                     @default(false)
   /// Preferred messaging channel for reminder/alert delivery.
   /// BOTH keeps current behavior and sends to all available channels.
   notificationDeliveryChannel NotificationDeliveryChannel @default(BOTH)
-  user                       User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user                        User                        @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model WhatsAppConversation {
@@ -521,16 +585,16 @@ model WhatsAppMessage {
 }
 
 model TelegramConversation {
-  id             String                      @id @default(cuid())
+  id             String                     @id @default(cuid())
   userId         String
   /// Telegram private chat ID for DM-only conversations
   chatId         String
   /// Telegram user ID of the conversation partner
   telegramUserId String
-  status         TelegramConversationStatus  @default(ACTIVE)
-  createdAt      DateTime                    @default(now())
-  updatedAt      DateTime                    @updatedAt
-  user           User                        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  status         TelegramConversationStatus @default(ACTIVE)
+  createdAt      DateTime                   @default(now())
+  updatedAt      DateTime                   @updatedAt
+  user           User                       @relation(fields: [userId], references: [id], onDelete: Cascade)
   messages       TelegramMessage[]
 
   @@unique([userId, chatId])
@@ -540,19 +604,19 @@ model TelegramConversation {
 }
 
 model TelegramMessage {
-  id                 String                   @id @default(cuid())
-  conversationId     String
+  id                String                   @id @default(cuid())
+  conversationId    String
   /// Telegram update ID for dedupe of inbound updates
-  telegramUpdateId   BigInt?                  @unique
+  telegramUpdateId  BigInt?                  @unique
   /// Telegram message ID from Bot API
-  telegramMessageId  String?
-  direction          TelegramMessageDirection
-  content            String
-  role               TelegramMessageRole
+  telegramMessageId String?
+  direction         TelegramMessageDirection
+  content           String
+  role              TelegramMessageRole
   /// Optional metadata (JSON: tool calls, media provenance, delivery source, etc.)
-  metadata           Json?
-  createdAt          DateTime                 @default(now())
-  conversation       TelegramConversation      @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  metadata          Json?
+  createdAt         DateTime                 @default(now())
+  conversation      TelegramConversation     @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 
   @@index([conversationId])
   @@index([conversationId, createdAt])
@@ -560,21 +624,21 @@ model TelegramMessage {
 }
 
 model TelegramLink {
-  id                String   @id @default(cuid())
-  userId            String   @unique
+  id                String    @id @default(cuid())
+  userId            String    @unique
   /// Telegram user ID linked to this Clira user
-  telegramUserId    String   @unique
+  telegramUserId    String    @unique
   /// Telegram private chat ID for outbound delivery
   chatId            String
   telegramUsername  String?
   telegramFirstName String?
-  isActive          Boolean  @default(true)
-  linkedAt          DateTime @default(now())
+  isActive          Boolean   @default(true)
+  linkedAt          DateTime  @default(now())
   lastSeenAt        DateTime?
   deactivatedAt     DateTime?
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
-  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
   @@index([userId, isActive])
@@ -582,21 +646,21 @@ model TelegramLink {
 }
 
 model TelegramPairingRequest {
-  id                String               @id @default(cuid())
+  id                String                @id @default(cuid())
   telegramUserId    String
   chatId            String
   telegramUsername  String?
   telegramFirstName String?
   /// 8-char pairing code generated for in-app approval
-  pairingCode       String               @unique
+  pairingCode       String                @unique
   status            TelegramPairingStatus @default(PENDING)
   expiresAt         DateTime
   approvedAt        DateTime?
   rejectedAt        DateTime?
   approvedByUserId  String?
-  createdAt         DateTime             @default(now())
-  updatedAt         DateTime             @updatedAt
-  approvedByUser    User?                @relation("TelegramPairingRequestApprovedByUser", fields: [approvedByUserId], references: [id], onDelete: SetNull)
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+  approvedByUser    User?                 @relation("TelegramPairingRequestApprovedByUser", fields: [approvedByUserId], references: [id], onDelete: SetNull)
 
   @@index([telegramUserId, chatId])
   @@index([status, expiresAt])
@@ -763,4 +827,12 @@ enum NotificationDeliveryChannel {
   WHATSAPP
   TELEGRAM
   BOTH
+}
+
+enum InboxBackfillState {
+  PENDING
+  SEEDING
+  BACKFILLING
+  COMPLETE
+  PAUSED_AUTH_REVOKED
 }

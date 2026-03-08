@@ -83,7 +83,71 @@ export function buildTerminalFallbackResponse(toolResults: unknown): string {
     return 'I could not complete that calendar change.';
   }
 
+  const planResult = extractLatestToolResult(toolResults, 'plan_calendar_change');
+  if (planResult) {
+    const previewText = planResult.previewText;
+    if (typeof previewText === 'string' && previewText.trim()) return previewText;
+    const message = planResult.message;
+    if (typeof message === 'string' && message.trim()) return message;
+    if (planResult.ok === true) return 'I planned that calendar change.';
+    return 'I could not plan that calendar change. Please try again.';
+  }
+
   return "I couldn't generate a response. Please try again.";
+}
+
+const TIMESTAMP_METADATA_LINE_PATTERN = /^\[Timestamp\]\s+\d{4}-\d{2}-\d{2}T/i;
+const TOOL_HISTORY_METADATA_LINE_PATTERN = /^\[Tool history\]\s+/i;
+
+function normalizeAssistantResponseWhitespace(value: string): string {
+  return value.replace(/\n{3,}/g, '\n\n').trim();
+}
+
+export function stripInternalMetadataFromAssistantResponse(
+  response: string,
+): { response: string; stripped: boolean } {
+  if (!response) {
+    return { response: '', stripped: false };
+  }
+
+  const cleanedLines: string[] = [];
+  const timestampBlockPayloadLines: string[] = [];
+  let stripped = false;
+  let insideTimestampBlock = false;
+
+  for (const line of response.split('\n')) {
+    const trimmed = line.trim();
+
+    if (TIMESTAMP_METADATA_LINE_PATTERN.test(trimmed)) {
+      stripped = true;
+      insideTimestampBlock = true;
+      continue;
+    }
+
+    if (TOOL_HISTORY_METADATA_LINE_PATTERN.test(trimmed)) {
+      stripped = true;
+      continue;
+    }
+
+    if (insideTimestampBlock) {
+      if (trimmed.length === 0) {
+        insideTimestampBlock = false;
+      } else {
+        timestampBlockPayloadLines.push(line);
+      }
+      stripped = true;
+      continue;
+    }
+
+    cleanedLines.push(line);
+  }
+
+  let cleanedResponse = normalizeAssistantResponseWhitespace(cleanedLines.join('\n'));
+  if (!cleanedResponse && timestampBlockPayloadLines.length > 0) {
+    cleanedResponse = normalizeAssistantResponseWhitespace(timestampBlockPayloadLines.join('\n'));
+  }
+
+  return { response: cleanedResponse, stripped };
 }
 
 export function isDateTimeTime(value: CalendarEventDraftDTO['start']): value is { dateTime: string; timeZone: string } {
@@ -771,6 +835,7 @@ export async function runWithSubagentBudget<T>({
   abortSignal,
   toolCallIndex,
   minBudgetMs,
+  maxBudgetMs,
   uncappedBudget,
   run,
 }: {
@@ -781,20 +846,36 @@ export async function runWithSubagentBudget<T>({
   toolCallIndex: number;
   /** Optional minimum budget for tools that need more time (e.g. plan_calendar_change). */
   minBudgetMs?: number;
+  /** Optional hard cap for this subagent even when more run time remains. */
+  maxBudgetMs?: number;
   /** When true with minBudgetMs, use minBudgetMs as-is without capping by available time. */
   uncappedBudget?: boolean;
   run: (params: { abortSignal?: AbortSignal; deadlineAt?: number; budgetMs?: number }) => Promise<T>;
 }): Promise<T | ReturnType<typeof buildToolBudgetExceededResult>> {
+  const availableBudgetMs =
+    timeLeftMs !== null ? Math.max(0, timeLeftMs - MESSAGING_TOOL_RESPONSE_BUFFER_MS) : null;
   let { budgetMs, tooLow } = computeSubagentBudget(timeLeftMs, toolCallIndex);
   if (typeof minBudgetMs === 'number' && budgetMs !== null && budgetMs < minBudgetMs) {
     if (uncappedBudget) {
       budgetMs = minBudgetMs;
     } else {
-      const available = timeLeftMs !== null ? Math.max(0, timeLeftMs - MESSAGING_TOOL_RESPONSE_BUFFER_MS) : 0;
+      const available = availableBudgetMs ?? 0;
       budgetMs = Math.min(minBudgetMs, available);
     }
-    tooLow = budgetMs < MESSAGING_MIN_SUBAGENT_BUDGET_MS;
   }
+
+  if (typeof maxBudgetMs === 'number' && budgetMs !== null) {
+    budgetMs = Math.min(budgetMs, maxBudgetMs);
+  }
+
+  // Never grant a subagent more time than the parent run has left after reserving
+  // a small response buffer. This prevents late-turn retries from firing when the
+  // enclosing run is already effectively out of time.
+  if (availableBudgetMs !== null && budgetMs !== null) {
+    budgetMs = Math.min(budgetMs, availableBudgetMs);
+  }
+
+  tooLow = budgetMs !== null && budgetMs < MESSAGING_MIN_SUBAGENT_BUDGET_MS;
 
   if (tooLow) {
     logger.warn(

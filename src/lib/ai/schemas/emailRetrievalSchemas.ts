@@ -1,5 +1,14 @@
 import { z } from 'zod';
 
+const emailEvidenceActionValues = [
+  'find',
+  'summarize_range',
+  'count',
+  'aggregate',
+] as const;
+
+const emailEvidenceGroupByValues = ['sender', 'day', 'thread', 'mailbox'] as const;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Email Retrieval Evidence Schemas
 //
@@ -39,23 +48,176 @@ export const EmailEvidenceQuoteSchema = z.object({
 
 export type EmailEvidenceQuoteDTO = z.infer<typeof EmailEvidenceQuoteSchema>;
 
+export const ExpandedInboxMessageSchema = z.object({
+  messageId: z.string().describe('Gmail message ID for this thread message'),
+  date: z.string().describe('ISO date string for the message'),
+  from: z.string().describe('Sender display name + email'),
+  to: z.array(z.string()).describe('Recipients in the To field'),
+  cc: z.array(z.string()).describe('Recipients in the Cc field'),
+  subject: z.string().describe('Message subject line'),
+  bodyText: z
+    .string()
+    .max(5000)
+    .describe('Bounded plain-text body content for this message'),
+  isAnchor: z
+    .boolean()
+    .describe('True when this is the ranked message selected as the expansion anchor'),
+  truncatedBody: z
+    .boolean()
+    .describe('True when the body text was truncated by expansion caps'),
+});
+
+export type ExpandedInboxMessageDTO = z.infer<typeof ExpandedInboxMessageSchema>;
+
+export const ExpandedInboxThreadSchema = z.object({
+  threadId: z.string().describe('Gmail thread ID for the expanded thread slice'),
+  mailboxId: z.string().optional().describe('Mailbox ID that owns this thread'),
+  mailboxEmail: z.string().optional().describe('Mailbox email address for context'),
+  anchorMessageId: z.string().describe('Message ID used as the expansion anchor'),
+  anchorSubject: z.string().describe('Subject of the anchor message'),
+  selectionRank: z
+    .number()
+    .int()
+    .min(1)
+    .describe('1-based rank of the anchor candidate in the ranked retrieval pool'),
+  anchorReason: z
+    .string()
+    .max(240)
+    .describe('Why this thread was selected for bounded expansion'),
+  hasMoreBefore: z
+    .boolean()
+    .describe('True when older messages exist before the returned slice'),
+  hasMoreAfter: z
+    .boolean()
+    .describe('True when newer messages exist after the returned slice'),
+  messagesReturned: z
+    .number()
+    .int()
+    .min(0)
+    .describe('Number of messages returned in this bounded slice'),
+  messages: z
+    .array(ExpandedInboxMessageSchema)
+    .describe('Oldest-to-newest bounded message slice around the anchor'),
+});
+
+export type ExpandedInboxThreadDTO = z.infer<typeof ExpandedInboxThreadSchema>;
+
+export const EmailEvidenceExpansionSchema = z.object({
+  applied: z
+    .boolean()
+    .describe('True when bounded full-thread expansion was attached to the evidence pack'),
+  mode: z
+    .enum(['compact', 'expanded'])
+    .describe('Whether the returned evidence pack stayed compact or included expanded threads'),
+  reasons: z
+    .array(z.string())
+    .describe('Deterministic reasons for the expansion decision'),
+  promotedCandidateRanks: z
+    .array(z.number().int().min(1))
+    .optional()
+    .describe('Candidate ranks promoted into expanded threads beyond the compact top matches'),
+});
+
+export type EmailEvidenceExpansionDTO = z.infer<typeof EmailEvidenceExpansionSchema>;
+
 export const EmailEvidenceCoverageSchema = z.object({
-  queriesTried: z.array(z.string()).describe('Gmail queries executed during retrieval'),
+  action: z.enum(emailEvidenceActionValues).describe('Search action executed'),
+  queriesTried: z.array(z.string()).describe('Retrieval queries or search plans executed'),
   threadsScanned: z.number().int().min(0).describe('Number of threads scanned'),
   messagesScanned: z.number().int().min(0).describe('Number of messages scanned'),
   timeWindow: z.string().describe('Human summary of the time window searched'),
-  pagesFetched: z.number().int().min(0).describe('Number of Gmail pages fetched'),
+  pagesFetched: z.number().int().min(0).describe('Number of paginated fetches performed'),
   truncated: z.boolean().describe('True if budgets stopped the search early'),
+  filterOnly: z.boolean().describe('True when retrieval used only structured filters and no lexical query'),
+  appliedFilters: z.array(z.string()).describe('Structured filters applied directly in SQL'),
   budgetNotes: z.array(z.string()).optional().describe('Budget or coverage notes'),
+  engineVersion: z.string().optional().describe('Retrieval engine version'),
+  indexFreshness: z
+    .enum(['fresh', 'lagging', 'stale', 'unknown'])
+    .optional()
+    .describe('Freshness state of the local inbox index'),
+  retrievalLatencyMs: z
+    .number()
+    .int()
+    .min(0)
+    .optional()
+    .describe('End-to-end retrieval latency in milliseconds'),
+  lexicalCandidates: z
+    .number()
+    .int()
+    .min(0)
+    .optional()
+    .describe('Number of lexical candidates considered'),
+  semanticCandidates: z
+    .number()
+    .int()
+    .min(0)
+    .optional()
+    .describe('Number of semantic candidates considered'),
+  fusionMethod: z.string().optional().describe('Ranking or fusion method applied'),
+  indexLag: z
+    .number()
+    .int()
+    .min(0)
+    .nullable()
+    .optional()
+    .describe('Estimated worst-case index lag in minutes'),
+  semanticUnavailable: z
+    .boolean()
+    .optional()
+    .describe('True when semantic retrieval was unavailable and lexical-only search was used'),
 });
 
 export type EmailEvidenceCoverageDTO = z.infer<typeof EmailEvidenceCoverageSchema>;
 
+export const EmailEvidenceMetadataSchema = z.object({
+  cached: z
+    .boolean()
+    .optional()
+    .describe('True when this evidence pack was reused from per-run memoization'),
+  validationError: z
+    .boolean()
+    .optional()
+    .describe('True when the tool rejected invalid arguments before running retrieval'),
+  escalation: z
+    .enum(['quick_to_deep'])
+    .optional()
+    .describe('Internal retrieval escalation that happened before returning the evidence pack'),
+});
+
+export type EmailEvidenceMetadataDTO = z.infer<typeof EmailEvidenceMetadataSchema>;
+
+export const EmailEvidenceAggregateSchema = z.object({
+  key: z.string().describe('Bucket value'),
+  count: z.number().int().min(0).describe('Number of matches in the bucket'),
+});
+
+export type EmailEvidenceAggregateDTO = z.infer<typeof EmailEvidenceAggregateSchema>;
+
 export const EmailEvidencePackSchema = z.object({
+  action: z.enum(emailEvidenceActionValues).describe('Search action executed'),
   matches: z.array(EmailEvidenceMatchSchema).describe('Ranked best matches'),
   quotes: z.array(EmailEvidenceQuoteSchema).describe('Supporting quotes from matches'),
+  expandedThreads: z
+    .array(ExpandedInboxThreadSchema)
+    .optional()
+    .describe('Optional bounded full-thread slices attached for richer context'),
+  expansion: EmailEvidenceExpansionSchema
+    .optional()
+    .describe('Bounded thread-expansion decision metadata'),
   coverage: EmailEvidenceCoverageSchema.describe('Coverage metadata for the search'),
   confidence: z.enum(['low', 'medium', 'high']).describe('Overall confidence in the matches'),
+  metadata: EmailEvidenceMetadataSchema.optional().describe('Additive retrieval metadata'),
+  summary: z.string().optional().describe('Concise action-specific summary'),
+  count: z.number().int().min(0).optional().describe('Deterministic total count'),
+  aggregates: z
+    .array(EmailEvidenceAggregateSchema)
+    .optional()
+    .describe('Grouped aggregate buckets'),
+  groupBy: z
+    .enum(emailEvidenceGroupByValues)
+    .optional()
+    .describe('Group-by dimension used for aggregates'),
   followUpQuestions: z
     .array(z.string())
     .describe('Clarifying questions if the request is ambiguous or results are weak'),

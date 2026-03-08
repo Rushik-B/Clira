@@ -1,0 +1,25 @@
+Search the user inbox and return a compact evidence pack with ranked matches, quotes, and coverage.
+
+Use the structured contract:
+- Required: `action` = `find` | `summarize_range` | `count` | `aggregate`
+- Optional: `mode`, `mailboxId`, `mailboxEmail`, `queryText`, `filters`, `options`
+
+Rules:
+- Use `queryText` only for actual text search terms.
+- Put sender, recipient, date range, relative window, attachment, thread, message, and mailbox scope into typed fields.
+- Use `find` for ranked email matches.
+- Use `summarize_range` for summaries over a constrained slice of mail.
+- Use `count` for deterministic totals.
+- Use `aggregate` for grouped breakdowns. This requires `options.groupBy`.
+- Use `deep` for analytical, quantitative, or aggregative questions, exact wording, attachments, or when quick results are weak.
+- Use `quick` for simple lookup.
+
+Examples:
+- Check my inbox for Feb 19 -> `action="summarize_range"` with `filters.startDate` and `filters.endDate`
+- Any emails from Alice with attachments last week? -> `action="find"` with `filters.sender`, `filters.hasAttachment`, and date filters
+- How many recruiter emails last month? -> `action="count"` with `queryText="recruiter"` and `filters.relativeWindow="last_30_days"`
+- Summarize GitHub notifications today -> `action="summarize_range"` with `queryText="github"` and `filters.relativeWindow="today"`
+
+Invalid patterns:
+- Do not use an `intent` field.
+- Do not stuff structured constraints into `queryText`.

@@ -217,31 +217,52 @@ export function buildCalendarMutationTools({
 
           const toolCallIndex = nextSubagentCallIndex();
 
-          const planResult = await runWithSubagentBudget({
-            toolName: 'plan_calendar_change',
-            counts: { total: 0, tool: 0 },
-            timeLeftMs: toolAbort.timeLeftMs(),
-            abortSignal: toolAbortSignal,
-            toolCallIndex,
-            minBudgetMs: PLAN_CALENDAR_CHANGE_MIN_BUDGET_MS,
-            uncappedBudget: true,
-            run: (budgetContext) =>
-              runCalendarCreatorAgent(
-                { request },
-                {
-                  currentTime: {
-                    utcNow: currentTimeUtc,
-                    userTimezone,
-                    userLocalNow: currentTimeUserTz,
-                    dayOfWeek,
-                  },
-                  availableCalendars,
-                  resolvedEvents: args.resolvedEvents,
-                  abortSignal: budgetContext.abortSignal,
-                  deadlineAt: budgetContext.deadlineAt,
-                },
-              ),
-          });
+          const planResult = await (async () => {
+            try {
+              return await runWithSubagentBudget({
+                toolName: 'plan_calendar_change',
+                counts: { total: 0, tool: 0 },
+                timeLeftMs: toolAbort.timeLeftMs(),
+                abortSignal: toolAbortSignal,
+                toolCallIndex,
+                minBudgetMs: PLAN_CALENDAR_CHANGE_MIN_BUDGET_MS,
+                maxBudgetMs: PLAN_CALENDAR_CHANGE_MIN_BUDGET_MS,
+                uncappedBudget: true,
+                run: (budgetContext) =>
+                  runCalendarCreatorAgent(
+                    { request },
+                    {
+                      currentTime: {
+                        utcNow: currentTimeUtc,
+                        userTimezone,
+                        userLocalNow: currentTimeUserTz,
+                        dayOfWeek,
+                      },
+                      availableCalendars,
+                      resolvedEvents: args.resolvedEvents,
+                      abortSignal: budgetContext.abortSignal,
+                      deadlineAt: budgetContext.deadlineAt,
+                    },
+                  ),
+              });
+            } catch (error) {
+              const message = error instanceof Error ? error.message : 'Unknown error';
+              const isDeadline =
+                error instanceof Error &&
+                (error.name === 'AbortError' || /deadline exceeded|aborted|abort/i.test(message));
+              logger.warn('[executiveAgent] plan_calendar_change failed', {
+                message,
+                isDeadline,
+              });
+              return {
+                ok: false as const,
+                error: isDeadline ? 'deadline_exceeded' : 'calendar_plan_failed',
+                message: isDeadline
+                  ? 'I ran out of time planning that calendar change. Please try again.'
+                  : `I could not plan that calendar change. ${message}`,
+              };
+            }
+          })();
 
           if ((planResult as { ok?: boolean })?.ok === false) {
             return planResult;

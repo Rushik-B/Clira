@@ -15,7 +15,9 @@ Checks:
 Checks:
 
 - Pub/Sub topic exists and matches runtime topic name
-- Webhook endpoint is reachable over HTTPS
+- Ingestion mode is correct (`GMAIL_INGESTION_MODE`)
+- Pull mode: `gmail-pull-worker` process is running
+- Push mode: webhook endpoint is reachable over HTTPS
 - Mailbox status is `CONNECTED`
 - Gmail watch renewal cron is running
 
@@ -23,6 +25,7 @@ Actions:
 
 - Re-run `/api/gmail-push/setup`
 - Trigger `/api/cron/renew-gmail-watches` with cron auth header
+- Verify `GET /api/health` includes healthy Gmail ingestion checks
 
 ## Queue UI Not Updating
 
@@ -55,6 +58,22 @@ Checks:
 - Endpoint returns fast 200 responses
 - Reverse proxy/load balancer timeout is long enough
 - JSON payload parsing errors are not being thrown before response
+- Confirm `GMAIL_INGESTION_MODE=push` (webhook returns 404 in pull mode)
+
+## Pull Worker Not Receiving Messages
+
+Checks:
+
+- `GMAIL_INGESTION_MODE=pull`
+- `GMAIL_PUBSUB_PULL_SUBSCRIPTION` is fully qualified and correct
+- Pull worker process (`npm run start:gmail-pull-worker`) is running
+- Pub/Sub subscription retry + dead-letter policy configured
+
+Actions:
+
+- Re-run `npm run setup:google -- --project-id <id> --mode pull`
+- Check pull worker logs for nack/retry loops and payload validation failures
+- Inspect DLQ subscription for poison or persistent-failure messages
 
 ## Twilio Or WhatsApp Webhook Rejections
 

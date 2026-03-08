@@ -35,6 +35,38 @@ services:
       redis:
         condition: service_started
 
+  backfill-worker:
+    build: .
+    command: sh -c "npm run start:backfill-worker"
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/clira
+      DIRECT_URL: postgresql://postgres:postgres@db:5432/clira
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  gmail-pull-worker:
+    build: .
+    command: sh -c "npm run start:gmail-pull-worker"
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/clira
+      DIRECT_URL: postgresql://postgres:postgres@db:5432/clira
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
   cron:
     build: .
     command: sh -c "npm run start:cron"
@@ -49,7 +81,8 @@ services:
         condition: service_started
 
   db:
-    image: postgres:16-alpine
+    # pgvector required for InboxSearchChunk.embedding (email search subagent semantic search)
+    image: pgvector/pgvector:pg16
     restart: unless-stopped
     environment:
       POSTGRES_DB: clira

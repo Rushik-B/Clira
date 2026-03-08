@@ -23,6 +23,7 @@
 # misc
 .DS_Store
 *.pem
+google-service-account.json
 
 # debug
 npm-debug.log*
@@ -70,8 +71,6 @@ logs/
 # local AI/dev agent configs (do not publish; include without trailing slash so symlinks are ignored)
 /.agents/
 /.agents
-/.claude/
-/.claude
 /.codex/
 /.codex
 /.cursor/
@@ -87,5 +86,4 @@ logs/
 /.gemini/
 /.gemini
 
-# agent/IDE docs (often symlinked from parent repo)
-/AGENTS.md
+

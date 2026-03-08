@@ -9,6 +9,7 @@ import { FeatureFlags } from '@/lib/services/utils/featureFlags';
 import { createGmailServiceForUser } from '@/lib/security/getUserGmailCredentials';
 import { encryptEmailContent, encryptThreadContent, decryptEmailContent, decryptEmails, decryptThreadContent } from '@/lib/security/emailCrypto';
 import { triggerAlertNotification } from '@/lib/services/alertNotificationService';
+import { enqueueInboxIndexJob } from '@/lib/services/inbox-search';
 // AI queue label removed: no longer creating/applying a dedicated Gmail label
 
 export interface PushNotificationPayload {
@@ -452,8 +453,8 @@ export class GmailPushService {
                   userId: user.id,
                   mailboxId: mailbox.id,
                   gmailThreadId: emailData.gmailThreadId || undefined,
-                  subject: '',
-                  snippet: '',
+                  subject: threadContent.subject,
+                  snippet: threadContent.snippet,
                   ...encryptedThread,
                 },
               });
@@ -499,6 +500,13 @@ export class GmailPushService {
                     rfc2822MessageId: emailData.rfc2822MessageId || undefined,
                     references: emailData.references || undefined,
                     inReplyTo: emailData.inReplyTo || undefined,
+                    subject: emailContent.subject,
+                    body: emailContent.body,
+                    from: emailContent.from,
+                    to: emailContent.to,
+                    cc: emailContent.cc,
+                    snippet: emailContent.snippet,
+                    ...encryptedEmailCreate,
                   },
                   include: { generatedDraft: true, thread: true },
                 })
@@ -514,18 +522,24 @@ export class GmailPushService {
                     isSent: emailData.isSent || false,
                     isDraft: false,
                     createdAt: emailData.date ? new Date(emailData.date) : new Date(),
-                    from: '',
-                    subject: '',
-                    body: '',
-                    snippet: '',
-                    to: [],
-                    cc: [],
+                    from: emailContent.from,
+                    subject: emailContent.subject,
+                    body: emailContent.body,
+                    snippet: emailContent.snippet,
+                    to: emailContent.to,
+                    cc: emailContent.cc,
                     ...encryptedEmailCreate,
                   },
                   include: { generatedDraft: true, thread: true },
                 });
 
             const savedEmail = await decryptEmailContent({ email: storedEmail, userId: user.id });
+
+            await enqueueInboxIndexJob({
+              userId: user.id,
+              mailboxId: mailbox.id,
+              messageId: savedEmail.messageId,
+            });
 
             console.log(`💾 DEBUG: Successfully stored/updated email with ID: ${savedEmail.id}, messageId: ${savedEmail.messageId}`);
             
@@ -1031,6 +1045,7 @@ export class GmailPushService {
       
     } catch (error) {
       console.error('❌ Error processing Gmail push notification:', error);
+      throw error;
     } finally {
       // Always release the per-mailbox lock and clear coalesced target
       GmailPushService.processingLocks.delete(mailboxKey);

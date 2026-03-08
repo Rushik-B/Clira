@@ -1,7 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { GmailPushService } from '@/lib/email/gmailPushService';
+import { GmailPushService, type PushNotificationPayload } from '@/lib/email/gmailPushService';
+import { decodeGmailPubSubPayload, isNonRetryablePayloadError } from '@/lib/email/gmailPubSubPayload';
+import { getGmailIngestionMode } from '@/lib/email/gmailIngestionConfig';
 
 export async function POST(request: NextRequest) {
+  const mode = getGmailIngestionMode();
+  if (mode !== 'push') {
+    return NextResponse.json({ error: 'Not found' }, { status: 404 });
+  }
+
   try {
     console.log('📧 Received Gmail push notification webhook');
 
@@ -14,17 +21,15 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: true }); // Acknowledge anyway
     }
 
-    // Decode the base64 message data
-    const messageData = Buffer.from(pubsubMessage.data, 'base64').toString('utf-8');
-    const notification = JSON.parse(messageData);
-
-    console.log('📧 Decoded notification:', notification);
-
-    // Extract email address and history ID
-    const { emailAddress, historyId } = notification;
-    
-    if (!emailAddress || !historyId) {
-      console.log('⚠️ Missing emailAddress or historyId in notification');
+    let payload: PushNotificationPayload;
+    try {
+      payload = decodeGmailPubSubPayload(pubsubMessage.data);
+    } catch (error) {
+      if (isNonRetryablePayloadError(error)) {
+        console.warn('⚠️ Non-retryable Gmail Pub/Sub payload error:', error.message);
+      } else {
+        console.error('❌ Unexpected Gmail Pub/Sub payload error:', error);
+      }
       return NextResponse.json({ success: true });
     }
 
@@ -32,8 +37,8 @@ export async function POST(request: NextRequest) {
     // Note: We create a service instance without credentials since we'll fetch them from the database
     const pushService = new GmailPushService();
     pushService
-      .processPushNotification({ emailAddress, historyId })
-      .then(() => console.log(`✅ Processed Gmail push notification for ${emailAddress}`))
+      .processPushNotification(payload)
+      .then(() => console.log(`✅ Processed Gmail push notification for ${payload.emailAddress}`))
       .catch((err) => console.error('❌ Error processing Gmail push notification (deferred):', err));
 
     // Immediate 200 to prevent Heroku H12 and Pub/Sub retries

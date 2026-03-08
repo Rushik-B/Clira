@@ -522,6 +522,13 @@ export async function processWhatsAppMessage(
   });
 
   if (orchestrationDecision.kind === 'skip') {
+    logger.info('[messageProcessor] Orchestrator skip accepted as terminal', {
+      channel: 'whatsapp',
+      conversationId: conversation.id,
+      waId: `${waId.slice(0, 4)}****`,
+      messageId,
+      reason: orchestrationDecision.reason,
+    });
     return { success: true, response: '' };
   }
 
@@ -674,7 +681,9 @@ async function runExecutiveAgent(
             runId: options.runContext.runId,
             burstId: options.runContext.burstId,
             classifierDecision: options.runContext.classifierDecision,
+            priorPack: options.runContext.priorPack,
             droppedSummary: options.runContext.droppedSummary,
+            setSelectedPack: options.runContext.setSelectedPack,
             isRunCurrent: options.runContext.isRunCurrent,
             isBurstStable: options.runContext.isBurstStable,
             consumeSteerEvents: options.runContext.consumeSteerEvents,

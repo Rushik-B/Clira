@@ -106,6 +106,24 @@ export interface ReminderNotificationJobData {
   context?: string;
 }
 
+export interface InboxIndexJobData {
+  userId: string;
+  mailboxId: string;
+  messageId: string;
+}
+
+export interface InboxBackfillJobData {
+  userId: string;
+  mailboxId: string;
+}
+
+export interface InboxEmbedRetryJobData {
+  userId: string;
+  mailboxId: string;
+  messageId: string;
+  documentId?: string;
+}
+
 // Supermemory bootstrap job types
 export interface SupermemoryBootstrapJobData {
   userId: string;
@@ -280,6 +298,45 @@ export const reminderNotificationQueue = new Queue<ReminderNotificationJobData>(
   },
 });
 
+export const inboxIndexQueue = new Queue<InboxIndexJobData>('inbox-index', {
+  connection: redisConnection,
+  defaultJobOptions: {
+    attempts: 3,
+    backoff: {
+      type: 'exponential',
+      delay: 3000,
+    },
+    removeOnComplete: 100,
+    removeOnFail: 50,
+  },
+});
+
+export const inboxBackfillQueue = new Queue<InboxBackfillJobData>('inbox-backfill', {
+  connection: redisConnection,
+  defaultJobOptions: {
+    attempts: 2,
+    backoff: {
+      type: 'exponential',
+      delay: 10_000,
+    },
+    removeOnComplete: 20,
+    removeOnFail: 20,
+  },
+});
+
+export const inboxEmbedRetryQueue = new Queue<InboxEmbedRetryJobData>('inbox-embed-retry', {
+  connection: redisConnection,
+  defaultJobOptions: {
+    attempts: 3,
+    backoff: {
+      type: 'exponential',
+      delay: 15_000,
+    },
+    removeOnComplete: 50,
+    removeOnFail: 50,
+  },
+});
+
 // Supermemory bootstrap queue - runs in separate worker process
 // Per SUPERMEMORY.md: isolated from reply-generation to avoid CPU/memory contention
 export const supermemoryBootstrapQueue = new Queue<SupermemoryBootstrapJobData>('supermemory-bootstrap', {
@@ -310,6 +367,9 @@ export const allQueues = {
   emailLearning: emailLearningQueue,
   emailCategorization: emailCategorizationQueue,
   reminderNotification: reminderNotificationQueue,
+  inboxIndex: inboxIndexQueue,
+  inboxBackfill: inboxBackfillQueue,
+  inboxEmbedRetry: inboxEmbedRetryQueue,
   // Supermemory queue (separate worker)
   supermemoryBootstrap: supermemoryBootstrapQueue,
 };
@@ -331,6 +391,9 @@ export async function closeQueues() {
     emailLearningQueue.close(),
     emailCategorizationQueue.close(),
     reminderNotificationQueue.close(),
+    inboxIndexQueue.close(),
+    inboxBackfillQueue.close(),
+    inboxEmbedRetryQueue.close(),
     // Supermemory queue
     supermemoryBootstrapQueue.close(),
   ]);

@@ -393,6 +393,13 @@ export async function processTwilioMessage(
   });
 
   if (orchestrationDecision.kind === 'skip') {
+    logger.info('[messageProcessor] Orchestrator skip accepted as terminal', {
+      channel: 'twilio',
+      conversationId: conversation.id,
+      from: `${from.slice(0, 4)}****`,
+      messageSid,
+      reason: orchestrationDecision.reason,
+    });
     return { success: true, response: '' };
   }
 
@@ -555,7 +562,9 @@ async function runExecutiveAgent(
             runId: options.runContext.runId,
             burstId: options.runContext.burstId,
             classifierDecision: options.runContext.classifierDecision,
+            priorPack: options.runContext.priorPack,
             droppedSummary: options.runContext.droppedSummary,
+            setSelectedPack: options.runContext.setSelectedPack,
             isRunCurrent: options.runContext.isRunCurrent,
             isBurstStable: options.runContext.isBurstStable,
             consumeSteerEvents: options.runContext.consumeSteerEvents,

@@ -16,6 +16,7 @@ import type {
   PrepareRunParams,
   RelevanceClassification,
   RunContext,
+  RunPackId,
   RunPhase,
   SteerEvent,
 } from './types';
@@ -35,6 +36,17 @@ import {
 
 type OrchestratorEventName = Parameters<typeof emitOrchestratorEvent>[0];
 type OrchestratorEventPayload = Parameters<typeof emitOrchestratorEvent>[1];
+const CLASSIFIER_REVALIDATION_MAX_RETRIES = 1;
+
+type ActiveRunSnapshot = {
+  activeRunId: string;
+  activeRevision: number;
+  activeRunPhase: RunPhase;
+  latestIntentText: string;
+  revision: number;
+  burstId: string;
+  windowEndsAt: number;
+};
 
 type LocalRunRecord = {
   runId: string;
@@ -48,6 +60,8 @@ type LocalRunRecord = {
   windowEndsAt: number;
   hasQueuedFollowup: boolean;
   classifierDecision: RelevanceClassification['decision'] | null;
+  priorPack: RunPackId | null;
+  selectedPack: RunPackId | null;
   droppedSummary: string[];
   runPhase: RunPhase;
   stale: boolean;
@@ -145,6 +159,56 @@ function buildConversationKey(
   return `${channel}:${conversationId}`;
 }
 
+function captureActiveRunSnapshot(state: BurstState): ActiveRunSnapshot | null {
+  if (!state.activeRunId || typeof state.activeRevision !== 'number') {
+    return null;
+  }
+
+  return {
+    activeRunId: state.activeRunId,
+    activeRevision: state.activeRevision,
+    activeRunPhase: state.activeRunPhase,
+    latestIntentText: state.latestIntentText,
+    revision: state.revision,
+    burstId: state.burstId,
+    windowEndsAt: state.windowEndsAt,
+  };
+}
+
+function matchesActiveRunSnapshot(
+  state: BurstState,
+  snapshot: ActiveRunSnapshot,
+): boolean {
+  return (
+    state.activeRunId === snapshot.activeRunId &&
+    state.activeRevision === snapshot.activeRevision &&
+    state.activeRunPhase === snapshot.activeRunPhase &&
+    state.revision === snapshot.revision
+  );
+}
+
+function buildSnapshotMismatchReason(
+  state: BurstState,
+  snapshot: ActiveRunSnapshot,
+): string {
+  if (!state.activeRunId || typeof state.activeRevision !== 'number') {
+    return 'active_run_missing_after_classify';
+  }
+  if (state.activeRunId !== snapshot.activeRunId) {
+    return 'active_run_replaced_during_classify';
+  }
+  if (state.activeRevision !== snapshot.activeRevision) {
+    return 'active_revision_changed_during_classify';
+  }
+  if (state.activeRunPhase !== snapshot.activeRunPhase) {
+    return 'active_run_phase_changed_during_classify';
+  }
+  if (state.revision !== snapshot.revision) {
+    return 'burst_revision_changed_during_classify';
+  }
+  return 'active_run_state_changed_during_classify';
+}
+
 async function defaultReadState(conversationKey: string): Promise<BurstState> {
   const { readBurstState } = await import('./stateStore');
   return readBurstState(conversationKey);
@@ -174,6 +238,112 @@ export class MessagingOrchestrator {
       emitEvent: emitOrchestratorEvent,
       ...overrides,
     };
+  }
+
+  private async startFreshRunFromState(params: {
+    channel: OrchestrationChannel;
+    conversationId: string;
+    conversationKey: string;
+    userRequest: string;
+    state: BurstState;
+    classifierDecision?: RelevanceClassification;
+    priorPack?: RunPackId | null;
+    nextBurstId?: string;
+  }): Promise<OrchestrationDecision | null> {
+    const start = await this.startRun({
+      channel: params.channel,
+      conversationId: params.conversationId,
+      conversationKey: params.conversationKey,
+      userRequest: params.userRequest,
+      expectedRevision: params.state.revision,
+      forceReplace: false,
+      classifierDecision: params.classifierDecision,
+      priorPack: params.priorPack,
+      nextBurstId: params.nextBurstId,
+    }).catch((error) => {
+      if (isBenignStartConflict(error)) {
+        return null;
+      }
+      throw error;
+    });
+
+    if (!start) {
+      return null;
+    }
+
+    return {
+      kind: 'start',
+      runContext: start.runContext,
+      userRequest: params.userRequest,
+      classifierDecision: params.classifierDecision,
+    };
+  }
+
+  private emitClassifierDiscarded(params: {
+    channel: OrchestrationChannel;
+    conversationId: string;
+    conversationKey: string;
+    snapshot: ActiveRunSnapshot;
+    currentState: BurstState;
+    classifierDecision: RelevanceClassification;
+    reason: string;
+    retryAttempt: number;
+  }): void {
+    this.deps.emitEvent('orchestrator.classifier.discarded', {
+      channel: params.channel,
+      conversationId: params.conversationId,
+      conversationKey: params.conversationKey,
+      runId: params.snapshot.activeRunId,
+      burstId: params.snapshot.burstId,
+      reason: params.reason,
+      decision: params.classifierDecision.decision,
+      confidence: params.classifierDecision.confidence,
+      retryAttempt: params.retryAttempt,
+      latestRunId: params.currentState.activeRunId,
+      latestRevision: params.currentState.revision,
+      latestRunPhase: params.currentState.activeRunPhase,
+    });
+  }
+
+  private async queueFollowupForSnapshot(params: {
+    channel: OrchestrationChannel;
+    conversationId: string;
+    conversationKey: string;
+    snapshot: ActiveRunSnapshot;
+    userRequest: string;
+    classifierDecision?: RelevanceClassification;
+  }): Promise<{ queued: boolean; current: BurstState }> {
+    let queued = false;
+    const { current } = await this.deps.updateState(params.conversationKey, (state) => {
+      if (!matchesActiveRunSnapshot(state, params.snapshot)) {
+        return state;
+      }
+
+      queued = true;
+      return {
+        ...state,
+        classifierDecision: params.classifierDecision?.decision ?? state.classifierDecision,
+        queuedIntentText: params.userRequest,
+        queuedRevision: state.revision,
+      };
+    });
+
+    if (!queued) {
+      this.deps.emitEvent('orchestrator.queue.write_rejected', {
+        channel: params.channel,
+        conversationId: params.conversationId,
+        conversationKey: params.conversationKey,
+        runId: params.snapshot.activeRunId,
+        burstId: params.snapshot.burstId,
+        reason: 'active_run_snapshot_stale',
+        queuedRevision: current.queuedRevision,
+        latestRunId: current.activeRunId,
+        latestRevision: current.revision,
+        latestRunPhase: current.activeRunPhase,
+      });
+    }
+
+    return { queued, current };
   }
 
   async prepareRunWithAdapter(params: {
@@ -209,6 +379,7 @@ export class MessagingOrchestrator {
         burstId: this.deps.createId(),
         windowEndsAt: this.deps.now(),
         classifierDecision: null,
+        priorPack: null,
         droppedSummary: [],
         runPhase: 'running',
       });
@@ -252,6 +423,8 @@ export class MessagingOrchestrator {
 
     if (params.isCommand) {
       const activeRunId = stateAfterInbound.activeRunId;
+      const priorPack =
+        activeRunId ? this.readLocalRunSelectedPack(conversationKey, activeRunId) : null;
       if (activeRunId) {
         this.deps.emitEvent('orchestrator.run.superseded', {
           channel,
@@ -270,6 +443,7 @@ export class MessagingOrchestrator {
         userRequest,
         expectedRevision: stateAfterInbound.revision,
         forceReplace: true,
+        priorPack,
       }).catch((error) => {
         if (isBenignStartConflict(error)) {
           return null;
@@ -291,35 +465,153 @@ export class MessagingOrchestrator {
       };
     }
 
-    if (stateAfterInbound.activeRunId) {
+    let decisionState = stateAfterInbound;
+    let classifierRetryCount = 0;
+    let skipMicroBuffer = false;
+
+    // Invariant: any branch that classifies against an active run must
+    // revalidate the full active-run snapshot before writing back state.
+    while (true) {
+      const activeSnapshot = captureActiveRunSnapshot(decisionState);
+      if (!activeSnapshot) {
+        break;
+      }
+
       const classifierDecision = await this.deps.classify({
-        activeIntentText: stateAfterInbound.latestIntentText,
+        activeIntentText: activeSnapshot.latestIntentText,
         incomingText: userRequest,
       });
 
+      const revalidatedState = await this.deps.readState(conversationKey);
+      if (!matchesActiveRunSnapshot(revalidatedState, activeSnapshot)) {
+        const reason = buildSnapshotMismatchReason(revalidatedState, activeSnapshot);
+        this.emitClassifierDiscarded({
+          channel,
+          conversationId,
+          conversationKey,
+          snapshot: activeSnapshot,
+          currentState: revalidatedState,
+          classifierDecision,
+          reason,
+          retryAttempt: classifierRetryCount,
+        });
+
+        decisionState = revalidatedState;
+        skipMicroBuffer = true;
+
+        if (!decisionState.activeRunId) {
+          this.deps.emitEvent('orchestrator.classifier.promoted_to_fresh_run', {
+            channel,
+            conversationId,
+            conversationKey,
+            priorRunId: activeSnapshot.activeRunId,
+            priorBurstId: activeSnapshot.burstId,
+            reason,
+          });
+
+          const promoted = await this.startFreshRunFromState({
+            channel,
+            conversationId,
+            conversationKey,
+            userRequest,
+            state: decisionState,
+          });
+          if (promoted) {
+            return promoted;
+          }
+
+          return {
+            kind: 'skip',
+            reason: 'superseded_by_newer_message',
+          };
+        }
+
+        if (classifierRetryCount < CLASSIFIER_REVALIDATION_MAX_RETRIES) {
+          classifierRetryCount += 1;
+          continue;
+        }
+
+        const fallbackSnapshot = captureActiveRunSnapshot(decisionState);
+        if (!fallbackSnapshot) {
+          continue;
+        }
+
+        const queuedFallback = await this.queueFollowupForSnapshot({
+          channel,
+          conversationId,
+          conversationKey,
+          snapshot: fallbackSnapshot,
+          userRequest,
+        });
+        if (queuedFallback.queued) {
+          this.markLocalRunQueued(
+            conversationKey,
+            fallbackSnapshot.activeRunId,
+            fallbackSnapshot.windowEndsAt,
+          );
+          return {
+            kind: 'skip',
+            reason: 'queued_followup',
+          };
+        }
+
+        decisionState = queuedFallback.current;
+        if (!decisionState.activeRunId) {
+          this.deps.emitEvent('orchestrator.classifier.promoted_to_fresh_run', {
+            channel,
+            conversationId,
+            conversationKey,
+            priorRunId: activeSnapshot.activeRunId,
+            priorBurstId: activeSnapshot.burstId,
+            reason: 'queue_write_rejected_after_classifier_discard',
+          });
+
+          const promoted = await this.startFreshRunFromState({
+            channel,
+            conversationId,
+            conversationKey,
+            userRequest,
+            state: decisionState,
+          });
+          if (promoted) {
+            return promoted;
+          }
+        }
+
+        return {
+          kind: 'skip',
+          reason: 'superseded_by_newer_message',
+        };
+      }
+
+      decisionState = revalidatedState;
       this.deps.emitEvent('orchestrator.classifier.decision', {
         channel,
         conversationId,
         conversationKey,
-        runId: stateAfterInbound.activeRunId,
+        runId: activeSnapshot.activeRunId,
         decision: classifierDecision.decision,
         confidence: classifierDecision.confidence,
         explanation: classifierDecision.explanation,
       });
 
       if (shouldSupersede(classifierDecision)) {
+        const priorPack = this.readLocalRunSelectedPack(
+          conversationKey,
+          activeSnapshot.activeRunId,
+        );
         this.deps.emitEvent('orchestrator.run.superseded', {
           channel,
           conversationId,
           conversationKey,
-          supersededRunId: stateAfterInbound.activeRunId,
+          supersededRunId: activeSnapshot.activeRunId,
           reason: 'classifier_supersede',
           decision: classifierDecision.decision,
           confidence: classifierDecision.confidence,
         });
         this.abortLocalRun(
           conversationKey,
-          stateAfterInbound.activeRunId,
+          activeSnapshot.activeRunId,
           'superseded_by_newer_message',
         );
 
@@ -328,9 +620,10 @@ export class MessagingOrchestrator {
           conversationId,
           conversationKey,
           userRequest,
-          expectedRevision: stateAfterInbound.revision,
+          expectedRevision: activeSnapshot.revision,
           forceReplace: true,
           classifierDecision,
+          priorPack,
         }).catch((error) => {
           if (isBenignStartConflict(error)) {
             return null;
@@ -355,7 +648,6 @@ export class MessagingOrchestrator {
       }
 
       const cooperativeSteeringEnabled = isCooperativeSteeringEnabled(channel);
-      const activeRunPhase = stateAfterInbound.activeRunPhase ?? 'running';
       const steerCandidateDecision = shouldSteerInRun(classifierDecision, { runPhase: 'running' });
       const explicitFollowupQueue = shouldQueueAsExplicitFollowup(
         classifierDecision,
@@ -366,15 +658,19 @@ export class MessagingOrchestrator {
         cooperativeSteeringEnabled &&
         steerCandidateDecision &&
         !explicitFollowupQueue &&
-        activeRunPhase === 'commit_boundary'
+        activeSnapshot.activeRunPhase === 'commit_boundary'
       ) {
+        const priorPack = this.readLocalRunSelectedPack(
+          conversationKey,
+          activeSnapshot.activeRunId,
+        );
         this.deps.emitEvent('orchestrator.steer.blocked_commit_boundary', {
           channel,
           conversationId,
           conversationKey,
-          runId: stateAfterInbound.activeRunId,
-          burstId: stateAfterInbound.burstId,
-          runPhase: activeRunPhase,
+          runId: activeSnapshot.activeRunId,
+          burstId: activeSnapshot.burstId,
+          runPhase: activeSnapshot.activeRunPhase,
           decision: classifierDecision.decision,
           confidence: classifierDecision.confidence,
         });
@@ -383,14 +679,14 @@ export class MessagingOrchestrator {
           channel,
           conversationId,
           conversationKey,
-          supersededRunId: stateAfterInbound.activeRunId,
+          supersededRunId: activeSnapshot.activeRunId,
           reason: 'steer_blocked_commit_boundary',
           decision: classifierDecision.decision,
           confidence: classifierDecision.confidence,
         });
         this.abortLocalRun(
           conversationKey,
-          stateAfterInbound.activeRunId,
+          activeSnapshot.activeRunId,
           'superseded_by_newer_message',
         );
 
@@ -399,9 +695,10 @@ export class MessagingOrchestrator {
           conversationId,
           conversationKey,
           userRequest,
-          expectedRevision: stateAfterInbound.revision,
+          expectedRevision: activeSnapshot.revision,
           forceReplace: true,
           classifierDecision,
+          priorPack,
         }).catch((error) => {
           if (isBenignStartConflict(error)) {
             return null;
@@ -429,16 +726,13 @@ export class MessagingOrchestrator {
         cooperativeSteeringEnabled &&
         steerCandidateDecision &&
         !explicitFollowupQueue &&
-        activeRunPhase === 'running'
+        activeSnapshot.activeRunPhase === 'running'
       ) {
         const cap = getSteerMailboxCap();
         const appendedAt = this.deps.now();
         let steerPersisted = false;
         const { current } = await this.deps.updateState(conversationKey, (state) => {
-          if (state.activeRunId !== stateAfterInbound.activeRunId) {
-            return state;
-          }
-          if (state.activeRevision !== stateAfterInbound.activeRevision) {
+          if (!matchesActiveRunSnapshot(state, activeSnapshot)) {
             return state;
           }
 
@@ -453,8 +747,12 @@ export class MessagingOrchestrator {
             confidence: classifierDecision.confidence,
           };
 
-          const mailbox = Array.isArray(state.steerMailbox) ? [...state.steerMailbox, nextEvent] : [nextEvent];
-          const droppedSummary = Array.isArray(state.steerDroppedSummary) ? [...state.steerDroppedSummary] : [];
+          const mailbox = Array.isArray(state.steerMailbox)
+            ? [...state.steerMailbox, nextEvent]
+            : [nextEvent];
+          const droppedSummary = Array.isArray(state.steerDroppedSummary)
+            ? [...state.steerDroppedSummary]
+            : [];
 
           if (mailbox.length > cap) {
             const overflow = mailbox.splice(0, mailbox.length - cap);
@@ -478,16 +776,20 @@ export class MessagingOrchestrator {
             channel,
             conversationId,
             conversationKey,
-            runId: stateAfterInbound.activeRunId,
+            runId: activeSnapshot.activeRunId,
             burstId: current.burstId,
-            runPhase: activeRunPhase,
+            runPhase: activeSnapshot.activeRunPhase,
             seq: current.steerSeq,
             cap,
             mailboxSize: current.steerMailbox.length,
             droppedSummaryCount: current.steerDroppedSummary.length,
           });
 
-          this.markLocalRunSteered(conversationKey, stateAfterInbound.activeRunId, stateAfterInbound.windowEndsAt);
+          this.markLocalRunSteered(
+            conversationKey,
+            activeSnapshot.activeRunId,
+            activeSnapshot.windowEndsAt,
+          );
 
           return {
             kind: 'skip',
@@ -496,114 +798,147 @@ export class MessagingOrchestrator {
           };
         }
 
-        const latestState = await this.deps.readState(conversationKey);
-        if (latestState.revision !== stateAfterInbound.revision) {
+        decisionState = await this.deps.readState(conversationKey);
+        skipMicroBuffer = true;
+
+        if (!decisionState.activeRunId) {
+          this.deps.emitEvent('orchestrator.classifier.promoted_to_fresh_run', {
+            channel,
+            conversationId,
+            conversationKey,
+            priorRunId: activeSnapshot.activeRunId,
+            priorBurstId: activeSnapshot.burstId,
+            reason: 'active_run_missing_before_followup_queue',
+          });
+
+          const promoted = await this.startFreshRunFromState({
+            channel,
+            conversationId,
+            conversationKey,
+            userRequest,
+            state: decisionState,
+          });
+          if (promoted) {
+            return promoted;
+          }
+
           return {
             kind: 'skip',
             reason: 'superseded_by_newer_message',
-            classifierDecision,
           };
         }
 
-        if (latestState.activeRunId) {
-          await this.deps.updateState(conversationKey, (state) => {
-            if (state.revision !== stateAfterInbound.revision || !state.activeRunId) {
-              return state;
-            }
-            return {
-              ...state,
-              classifierDecision: classifierDecision.decision,
-              queuedIntentText: userRequest,
-              queuedRevision: state.revision,
-            };
-          });
-
-          this.markLocalRunQueued(
-            conversationKey,
-            latestState.activeRunId,
-            latestState.windowEndsAt,
-          );
-
-          return {
-            kind: 'skip',
-            reason: 'queued_followup',
-            classifierDecision,
-          };
+        if (classifierRetryCount < CLASSIFIER_REVALIDATION_MAX_RETRIES) {
+          classifierRetryCount += 1;
+          continue;
         }
 
-        const start = await this.startRun({
+        const latestActiveSnapshot = captureActiveRunSnapshot(decisionState);
+        if (!latestActiveSnapshot) {
+          continue;
+        }
+
+        const queuedFallback = await this.queueFollowupForSnapshot({
           channel,
           conversationId,
           conversationKey,
+          snapshot: latestActiveSnapshot,
           userRequest,
-          expectedRevision: latestState.revision,
-          forceReplace: false,
-          classifierDecision,
-        }).catch((error) => {
-          if (isBenignStartConflict(error)) {
-            return null;
-          }
-          throw error;
         });
-
-        if (!start) {
+        if (queuedFallback.queued) {
+          this.markLocalRunQueued(
+            conversationKey,
+            latestActiveSnapshot.activeRunId,
+            latestActiveSnapshot.windowEndsAt,
+          );
           return {
             kind: 'skip',
-            reason: 'superseded_by_newer_message',
-            classifierDecision,
+            reason: 'queued_followup',
           };
         }
 
         return {
-          kind: 'start',
-          runContext: start.runContext,
-          userRequest,
+          kind: 'skip',
+          reason: 'superseded_by_newer_message',
+        };
+      }
+
+      const queued = await this.queueFollowupForSnapshot({
+        channel,
+        conversationId,
+        conversationKey,
+        snapshot: activeSnapshot,
+        userRequest,
+        classifierDecision,
+      });
+
+      if (queued.queued) {
+        this.markLocalRunQueued(
+          conversationKey,
+          activeSnapshot.activeRunId,
+          activeSnapshot.windowEndsAt,
+        );
+
+        return {
+          kind: 'skip',
+          reason: 'queued_followup',
           classifierDecision,
         };
       }
 
-      await this.deps.updateState(conversationKey, (state) => ({
-        ...state,
-        classifierDecision: classifierDecision.decision,
-        queuedIntentText: userRequest,
-        queuedRevision: state.revision,
-      }));
+      decisionState = queued.current;
+      skipMicroBuffer = true;
 
-      this.markLocalRunQueued(
-        conversationKey,
-        stateAfterInbound.activeRunId,
-        stateAfterInbound.windowEndsAt,
-      );
+      if (!decisionState.activeRunId) {
+        this.deps.emitEvent('orchestrator.classifier.promoted_to_fresh_run', {
+          channel,
+          conversationId,
+          conversationKey,
+          priorRunId: activeSnapshot.activeRunId,
+          priorBurstId: activeSnapshot.burstId,
+          reason: 'queue_write_rejected_after_classify',
+        });
 
-      return {
-        kind: 'skip',
-        reason: 'queued_followup',
-        classifierDecision,
-      };
-    }
+        const promoted = await this.startFreshRunFromState({
+          channel,
+          conversationId,
+          conversationKey,
+          userRequest,
+          state: decisionState,
+        });
+        if (promoted) {
+          return promoted;
+        }
+      }
 
-    await this.deps.sleep(EA_MICRO_BUFFER_MS);
+      if (classifierRetryCount < CLASSIFIER_REVALIDATION_MAX_RETRIES) {
+        classifierRetryCount += 1;
+        continue;
+      }
 
-    const currentState = await this.deps.readState(conversationKey);
-    if (currentState.revision !== stateAfterInbound.revision || currentState.activeRunId) {
       return {
         kind: 'skip',
         reason: 'superseded_by_newer_message',
       };
     }
 
-    const start = await this.startRun({
+    if (!skipMicroBuffer) {
+      await this.deps.sleep(EA_MICRO_BUFFER_MS);
+      decisionState = await this.deps.readState(conversationKey);
+      if (decisionState.revision !== stateAfterInbound.revision || decisionState.activeRunId) {
+        return {
+          kind: 'skip',
+          reason: 'superseded_by_newer_message',
+        };
+      }
+    }
+
+    const start = await this.startFreshRunFromState({
       channel,
       conversationId,
       conversationKey,
       userRequest,
-      expectedRevision: stateAfterInbound.revision,
-      forceReplace: false,
-    }).catch((error) => {
-      if (isBenignStartConflict(error)) {
-        return null;
-      }
-      throw error;
+      state: decisionState,
     });
 
     if (!start) {
@@ -613,11 +948,7 @@ export class MessagingOrchestrator {
       };
     }
 
-    return {
-      kind: 'start',
-      runContext: start.runContext,
-      userRequest,
-    };
+    return start;
   }
 
   async finalizeRun(params: FinalizeRunParams): Promise<FinalizeResult> {
@@ -639,6 +970,7 @@ export class MessagingOrchestrator {
     const queuedRevision = state.queuedRevision;
 
     if (queuedText && queuedRevision && queuedRevision > runContext.revision) {
+      const priorPack = this.readLocalRunSelectedPack(conversationKey, runContext.runId);
       const start = await this.startRun({
         channel: runContext.channel,
         conversationId: runContext.conversationId,
@@ -646,6 +978,7 @@ export class MessagingOrchestrator {
         userRequest: queuedText,
         expectedRevision: state.revision,
         forceReplace: true,
+        priorPack,
         nextBurstId: this.deps.createId(),
       }).catch((error) => {
         if (isBenignStartConflict(error)) {
@@ -770,6 +1103,17 @@ export class MessagingOrchestrator {
     this.localRuns.delete(conversationKey);
   }
 
+  private readLocalRunSelectedPack(
+    conversationKey: string,
+    runId: string,
+  ): RunPackId | null {
+    const active = this.localRuns.get(conversationKey);
+    if (!active || active.runId !== runId || active.stale) {
+      return null;
+    }
+    return active.selectedPack;
+  }
+
   private abortLocalRun(
     conversationKey: string,
     runId: string,
@@ -798,8 +1142,16 @@ export class MessagingOrchestrator {
       conversationId: record.conversationId,
       conversationKey: record.conversationKey,
       classifierDecision: record.classifierDecision,
+      priorPack: record.priorPack,
       droppedSummary: record.droppedSummary,
       abortSignal: record.abortController.signal,
+      setSelectedPack: (packId: RunPackId) => {
+        const local = this.localRuns.get(record.conversationKey);
+        if (!local || local.runId !== record.runId || local.stale) {
+          return;
+        }
+        local.selectedPack = packId;
+      },
       isRunCurrent: async () => {
         const local = this.localRuns.get(record.conversationKey);
         if (!local || local.runId !== record.runId || local.stale) {
@@ -990,6 +1342,7 @@ export class MessagingOrchestrator {
     burstId: string;
     windowEndsAt: number;
     classifierDecision: RelevanceClassification['decision'] | null;
+    priorPack: RunPackId | null;
     droppedSummary: string[];
     runPhase: RunPhase;
   }): RunContext {
@@ -1018,6 +1371,8 @@ export class MessagingOrchestrator {
       windowEndsAt: params.windowEndsAt,
       hasQueuedFollowup: false,
       classifierDecision: params.classifierDecision,
+      priorPack: params.priorPack,
+      selectedPack: null,
       droppedSummary: [...params.droppedSummary],
       runPhase: params.runPhase,
       stale: false,
@@ -1035,6 +1390,7 @@ export class MessagingOrchestrator {
     expectedRevision: number;
     forceReplace: boolean;
     classifierDecision?: RelevanceClassification;
+    priorPack?: RunPackId | null;
     nextBurstId?: string;
   }): Promise<{ runContext: RunContext }> {
     const runId = this.deps.createId();
@@ -1054,8 +1410,8 @@ export class MessagingOrchestrator {
         activeRunId: runId,
         activeRevision: state.revision,
         activeRunPhase: 'running',
-        latestIntentText: params.userRequest,
-        classifierDecision: params.classifierDecision?.decision ?? state.classifierDecision,
+        latestIntentText: params.classifierDecision?.latestIntentText ?? params.userRequest,
+        classifierDecision: params.classifierDecision?.decision ?? null,
         pendingCount: 0,
         queuedIntentText: null,
         queuedRevision: null,
@@ -1074,6 +1430,7 @@ export class MessagingOrchestrator {
       burstId: current.burstId,
       windowEndsAt: current.windowEndsAt,
       classifierDecision: current.classifierDecision,
+      priorPack: params.priorPack ?? null,
       droppedSummary: current.droppedSummary,
       runPhase: current.activeRunPhase ?? 'running',
     });

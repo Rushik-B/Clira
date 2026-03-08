@@ -3,6 +3,9 @@ import type {
   ProgressUpdateContext,
 } from '@/lib/ai/tools/sendProgressUpdate';
 import type {
+  InboxSearchToolArgs,
+} from '@/lib/services/inbox-search/types';
+import type {
   ConversationMessageDTO,
 } from '@/lib/ai/schemas/executiveAgentSchemas';
 import type { Prisma, PendingCalendarChangeStatus } from '@prisma/client';
@@ -28,7 +31,16 @@ export interface ExecutiveAgentInput {
     runId: string;
     burstId: string;
     classifierDecision?: 'supersede' | 'followup' | 'ambiguous' | null;
+    priorPack?:
+      | 'core_recall_pack'
+      | 'inbox_context_pack'
+      | 'calendar_query_pack'
+      | 'calendar_mutation_pack'
+      | 'reminder_alert_pack'
+      | 'email_send_pack'
+      | null;
     droppedSummary?: string[];
+    setSelectedPack?: (packId: ToolPackId) => void;
     isRunCurrent: () => Promise<boolean>;
     isBurstStable: () => boolean;
     consumeSteerEvents?: (afterSeq: number) => Promise<ConsumeSteerEventsResult>;
@@ -143,20 +155,7 @@ export interface PromptContext {
   currentDateUserTzDateOnly: string;
 }
 
-export type SearchInboxContextArgs = {
-  mode?: 'quick' | 'deep';
-  intent: string;
-  constraints?: {
-    sender?: string;
-    recipient?: string;
-    keywords?: string[];
-    subject?: string;
-    timeWindow?: 'recent' | 'last_month' | 'last_year' | 'all_time';
-    startDate?: string;
-    endDate?: string;
-    hasAttachment?: boolean;
-  };
-};
+export type SearchInboxContextArgs = InboxSearchToolArgs;
 
 export type RetrievalProfile = 'default' | 'messaging';
 
