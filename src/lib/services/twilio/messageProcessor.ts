@@ -393,6 +393,13 @@ export async function processTwilioMessage(
   });
 
   if (orchestrationDecision.kind === 'skip') {
+    logger.info('[messageProcessor] Orchestrator skip accepted as terminal', {
+      channel: 'twilio',
+      conversationId: conversation.id,
+      from: `${from.slice(0, 4)}****`,
+      messageSid,
+      reason: orchestrationDecision.reason,
+    });
     return { success: true, response: '' };
   }
 

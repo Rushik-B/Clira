@@ -408,6 +408,12 @@ export async function processTelegramMessage(
   });
 
   if (orchestrationDecision.kind === 'skip') {
+    logger.info('[telegramProcessor] Orchestrator skip accepted as terminal', {
+      conversationId: conversation.id,
+      chatId,
+      messageId,
+      reason: orchestrationDecision.reason,
+    });
     return { success: true, response: '' };
   }
 

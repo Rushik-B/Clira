@@ -522,6 +522,13 @@ export async function processWhatsAppMessage(
   });
 
   if (orchestrationDecision.kind === 'skip') {
+    logger.info('[messageProcessor] Orchestrator skip accepted as terminal', {
+      channel: 'whatsapp',
+      conversationId: conversation.id,
+      waId: `${waId.slice(0, 4)}****`,
+      messageId,
+      reason: orchestrationDecision.reason,
+    });
     return { success: true, response: '' };
   }
 
