@@ -12,27 +12,11 @@ import type {
 
 export async function processInboxIndexJob(job: Job<InboxIndexJobData>) {
   const { userId, mailboxId, messageId } = job.data;
-  logger.info('[InboxSearchWorker] realtime index start', {
-    jobId: job.id,
-    userId,
-    mailboxId,
-    messageId,
-  });
 
   const result = await indexStoredInboxEmail({
     userId,
     mailboxId,
     messageId,
-  });
-
-  logger.info('[InboxSearchWorker] realtime index complete', {
-    jobId: job.id,
-    userId,
-    mailboxId,
-    messageId,
-    status: result.status,
-    documentId: result.documentId,
-    chunkCount: result.chunkCount,
   });
 
   return result;

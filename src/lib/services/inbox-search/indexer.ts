@@ -178,12 +178,5 @@ export async function indexInboxSearchEmail(
     }
   }
 
-  logger.info('[InboxSearchIndexer] indexed email', {
-    mailboxId: email.mailboxId,
-    messageId: email.messageId,
-    documentId: result.documentId,
-    chunkCount: result.chunkCount,
-  });
-
   return result;
 }

@@ -1357,8 +1357,9 @@ workers.forEach((worker, index) => {
     'supermemoryBootstrap',  // 13: supermemoryBootstrapWorker
   ];
   const name = workerNames[index] ?? `unknown-${index}`;
-  
+
   worker.on('completed', (job: any) => {
+    if (name === 'inboxIndex') return; // Skip noisy inbox-index completion logs
     console.log(`✅ [${name.toUpperCase()}] Job ${job.id} completed`);
   });
   
