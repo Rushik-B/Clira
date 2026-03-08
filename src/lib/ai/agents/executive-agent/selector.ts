@@ -853,9 +853,6 @@ export async function selectExecutiveToolPackForTurn(params: {
     }
     if (cacheKey) {
       setCachedBurstPack(cacheKey, safePack);
-      // #region agent log
-      if (process.env.NODE_ENV !== 'test') fetch('http://127.0.0.1:7323/ingest/e7802cbc-6047-4a50-845a-416b4765b5c3',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'04f813'},body:JSON.stringify({sessionId:'04f813',runId:params.input.runContext?.runId ?? 'none',hypothesisId:'H3',location:'src/lib/ai/agents/executive-agent/selector.ts:847',message:'selector cached successful pack for burst',data:{channel:params.features.channel,burstId:params.input.runContext?.burstId ?? null,safePack},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
     }
 
     return buildSelection(
@@ -870,9 +867,6 @@ export async function selectExecutiveToolPackForTurn(params: {
       /(?:\b429\b|rate[\s_-]?limit|too_many_requests|queue_exceeded)/i.test(errorMessage);
     const cachedPack = cacheKey ? selectorBurstPackCache.get(cacheKey) : undefined;
     if (isRateLimited && cachedPack) {
-      // #region agent log
-      if (process.env.NODE_ENV !== 'test') fetch('http://127.0.0.1:7323/ingest/e7802cbc-6047-4a50-845a-416b4765b5c3',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'04f813'},body:JSON.stringify({sessionId:'04f813',runId:params.input.runContext?.runId ?? 'none',hypothesisId:'H3',location:'src/lib/ai/agents/executive-agent/selector.ts:860',message:'selector fallback reused cached burst pack',data:{channel:params.features.channel,burstId:params.input.runContext?.burstId ?? null,cachedPack,error:errorMessage.slice(0,180)},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
       return buildSelection(
         cachedPack,
         ['selector rate-limited; reused cached pack for current burst'],
@@ -884,9 +878,6 @@ export async function selectExecutiveToolPackForTurn(params: {
       deterministic.packId === 'core_recall_pack' &&
       params.input.runContext?.priorPack
     ) {
-      // #region agent log
-      if (process.env.NODE_ENV !== 'test') fetch('http://127.0.0.1:7323/ingest/e7802cbc-6047-4a50-845a-416b4765b5c3',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'04f813'},body:JSON.stringify({sessionId:'04f813',runId:params.input.runContext?.runId ?? 'none',hypothesisId:'H2',location:'src/lib/ai/agents/executive-agent/selector.ts:876',message:'selector fallback inherited prior pack from superseded run',data:{channel:params.features.channel,burstId:params.input.runContext?.burstId ?? null,priorPack:params.input.runContext.priorPack,error:errorMessage.slice(0,180)},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
       return buildSelection(
         params.input.runContext.priorPack,
         ['inherited prior pack from superseded run'],
@@ -897,9 +888,6 @@ export async function selectExecutiveToolPackForTurn(params: {
     logger.warn('[executiveAgent] selector.llm_failed_fallback', {
       error: errorMessage,
     });
-    // #region agent log
-    if (process.env.NODE_ENV !== 'test') fetch('http://127.0.0.1:7323/ingest/e7802cbc-6047-4a50-845a-416b4765b5c3',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'04f813'},body:JSON.stringify({sessionId:'04f813',runId:params.input.runContext?.runId ?? 'none',hypothesisId:'H3',location:'src/lib/ai/agents/executive-agent/selector.ts:891',message:'selector fallback used deterministic pack',data:{channel:params.features.channel,burstId:params.input.runContext?.burstId ?? null,deterministicPack:deterministic.packId,error:errorMessage.slice(0,180)},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
     return deterministic;
   }
 }
