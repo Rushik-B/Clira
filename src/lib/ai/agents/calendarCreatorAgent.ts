@@ -111,6 +111,13 @@ function formatValidationIssues(error: z.ZodError): string {
     .join(' | ');
 }
 
+function isAbortLike(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error.name === 'AbortError' || /deadline exceeded|aborted|abort/i.test(error.message))
+  );
+}
+
 function mapLlmOutputToPlan(raw: LlmPlanOutput): CalendarCreatorPlanDTO {
   const shared = {
     confidence: raw.confidence ?? 70,
@@ -264,6 +271,7 @@ export async function runCalendarCreatorAgent(
       schema: CalendarCreatorLlmSchema,
       temperature: 0.15,
       abortSignal: context.abortSignal,
+      providerOptions: { google: { thinkingConfig: { thinkingBudget: 0 } } },
       op: 'calendar.creator',
       concurrency: { key: 'calendar.creator', maxConcurrency: 4 },
       retry: { maxAttempts: 2, baseDelayMs: 500 },
@@ -288,6 +296,9 @@ export async function runCalendarCreatorAgent(
 
     return validated.data;
   } catch (error) {
+    if (isAbortLike(error)) {
+      throw error;
+    }
     const message = error instanceof Error ? error.message : 'Unknown error';
     logger.error(`[calendarCreatorAgent] Planning failed: ${message}`);
     return createFallbackPlan(message);

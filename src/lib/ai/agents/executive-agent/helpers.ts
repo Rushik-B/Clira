@@ -83,6 +83,16 @@ export function buildTerminalFallbackResponse(toolResults: unknown): string {
     return 'I could not complete that calendar change.';
   }
 
+  const planResult = extractLatestToolResult(toolResults, 'plan_calendar_change');
+  if (planResult) {
+    const previewText = planResult.previewText;
+    if (typeof previewText === 'string' && previewText.trim()) return previewText;
+    const message = planResult.message;
+    if (typeof message === 'string' && message.trim()) return message;
+    if (planResult.ok === true) return 'I planned that calendar change.';
+    return 'I could not plan that calendar change. Please try again.';
+  }
+
   return "I couldn't generate a response. Please try again.";
 }
 
@@ -825,6 +835,7 @@ export async function runWithSubagentBudget<T>({
   abortSignal,
   toolCallIndex,
   minBudgetMs,
+  maxBudgetMs,
   uncappedBudget,
   run,
 }: {
@@ -835,20 +846,36 @@ export async function runWithSubagentBudget<T>({
   toolCallIndex: number;
   /** Optional minimum budget for tools that need more time (e.g. plan_calendar_change). */
   minBudgetMs?: number;
+  /** Optional hard cap for this subagent even when more run time remains. */
+  maxBudgetMs?: number;
   /** When true with minBudgetMs, use minBudgetMs as-is without capping by available time. */
   uncappedBudget?: boolean;
   run: (params: { abortSignal?: AbortSignal; deadlineAt?: number; budgetMs?: number }) => Promise<T>;
 }): Promise<T | ReturnType<typeof buildToolBudgetExceededResult>> {
+  const availableBudgetMs =
+    timeLeftMs !== null ? Math.max(0, timeLeftMs - MESSAGING_TOOL_RESPONSE_BUFFER_MS) : null;
   let { budgetMs, tooLow } = computeSubagentBudget(timeLeftMs, toolCallIndex);
   if (typeof minBudgetMs === 'number' && budgetMs !== null && budgetMs < minBudgetMs) {
     if (uncappedBudget) {
       budgetMs = minBudgetMs;
     } else {
-      const available = timeLeftMs !== null ? Math.max(0, timeLeftMs - MESSAGING_TOOL_RESPONSE_BUFFER_MS) : 0;
+      const available = availableBudgetMs ?? 0;
       budgetMs = Math.min(minBudgetMs, available);
     }
-    tooLow = budgetMs < MESSAGING_MIN_SUBAGENT_BUDGET_MS;
   }
+
+  if (typeof maxBudgetMs === 'number' && budgetMs !== null) {
+    budgetMs = Math.min(budgetMs, maxBudgetMs);
+  }
+
+  // Never grant a subagent more time than the parent run has left after reserving
+  // a small response buffer. This prevents late-turn retries from firing when the
+  // enclosing run is already effectively out of time.
+  if (availableBudgetMs !== null && budgetMs !== null) {
+    budgetMs = Math.min(budgetMs, availableBudgetMs);
+  }
+
+  tooLow = budgetMs !== null && budgetMs < MESSAGING_MIN_SUBAGENT_BUDGET_MS;
 
   if (tooLow) {
     logger.warn(

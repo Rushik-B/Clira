@@ -534,6 +534,7 @@ export function buildContextTools({
             abortSignal: toolAbortSignal,
             toolCallIndex,
             minBudgetMs: CALENDAR_SEARCH_MIN_BUDGET_MS,
+            maxBudgetMs: CALENDAR_SEARCH_MIN_BUDGET_MS,
             uncappedBudget: true,
             run: (budgetContext) =>
               runCalendarSearch(

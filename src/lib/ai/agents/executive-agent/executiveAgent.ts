@@ -297,7 +297,11 @@ export class ExecutiveAgent {
         timedTools as Record<string, any>,
       );
 
-      const stopConditions = [stopWhenToolCalled('send_email')];
+      const stopConditions = [
+        stopWhenToolCalled('send_email'),
+        stopWhenToolCalled('plan_calendar_change'),
+        stopWhenToolCalled('commit_calendar_change'),
+      ];
 
       const isNotificationFlow =
         input.userRequest.startsWith('REMINDER DELIVERY:') ||
