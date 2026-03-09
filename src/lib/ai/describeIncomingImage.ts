@@ -4,9 +4,10 @@
  * No image is stored; the buffer is used only for this single request.
  */
 
-import { generateText } from 'ai';
+import { callTextWithMessages } from '@/lib/ai/callLlm';
 import { models } from '@/lib/ai/models';
 import { logger } from '@/lib/logger';
+import type { AiTraceContext } from '@/lib/ai/tracing';
 
 const IMAGE_DESCRIPTION_PROMPT = `The user sent an image in WhatsApp.
 
@@ -33,13 +34,13 @@ Format your output as:
 export async function describeIncomingImage(
   imageBuffer: Buffer,
   mimeType: string,
-  options?: { abortSignal?: AbortSignal },
+  options?: { abortSignal?: AbortSignal; traceContext?: AiTraceContext },
 ): Promise<string> {
   const model = models.flash();
   const start = Date.now();
 
   try {
-    const { text } = await generateText({
+    const { text } = await callTextWithMessages({
       model,
       messages: [
         {
@@ -55,6 +56,10 @@ export async function describeIncomingImage(
         },
       ],
       abortSignal: options?.abortSignal,
+      traceContext: options?.traceContext,
+      op: 'messaging.describe-image',
+      concurrency: { key: 'messaging.describe-image', maxConcurrency: 2 },
+      retry: { maxAttempts: 2, baseDelayMs: 400 },
     });
 
     logger.info(

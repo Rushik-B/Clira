@@ -4,9 +4,10 @@
  * No audio is stored; the buffer is used only for this single request.
  */
 
-import { generateText } from 'ai';
+import { callTextWithMessages } from '@/lib/ai/callLlm';
 import { models } from '@/lib/ai/models';
 import { logger } from '@/lib/logger';
+import type { AiTraceContext } from '@/lib/ai/tracing';
 
 const TRANSCRIPT_PROMPT =
   'The user sent this voice memo. Transcribe exactly what they said. Reply with only the transcription, no preamble or labels.';
@@ -22,12 +23,12 @@ const TRANSCRIPT_PROMPT =
 export async function transcribeVoiceMemo(
   audioBuffer: Buffer,
   mimeType: string,
-  options?: { abortSignal?: AbortSignal },
+  options?: { abortSignal?: AbortSignal; traceContext?: AiTraceContext },
 ): Promise<string> {
   const model = models.flash();
   const start = Date.now();
   try {
-    const { text } = await generateText({
+    const { text } = await callTextWithMessages({
       model,
       messages: [
         {
@@ -43,6 +44,10 @@ export async function transcribeVoiceMemo(
         },
       ],
       abortSignal: options?.abortSignal,
+      traceContext: options?.traceContext,
+      op: 'messaging.transcribe-voice',
+      concurrency: { key: 'messaging.transcribe-voice', maxConcurrency: 2 },
+      retry: { maxAttempts: 2, baseDelayMs: 400 },
     });
     logger.info(
       `[transcribeVoiceMemo] done in ${Date.now() - start}ms length=${audioBuffer.length} mime=${mimeType}`,

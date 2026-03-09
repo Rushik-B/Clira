@@ -58,6 +58,13 @@ import {
   writeTelegramWorkerHeartbeat,
 } from '@/lib/services/telegram';
 import { processInboxIndexJob } from '@/lib/services/inbox-search/worker-handlers';
+import {
+  createAiTraceRoot,
+  deriveOutputPreview,
+  deriveRunStatusFromError,
+  finalizeAiTraceRun,
+  withAiTraceSpan,
+} from '@/lib/ai/tracing';
 
 console.log('🚀 Background Worker process started...');
 console.log('🔧 Environment variables loaded:');
@@ -344,13 +351,31 @@ const replyWorker = new Worker<ReplyGenerationJobData>('reply-generation', async
 
     job.updateProgress(30);
 
+    const traceContext = await createAiTraceRoot({
+      runId: `reply-job:${job.id}`,
+      pipeline: 'reply-generation',
+      userId,
+      channel: 'email',
+      emailId,
+      mailboxId: email.mailboxId ?? undefined,
+      externalMessageId: email.messageId,
+      label: 'worker.replyGeneration',
+      inputPreview: `${email.subject} <- ${email.from}`,
+      metadata: {
+        source: 'worker.replyGeneration',
+        bullmqJobId: job.id,
+      },
+    });
+
     // Generate the reply
     const replyGenerator = new ReplyGeneratorService();
     const replyResult = await replyGenerator.generateReply({
       userId: userId,
+      emailId,
       mailboxId: email.mailboxId ?? undefined,
       gmailMessageId: email.messageId, // Gmail message ID for label application
       currentLabelIds: [], // Labels not stored in DB; will be fetched by planner if needed
+      traceContext,
       incomingEmail: {
         from: email.from,
         to: email.to,
@@ -397,17 +422,33 @@ const replyWorker = new Worker<ReplyGenerationJobData>('reply-generation', async
 
         // No dedicated AI label tagging on source message
 
-          const draftResult = await gmailResult.gmail.createDraftReply({
-          to: email.from,
-          cc: replyResult.ccRecipients || [],
-          subject: email.subject.startsWith('Re: ') ? email.subject : `Re: ${email.subject}`,
-          body: trimmed,
-          inReplyTo: email.rfc2822MessageId || undefined,
-          references: email.references || undefined,
-          threadId: email.gmailThreadId || undefined,
-            // No dedicated AI label on drafts
-            labelIds: undefined,
-        });
+        const draftResult = await withAiTraceSpan(
+          traceContext,
+          {
+            kind: 'STAGE',
+            name: 'create-gmail-draft',
+            input: {
+              to: email.from,
+              cc: replyResult.ccRecipients || [],
+              subject: email.subject,
+              threadId: email.gmailThreadId || undefined,
+            },
+          },
+          async () => {
+            const result = await gmailResult.gmail.createDraftReply({
+              to: email.from,
+              cc: replyResult.ccRecipients || [],
+              subject: email.subject.startsWith('Re: ') ? email.subject : `Re: ${email.subject}`,
+              body: trimmed,
+              inReplyTo: email.rfc2822MessageId || undefined,
+              references: email.references || undefined,
+              threadId: email.gmailThreadId || undefined,
+              // No dedicated AI label on drafts
+              labelIds: undefined,
+            });
+            return { result, output: result };
+          },
+        );
 
         gmailDraftId = draftResult.draftId;
         console.log(`✅ Gmail draft created in worker: ${gmailDraftId} for email ${emailId}`);
@@ -454,6 +495,15 @@ const replyWorker = new Worker<ReplyGenerationJobData>('reply-generation', async
 
     job.updateProgress(100);
     console.log(`[REPLY COMPLETE] Reply generated for email ${emailId} with ${replyResult.confidence}% confidence`);
+
+    await finalizeAiTraceRun(traceContext, {
+      status: 'OK',
+      outputPreview: deriveOutputPreview(replyResult.reply),
+      metadata: {
+        confidence: replyResult.confidence,
+        gmailDraftId,
+      },
+    });
     
     return {
       emailId,
@@ -462,6 +512,22 @@ const replyWorker = new Worker<ReplyGenerationJobData>('reply-generation', async
     };
   } catch (error) {
     console.error(`[REPLY FAILED] Reply generation failed for email ${emailId}:`, error);
+    await finalizeAiTraceRun(
+      await createAiTraceRoot({
+        runId: `reply-job:${job.id}`,
+        pipeline: 'reply-generation',
+        userId,
+        channel: 'email',
+        emailId,
+        label: 'worker.replyGeneration',
+        inputPreview: `reply job ${emailId}`,
+      }),
+      {
+        status: deriveRunStatusFromError(error),
+        outputPreview: null,
+        errorMessage: error instanceof Error ? error.message : String(error),
+      },
+    );
     throw error;
   }
 }, { 
