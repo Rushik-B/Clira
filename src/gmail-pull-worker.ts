@@ -1,4 +1,5 @@
 import { config } from 'dotenv';
+import { access } from 'fs/promises';
 import { resolve } from 'path';
 
 config({ path: resolve(__dirname, '../.env') });
@@ -19,12 +20,30 @@ let worker: GmailPullWorker | null = null;
 let heartbeatInterval: NodeJS.Timeout | null = null;
 let shuttingDown = false;
 
+async function validateGoogleApplicationCredentials(): Promise<void> {
+  const credentialsPath = process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim();
+  if (!credentialsPath) {
+    return;
+  }
+
+  try {
+    await access(credentialsPath);
+  } catch (error) {
+    throw new Error(
+      `GOOGLE_APPLICATION_CREDENTIALS points to an unreadable path: ${credentialsPath}`,
+      { cause: error },
+    );
+  }
+}
+
 async function start(): Promise<void> {
   const mode = getGmailIngestionMode();
   if (mode !== 'pull') {
     logger.info('[GmailPullWorker] Ingestion mode is not pull; exiting process', { mode });
     process.exit(0);
   }
+
+  await validateGoogleApplicationCredentials();
 
   const pullConfig = getGmailPullRuntimeConfig();
   worker = new GmailPullWorker({
