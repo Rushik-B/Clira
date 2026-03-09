@@ -19,6 +19,12 @@ import { transcribeVoiceMemo } from '@/lib/ai/transcribeVoiceMemo';
 import { describeIncomingImage } from '@/lib/ai/describeIncomingImage';
 import type { ProgressUpdateContext } from '@/lib/ai/tools/sendProgressUpdate';
 import {
+  createAiTraceRoot,
+  deriveOutputPreview,
+  deriveRunStatusFromError,
+  finalizeAiTraceRun,
+} from '@/lib/ai/tracing';
+import {
   getConversationManager,
   getPairingManager,
   getTelegramClient,
@@ -531,9 +537,35 @@ async function runExecutiveAgent(
 ): Promise<ProcessMessageResult> {
   const conversationManager = getConversationManager();
   const agent = getExecutiveAgent();
+  let traceContext = options?.runContext?.runId
+    ? await createAiTraceRoot({
+        runId: options.runContext.runId,
+        pipeline: 'executive-agent',
+        userId,
+        channel: 'telegram',
+        conversationId,
+        inputPreview: userRequest,
+        metadata: {
+          source: 'telegram.messageProcessor',
+          bootstrapped: true,
+        },
+      })
+    : undefined;
 
   try {
     const recentMessages = await conversationManager.getRecentMessages(conversationId, 15);
+    traceContext = traceContext ?? await createAiTraceRoot({
+      runId: options?.runContext?.runId,
+      pipeline: 'executive-agent',
+      userId,
+      channel: 'telegram',
+      conversationId,
+      inputPreview: userRequest,
+      metadata: {
+        source: 'telegram.messageProcessor',
+        historyLength: recentMessages.length,
+      },
+    });
     const conversationHistory = recentMessages.map((msg) => ({
       id: msg.id,
       content: msg.content,
@@ -553,6 +585,7 @@ async function runExecutiveAgent(
       channel: 'telegram',
       conversationHistory,
       progressContext: options?.progressContext,
+      traceContext,
       abortSignal: options?.abortSignal,
       runContext: options?.runContext
         ? {
@@ -572,6 +605,16 @@ async function runExecutiveAgent(
         : undefined,
     });
 
+    await finalizeAiTraceRun(traceContext, {
+      status: agentResult.status === 'ok' ? 'OK' : 'FALLBACK',
+      outputPreview: deriveOutputPreview(agentResult.response),
+      errorMessage: agentResult.status === 'ok' ? null : agentResult.error ?? 'Executive Agent fallback',
+      metadata: {
+        memoryStored: agentResult.memoryStored,
+        agentStatus: agentResult.status,
+      },
+    });
+
     return {
       success: agentResult.status === 'ok',
       response: agentResult.response,
@@ -579,6 +622,13 @@ async function runExecutiveAgent(
       metadata: agentResult.metadata,
     };
   } catch (error) {
+    if (traceContext) {
+      await finalizeAiTraceRun(traceContext, {
+        status: deriveRunStatusFromError(error),
+        outputPreview: null,
+        errorMessage: error instanceof Error ? error.message : String(error),
+      });
+    }
     if (isAbortError(error)) {
       throw error;
     }

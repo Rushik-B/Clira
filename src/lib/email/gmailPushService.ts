@@ -11,6 +11,13 @@ import { encryptEmailContent, encryptThreadContent, decryptEmailContent, decrypt
 import { triggerAlertNotification } from '@/lib/services/alertNotificationService';
 import { enqueueInboxIndexJob } from '@/lib/services/inbox-search';
 // AI queue label removed: no longer creating/applying a dedicated Gmail label
+import {
+  createAiTraceRoot,
+  deriveOutputPreview,
+  deriveRunStatusFromError,
+  finalizeAiTraceRun,
+  withAiTraceSpan,
+} from '@/lib/ai/tracing';
 
 export interface PushNotificationPayload {
   emailAddress: string;
@@ -869,12 +876,29 @@ export class GmailPushService {
                   console.warn(`⚠️ Failed to emit queue:start for email ${savedEmail.id}:`, e);
                 }
 
+                const traceContext = await createAiTraceRoot({
+                  runId: `gmail-push:${savedEmail.id}`,
+                  pipeline: 'reply-generation',
+                  userId: user.id,
+                  channel: 'email',
+                  emailId: savedEmail.id,
+                  mailboxId: mailbox.id,
+                  externalMessageId: emailData.gmailMessageId,
+                  label: 'gmail-push',
+                  inputPreview: `${emailData.subject} <- ${emailData.from}`,
+                  metadata: {
+                    source: 'gmailPushService',
+                  },
+                });
+
                 const generatedReply = await replyGenerator.generateReply({
                   userId: user.id,
+                  emailId: savedEmail.id,
                   mailboxId: mailbox.id,
                   mailboxEmail: mailbox.emailAddress,
                   gmailMessageId: emailData.gmailMessageId,
                   currentLabelIds: emailData.labelIds || [],
+                  traceContext,
                   incomingEmail: {
                     from: emailData.from,
                     to: emailData.to,
@@ -895,17 +919,33 @@ export class GmailPushService {
                     console.warn(`🚫 Gmail drafts feature flag disabled; skipping draft persistence for email ${savedEmail.id}`);
                   } else {
                     try {
-                      const draftResult = await gmailService.createDraftReply({
-                        to: emailData.from,
-                        cc: generatedReply.ccRecipients || [],
-                        subject: emailData.subject.startsWith('Re: ') ? emailData.subject : `Re: ${emailData.subject}`,
-                        body: draftText,
-                        inReplyTo: emailData.rfc2822MessageId || undefined,
-                        references: emailData.references || undefined,
-                        threadId: emailData.gmailThreadId || undefined,
-                        // No dedicated AI label applied to drafts
-                        labelIds: undefined,
-                      });
+                      const draftResult = await withAiTraceSpan(
+                        traceContext,
+                        {
+                          kind: 'STAGE',
+                          name: 'create-gmail-draft',
+                          input: {
+                            to: emailData.from,
+                            cc: generatedReply.ccRecipients || [],
+                            subject: emailData.subject,
+                            threadId: emailData.gmailThreadId || undefined,
+                          },
+                        },
+                        async () => {
+                          const result = await gmailService.createDraftReply({
+                            to: emailData.from,
+                            cc: generatedReply.ccRecipients || [],
+                            subject: emailData.subject.startsWith('Re: ') ? emailData.subject : `Re: ${emailData.subject}`,
+                            body: draftText,
+                            inReplyTo: emailData.rfc2822MessageId || undefined,
+                            references: emailData.references || undefined,
+                            threadId: emailData.gmailThreadId || undefined,
+                            // No dedicated AI label applied to drafts
+                            labelIds: undefined,
+                          });
+                          return { result, output: result };
+                        },
+                      );
                       gmailDraftId = draftResult.draftId;
                       console.log(`✅ Gmail draft created for email ${savedEmail.id}: ${gmailDraftId}`);
                     } catch (draftError) {
@@ -949,6 +989,15 @@ export class GmailPushService {
                       }
                     }
 
+                    await finalizeAiTraceRun(traceContext, {
+                      status: 'OK',
+                      outputPreview: deriveOutputPreview(generatedReply.reply),
+                      metadata: {
+                        confidence: generatedReply.confidence,
+                        gmailDraftId,
+                      },
+                    });
+
                     // Emit SSE ready event so UI triggers a refetch
                     try {
                     emitQueueEvent({
@@ -962,6 +1011,14 @@ export class GmailPushService {
                       console.warn(`⚠️ Failed to emit queue:ready for email ${savedEmail.id}:`, e);
                     }
                   } else {
+                    await finalizeAiTraceRun(traceContext, {
+                      status: 'ERROR',
+                      outputPreview: deriveOutputPreview(generatedReply.reply),
+                      errorMessage: 'gmail_draft_creation_failed',
+                      metadata: {
+                        confidence: generatedReply.confidence,
+                      },
+                    });
                     try {
                       emitQueueEvent({
                         type: 'fail',
@@ -974,6 +1031,14 @@ export class GmailPushService {
                     } catch {}
                   }
                 } else {
+                  await finalizeAiTraceRun(traceContext, {
+                    status: 'FALLBACK',
+                    outputPreview: deriveOutputPreview(generatedReply.reply),
+                    errorMessage: 'draft_not_persisted',
+                    metadata: {
+                      confidence: generatedReply.confidence,
+                    },
+                  });
                   console.log(
                     `⚠️ Skipping persist for email ${savedEmail.id} — ` +
                     (draftText.length === 0
@@ -996,6 +1061,24 @@ export class GmailPushService {
                 }
               } catch (replyError) {
                 console.error(`❌ Error generating reply for email ${savedEmail.id}:`, replyError);
+                await finalizeAiTraceRun(
+                  await createAiTraceRoot({
+                    runId: `gmail-push:${savedEmail.id}`,
+                    pipeline: 'reply-generation',
+                    userId: user.id,
+                    channel: 'email',
+                    emailId: savedEmail.id,
+                    mailboxId: mailbox.id,
+                    externalMessageId: emailData.gmailMessageId,
+                    label: 'gmail-push',
+                    inputPreview: `${emailData.subject} <- ${emailData.from}`,
+                  }),
+                  {
+                    status: deriveRunStatusFromError(replyError),
+                    outputPreview: null,
+                    errorMessage: replyError instanceof Error ? replyError.message : String(replyError),
+                  },
+                );
                 try {
                   emitQueueEvent({
                     type: 'fail',
