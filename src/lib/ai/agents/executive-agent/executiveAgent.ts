@@ -402,7 +402,7 @@ export class ExecutiveAgent {
 
       let response = (text || '').trim();
       if (!response) {
-        response = buildTerminalFallbackResponse(toolResults);
+        response = buildTerminalFallbackResponse(toolResults, steps);
         logger.info(`[executiveAgent] Empty model text, using fallback: ${response}`);
       }
       const sanitizedResponse = stripInternalMetadataFromAssistantResponse(response);
@@ -411,7 +411,7 @@ export class ExecutiveAgent {
       }
       response = sanitizedResponse.response;
       if (!response) {
-        response = buildTerminalFallbackResponse(toolResults);
+        response = buildTerminalFallbackResponse(toolResults, steps);
         logger.warn(`[executiveAgent] Sanitized response became empty, using fallback: ${response}`);
       }
       workingStateController.updateFromResponse(response);

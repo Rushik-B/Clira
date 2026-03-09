@@ -6,11 +6,13 @@ export const MESSAGING_MIN_SUBAGENT_BUDGET_MS = 8_000;
 export const PLAN_CALENDAR_CHANGE_MIN_BUDGET_MS = 35_000;
 export const CALENDAR_SEARCH_MIN_BUDGET_MS = 35_000;
 export const MESSAGING_MAX_STEPS = 6;
-export const MESSAGING_MAX_TOOL_CALLS_TOTAL = 10;
+/** Total tool calls per run. Per-tool limits in MESSAGING_TOOL_BUDGETS_BASE must stay below this. */
+export const MESSAGING_MAX_TOOL_CALLS_TOTAL = 70;
 export const PENDING_CALENDAR_CHANGE_TTL_MS = 10 * 60 * 1000;
 
+/** Per-tool call limits. Sum of used tools is also capped by MESSAGING_MAX_TOOL_CALLS_TOTAL. */
 export const MESSAGING_TOOL_BUDGETS_BASE: Record<string, number> = {
-  search_inbox_context: 2,
+  search_inbox_context: 4,
   search_calendar: 2,
   check_calendar: 1,
   search_memory: 3,
@@ -31,5 +33,5 @@ export const MESSAGING_TOOL_BUDGETS_BASE: Record<string, number> = {
 
 export const MESSAGING_INBOX_CALL_LIMITS: Record<'quick' | 'deep', number> = {
   quick: 2,
-  deep: 1,
+  deep: 2,
 };

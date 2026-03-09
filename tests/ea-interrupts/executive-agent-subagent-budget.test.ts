@@ -113,4 +113,22 @@ describe('buildTerminalFallbackResponse', () => {
       'Proposed deletion: deadline on March 8. Reply to confirm and I will delete it.',
     );
   });
+
+  test('uses nested step tool results when top-level tool results are empty', () => {
+    const response = buildTerminalFallbackResponse([], [
+      {
+        toolResults: [
+          {
+            toolName: 'plan_calendar_change',
+            result: {
+              ok: true,
+              previewText: 'Proposed study blocks ready. Reply to confirm.',
+            },
+          },
+        ],
+      },
+    ]);
+
+    expect(response).toBe('Proposed study blocks ready. Reply to confirm.');
+  });
 });

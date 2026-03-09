@@ -429,7 +429,8 @@ function buildSelection(
   const packIds = uniquePackIds(
     Array.isArray(packIdOrPackIds) ? packIdOrPackIds : [packIdOrPackIds],
   );
-  const normalizedPackIds = packIds.length > 0 ? packIds : ['core_recall_pack'];
+  const normalizedPackIds: ToolPackId[] =
+    packIds.length > 0 ? packIds : ['core_recall_pack'];
 
   return {
     packId: normalizedPackIds[0],
@@ -478,9 +479,6 @@ const CEREBRAS_SELECTOR_RESPONSE_FORMAT = {
             type: 'string',
             enum: [...TOOL_PACK_IDS],
           },
-          minItems: 1,
-          maxItems: TOOL_PACK_IDS.length,
-          uniqueItems: true,
         },
       },
       required: ['packIds'],
