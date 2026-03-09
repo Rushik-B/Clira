@@ -88,6 +88,7 @@ export class ExecutiveAgent {
 
     let toolAbort: ReturnType<typeof createDeadlineController> | undefined;
     let selectedPack: ToolPackId | null = null;
+    let selectedPacks: ToolPackId[] = [];
     let selectorReasons: string[] = [];
     let turnFeatures: ExecutiveTurnFeatures | null = null;
     let workingStateController: ReturnType<typeof createWorkingStateController> | null = null;
@@ -100,6 +101,7 @@ export class ExecutiveAgent {
 
       return stripUndefined({
           selectedPack,
+          selectedPacks,
           selectorReasons,
           workingState: workingStateController.getState(),
           promptVersion: EXECUTIVE_AGENT_PROMPT_VERSION,
@@ -169,12 +171,15 @@ export class ExecutiveAgent {
         features: activeTurnFeatures,
       });
       const activePack = selection.packId;
+      const activePacks = selection.packIds;
       input.runContext?.setSelectedPack?.(activePack);
       selectedPack = activePack;
+      selectedPacks = activePacks;
       selectorReasons = selection.reasons;
 
       logger.info('[executiveAgent] harness.selection', {
         selectedPack,
+        selectedPacks,
         selectorReasons,
         draftCandidatePresent: activeTurnFeatures.draftCandidatePresent,
         draftCandidateReason: activeTurnFeatures.draftCandidateReason,
@@ -225,6 +230,7 @@ export class ExecutiveAgent {
         channel: resolvedChannel,
         retrievalProfile,
         selectedPack: activePack,
+        selectedPacks: activePacks,
         selectorReasons,
         turnFeatures: activeTurnFeatures,
         userTimezone,

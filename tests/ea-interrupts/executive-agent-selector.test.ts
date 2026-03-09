@@ -194,6 +194,25 @@ describe('Executive agent selector', () => {
     expect(selection.packId).toBe('calendar_mutation_pack');
   });
 
+  test('combined reminder and calendar mutation phrasing selects multiple packs', () => {
+    const input = buildInput({
+      userRequest: 'remind me tomorrow at 9pm to submit the form and put it on my calendar',
+    });
+    const features = extractExecutiveTurnFeatures({
+      input,
+      pendingCalendarChangePresent: false,
+    });
+    const selection = selectExecutiveToolPack(features);
+
+    expect(features.calendarMutationIntent).toBe(true);
+    expect(features.reminderIntent).toBe(true);
+    expect(selection.packId).toBe('calendar_mutation_pack');
+    expect(selection.packIds).toEqual([
+      'calendar_mutation_pack',
+      'reminder_alert_pack',
+    ]);
+  });
+
   test('short followup approval after calendar context routes to calendar_mutation_pack', () => {
     const input = buildInput({
       userRequest: 'yes',
@@ -273,6 +292,48 @@ describe('Executive agent selector', () => {
     ).toBe('calendar_mutation_pack');
   });
 
+  test('does not bypass LLM selector for reminder turns', async () => {
+    vi.stubEnv('EA_SELECTOR_CEREBRAS_ENABLED', 'true');
+    vi.stubEnv('EA_SELECTOR_CEREBRAS_TWILIO', 'true');
+    vi.stubEnv('EA_SELECTOR_CEREBRAS_MODEL', 'llama3.1-8b');
+    vi.stubEnv('CEREBRAS_API_KEY', 'test-key');
+
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                packIds: ['reminder_alert_pack', 'calendar_mutation_pack'],
+              }),
+            },
+          },
+        ],
+        id: 'resp-reminder',
+      }),
+    } as Response);
+
+    const input = buildInput({
+      userRequest: 'remind me tomorrow at 9pm and put it on my calendar',
+    });
+    const features = extractExecutiveTurnFeatures({
+      input,
+      pendingCalendarChangePresent: false,
+    });
+
+    const selection = await selectExecutiveToolPackForTurn({
+      input,
+      features,
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(selection.packIds).toEqual([
+      'reminder_alert_pack',
+      'calendar_mutation_pack',
+    ]);
+  });
+
   test('uses direct Cerebras selector request with minimal strict schema', async () => {
     vi.stubEnv('EA_SELECTOR_CEREBRAS_ENABLED', 'true');
     vi.stubEnv('EA_SELECTOR_CEREBRAS_TWILIO', 'true');
@@ -288,7 +349,7 @@ describe('Executive agent selector', () => {
             {
               message: {
                 content: JSON.stringify({
-                  packId: 'calendar_query_pack',
+                  packIds: ['calendar_query_pack'],
                   reason: 'calendar query',
                   confidence: 0.9,
                 }),
@@ -313,6 +374,7 @@ describe('Executive agent selector', () => {
     });
 
     expect(selection.packId).toBe('calendar_query_pack');
+    expect(selection.packIds).toEqual(['calendar_query_pack']);
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
     const [, init] = fetchMock.mock.calls[0] ?? [];
@@ -367,7 +429,7 @@ describe('Executive agent selector', () => {
           choices: [
             {
               message: {
-                content: JSON.stringify({ packId: 'inbox_context_pack' }),
+                content: JSON.stringify({ packIds: ['inbox_context_pack'] }),
               },
             },
           ],
@@ -415,7 +477,7 @@ describe('Executive agent selector', () => {
 
     expect(selection2.packId).toBe('inbox_context_pack');
     expect(selection2.reasons).toContain(
-      'selector rate-limited; reused cached pack for current burst',
+      'selector rate-limited; reused cached pack selection for current burst',
     );
   });
 

@@ -153,3 +153,18 @@ export function buildPackToolAllowlist(
 
   return [...allowlist].sort();
 }
+
+export function buildPackToolAllowlistForSelection(
+  packIds: readonly ToolPackId[],
+  features: ExecutiveTurnFeatures,
+): readonly ExecutiveToolName[] {
+  const allowlist = new Set<ExecutiveToolName>();
+
+  for (const packId of packIds) {
+    for (const toolName of buildPackToolAllowlist(packId, features)) {
+      allowlist.add(toolName);
+    }
+  }
+
+  return [...allowlist].sort();
+}

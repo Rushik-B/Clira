@@ -10,7 +10,7 @@ import { buildContextTools } from './tools/context-tools';
 import { buildCalendarMutationTools } from './tools/calendar-mutation-tools';
 import { buildMessagingTools } from './tools/messaging-tools';
 import {
-  buildPackToolAllowlist,
+  buildPackToolAllowlistForSelection,
   type ExecutiveToolName,
 } from './toolPacks';
 
@@ -67,7 +67,7 @@ export function buildExecutiveAgentTools(context: ExecutiveRuntimeContext): Reco
     : buildUnavailableProgressUpdateTool(context);
 
   const allowlist = new Set(
-    buildPackToolAllowlist(context.selectedPack, context.turnFeatures),
+    buildPackToolAllowlistForSelection(context.selectedPacks, context.turnFeatures),
   );
 
   const filteredTools = Object.fromEntries(

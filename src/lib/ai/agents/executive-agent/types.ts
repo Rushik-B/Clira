@@ -125,6 +125,7 @@ export interface ExecutiveTurnFeatures {
 
 export interface PackSelection {
   packId: ToolPackId;
+  packIds: ToolPackId[];
   reasons: string[];
   reminders: string[];
 }
@@ -164,6 +165,7 @@ export type ExecutiveRuntimeContext = {
   channel: ProgressUpdateChannel;
   retrievalProfile: RetrievalProfile;
   selectedPack: ToolPackId;
+  selectedPacks: ToolPackId[];
   selectorReasons: string[];
   turnFeatures: ExecutiveTurnFeatures;
   userTimezone: string;

@@ -55,6 +55,7 @@ function buildContext(params: {
     channel: 'twilio',
     retrievalProfile: 'messaging',
     selectedPack: selection.packId,
+    selectedPacks: selection.packIds,
     selectorReasons: selection.reasons,
     turnFeatures,
     userTimezone: 'America/Vancouver',
@@ -155,6 +156,24 @@ describe('Executive agent tool packs', () => {
 
     expect(toolNames).toContain('plan_calendar_change');
     expect(toolNames).not.toContain('commit_calendar_change');
+  });
+
+  test('multi-pack reminder plus calendar turns expose both tool families', () => {
+    const context = buildContext({
+      input: buildInput({
+        userRequest: 'remind me tomorrow at 9pm to study and put it on my calendar too',
+      }),
+      pendingCalendarChangePresent: false,
+    });
+
+    const toolNames = Object.keys(buildExecutiveAgentTools(context));
+
+    expect(context.selectedPacks).toEqual([
+      'calendar_mutation_pack',
+      'reminder_alert_pack',
+    ]);
+    expect(toolNames).toContain('plan_calendar_change');
+    expect(toolNames).toContain('add_reminder');
   });
 
   test('pending calendar confirm turns expose commit but not plan', () => {
