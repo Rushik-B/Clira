@@ -7,7 +7,7 @@ import { resolve } from 'path';
 config({ path: resolve(__dirname, '../.env') });
 config({ path: resolve(__dirname, '../.env.local') });
 
-import { Worker, Job, JobProgress } from 'bullmq';
+import { Worker, Job, JobProgress, UnrecoverableError } from 'bullmq';
 import redisConnection from './lib/services/utils/redis';
 import { 
   OnboardingJobData, 
@@ -48,6 +48,7 @@ import { encryptEmailContent, decryptEmailContent } from '@/lib/security/emailCr
 // AI queue label removed: no longer creating/applying a dedicated Gmail label
 import { normalizeGmailLabelColor } from '@/lib/gmail/labelColors';
 import { triggerReminderNotification, markReminderMissed } from '@/lib/services/reminderNotificationService';
+import { isPrismaAuthenticationFailure } from '@/lib/prismaErrors';
 import {
   isTelegramEnabled,
   startTelegramMonitor,
@@ -489,6 +490,11 @@ const reminderNotificationWorker = new Worker<ReminderNotificationJobData>(
       console.log(`[REMINDER NOTIFY COMPLETE] reminder=${reminderId} (Job ID: ${job.id})`);
     } catch (error) {
       console.error(`[REMINDER NOTIFY FAILED] reminder=${reminderId} (Job ID: ${job.id})`, error);
+      if (isPrismaAuthenticationFailure(error)) {
+        throw new UnrecoverableError(
+          `Non-retryable database authentication failure while processing reminder ${reminderId}`,
+        );
+      }
       throw error;
     }
   },
@@ -500,6 +506,13 @@ const reminderNotificationWorker = new Worker<ReminderNotificationJobData>(
 
 reminderNotificationWorker.on('failed', async (job, error) => {
   if (!job) return;
+  if (isPrismaAuthenticationFailure(error)) {
+    console.error(
+      `[REMINDER NOTIFY NON-RETRYABLE] reminder=${job.data.reminderId} skipping retry and missed-state write due to Prisma authentication failure`,
+    );
+    return;
+  }
+
   const attempts = job.opts.attempts ?? 1;
   const attemptsMade = job.attemptsMade ?? 0;
   if (attemptsMade < attempts) {
@@ -510,11 +523,18 @@ reminderNotificationWorker.on('failed', async (job, error) => {
   }
 
   const reason = error instanceof Error ? error.message : 'delivery-failed';
-  await markReminderMissed({
-    reminderId: job.data.reminderId,
-    userId: job.data.userId,
-    reason,
-  });
+  try {
+    await markReminderMissed({
+      reminderId: job.data.reminderId,
+      userId: job.data.userId,
+      reason,
+    });
+  } catch (markError) {
+    console.error(
+      `[REMINDER NOTIFY MISS MARK FAILED] reminder=${job.data.reminderId} unable to persist MISSED state after terminal failure`,
+      markError,
+    );
+  }
 });
 
 // --- Worker for Creating Gmail Labels & Fast Onboarding Mapping ---
