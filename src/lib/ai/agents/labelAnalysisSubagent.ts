@@ -9,6 +9,7 @@ import {
   type LabelAnalysisDependencies,
   type AvailableLabelDTO,
 } from '@/lib/ai/schemas/labelAnalysisSchemas';
+import type { AiTraceContext } from '@/lib/ai/tracing';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Label Analysis Subagent
@@ -38,6 +39,7 @@ export type LabelAnalysisContext = {
 
   /** Dependencies injected by the Planner */
   dependencies: LabelAnalysisDependencies;
+  traceContext?: AiTraceContext;
 };
 
 /**
@@ -171,6 +173,7 @@ async function analyzeLabelingForEmail(
       op: 'label.analysis',
       concurrency: { key: 'label.analysis', maxConcurrency: 4 },
       retry: { maxAttempts: 2, baseDelayMs: 500 },
+      traceContext: context.traceContext,
     });
 
     const resolved = resolveLabelSelection(result.label, candidateLabels);
@@ -215,10 +218,12 @@ async function analyzeLabelingForEmail(
 export async function runLabelAnalysis(
   params: LabelAnalysisInputDTO,
   dependencies: LabelAnalysisDependencies,
+  options?: { traceContext?: AiTraceContext },
 ): Promise<LabelAnalysisResultDTO> {
   const context: LabelAnalysisContext = {
     params,
     dependencies,
+    traceContext: options?.traceContext,
   };
 
   return analyzeLabelingForEmail(context);

@@ -17,6 +17,7 @@ import type {
   ExecutiveToolResultReuseCache,
   ExecutiveToolResultCacheStats,
 } from './toolResultReuseCache';
+import type { AiTraceContext } from '@/lib/ai/tracing';
 
 export interface ExecutiveAgentInput {
   userId: string;
@@ -27,6 +28,7 @@ export interface ExecutiveAgentInput {
   conversationHistory: ConversationMessageDTO[];
   abortSignal?: AbortSignal;
   progressContext?: ProgressUpdateContext;
+  traceContext?: AiTraceContext;
   runContext?: {
     runId: string;
     burstId: string;

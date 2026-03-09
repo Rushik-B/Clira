@@ -5,6 +5,7 @@ import {
   type ToolBudgetReport,
 } from '@/lib/ai/callLlm';
 import { logger } from '@/lib/logger';
+import type { AiTraceContext } from '@/lib/ai/tracing';
 import type {
   ConsumeSteerEventsResult,
   RunPhase,
@@ -89,6 +90,7 @@ export async function runSteerableTextWithTools(params: {
   retry?: { maxAttempts: number; baseDelayMs: number };
   providerOptions?: any;
   runContext?: SteerRunContext;
+  traceContext?: AiTraceContext;
 }): Promise<{
   text: string;
   toolCalls: unknown[];
@@ -170,6 +172,7 @@ export async function runSteerableTextWithTools(params: {
         concurrency: params.concurrency,
         retry: params.retry,
         providerOptions: params.providerOptions,
+        traceContext: params.traceContext,
       });
 
       if (Array.isArray(result.responseMessages) && result.responseMessages.length > 0) {

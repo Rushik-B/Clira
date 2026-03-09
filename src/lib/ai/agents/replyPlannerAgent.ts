@@ -21,6 +21,10 @@ import { CalendarAnalysisInputSchema } from '@/lib/ai/schemas/calendarAnalysisSc
 import { runLabelAnalysis } from '@/lib/ai/agents/labelAnalysisSubagent';
 import { normalizeIsoDateInputToUtc } from '@/lib/utils/timezone';
 import { GmailLabelClassifier } from '@/lib/services/utils/gmailLabelClassifier';
+import type { AiTraceContext } from '@/lib/ai/tracing';
+import {
+  wrapToolsWithAiTracing,
+} from '@/lib/ai/tracing';
 import {
   LabelAnalysisResultSchema,
   type LabelAnalysisResultDTO,
@@ -41,6 +45,7 @@ export type ReplyPlannerAgentInput = {
    * Useful for deterministic testing (Injection Harness).
    */
   strict?: boolean;
+  traceContext?: AiTraceContext;
 };
 
 function asCsv(values: string[] | undefined): string {
@@ -335,6 +340,7 @@ async function recoverPlanViaSchema({
   toolResults,
   modelText,
   abortSignal,
+  traceContext,
 }: {
   input: ReplyPlannerAgentInput;
   prompt: string;
@@ -342,6 +348,7 @@ async function recoverPlanViaSchema({
   toolResults: unknown;
   modelText: string | undefined;
   abortSignal?: AbortSignal;
+  traceContext?: AiTraceContext;
 }): Promise<ReplyPlanDTO> {
   const repairPrompt = [
     prompt,
@@ -373,6 +380,7 @@ async function recoverPlanViaSchema({
     concurrency: { key: 'reply.planner', maxConcurrency: 2 },
     retry: { maxAttempts: 2, baseDelayMs: 800 },
     abortSignal,
+    traceContext,
   });
 
   return repaired.object;
@@ -383,11 +391,13 @@ async function forceSubmitPlanFromContext({
   toolCalls,
   toolResults,
   abortSignal,
+  traceContext,
 }: {
   prompt: string;
   toolCalls: unknown;
   toolResults: unknown;
   abortSignal?: AbortSignal;
+  traceContext?: AiTraceContext;
 }): Promise<ReplyPlanDTO | null> {
   // Second pass that exposes ONLY the submit tool. This prevents re-running expensive tools
   // and focuses the model on producing a schema-valid plan as tool arguments.
@@ -428,6 +438,7 @@ async function forceSubmitPlanFromContext({
     concurrency: { key: 'reply.planner', maxConcurrency: 2 },
     retry: { maxAttempts: 2, baseDelayMs: 800 },
     abortSignal,
+    traceContext,
   });
 
   return extractPlanFromToolResults(finalizeToolResults) ?? extractPlanFromSteps(finalizeSteps);
@@ -574,6 +585,7 @@ export class ReplyPlannerAgent {
               emailContext: emailContextForCalendar,
               currentTime: currentTimeContext,
               abortSignal: input.abortSignal,
+              traceContext: input.traceContext,
             },
           );
 
@@ -793,6 +805,7 @@ export class ReplyPlannerAgent {
                 from: safeString(input.message.from),
               },
             },
+            { traceContext: input.traceContext },
           );
 
           const labelText = result.label?.trim() || '(none)';
@@ -815,6 +828,8 @@ export class ReplyPlannerAgent {
       },
     };
 
+    const tracedTools = wrapToolsWithAiTracing(input.traceContext, tools);
+
     try {
       const { text, toolCalls, toolResults, steps } = await callTextWithTools({
         model: models.pro(),
@@ -828,7 +843,7 @@ export class ReplyPlannerAgent {
             : '') +
           'When you have gathered context, call submit_reply_plan with a ReplyPlan object that matches the schema exactly. CC decisions are your responsibility (can be empty).',
         prompt,
-        tools,
+        tools: tracedTools,
         maxSteps: 8,
         stopWhen: stopWhenToolCalled('submit_reply_plan'),
         temperature: 0.4,
@@ -836,6 +851,7 @@ export class ReplyPlannerAgent {
         concurrency: { key: 'reply.planner', maxConcurrency: 2 },
         retry: { maxAttempts: 4, baseDelayMs: 500 },
         abortSignal: input.abortSignal,
+        traceContext: input.traceContext,
       });
 
       // Preferred: plan is returned via the terminal submit tool call.
@@ -849,6 +865,7 @@ export class ReplyPlannerAgent {
           toolCalls,
           toolResults,
           abortSignal: input.abortSignal,
+          traceContext: input.traceContext,
         });
       }
 
@@ -863,6 +880,7 @@ export class ReplyPlannerAgent {
           toolResults,
           modelText: text,
           abortSignal: input.abortSignal,
+          traceContext: input.traceContext,
         });
       }
 

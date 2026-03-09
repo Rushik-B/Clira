@@ -58,6 +58,10 @@ import {
 import { stripCacheDebugMetadataForPersistence } from './persistence';
 import { normalizeExecutiveAgentToolsForModel } from './tool-schema-normalization';
 import { createInitialWorkingState, createWorkingStateController } from './workingState';
+import {
+  buildAiTraceMetadata,
+  wrapToolsWithAiTracing,
+} from '@/lib/ai/tracing';
 import type {
   ExecutiveAgentInput,
   ExecutiveAgentOutput,
@@ -296,8 +300,9 @@ export class ExecutiveAgent {
           }
         },
       });
+      const tracedTools = wrapToolsWithAiTracing(input.traceContext, timedTools);
       const modelTools = normalizeExecutiveAgentToolsForModel(
-        timedTools as Record<string, any>,
+        tracedTools as Record<string, any>,
       );
 
       const stopConditions = [
@@ -344,6 +349,7 @@ export class ExecutiveAgent {
             abortSignal: toolAbortSignal,
             providerOptions,
             runContext: input.runContext as unknown as SteerRunContext,
+            traceContext: input.traceContext,
           })
         : await callTextWithTools({
             model: models.execAgent(),
@@ -361,6 +367,7 @@ export class ExecutiveAgent {
             retry: { maxAttempts: 3, baseDelayMs: 500 },
             abortSignal: toolAbortSignal,
             providerOptions,
+            traceContext: input.traceContext,
           });
 
       const { text, toolCalls, toolResults, steps, toolBudget } = exec;
@@ -443,6 +450,10 @@ export class ExecutiveAgent {
       const orchestrationMetadata = buildOrchestrationMetadata();
       if (orchestrationMetadata) {
         metadata.orchestration = orchestrationMetadata;
+      }
+      const traceMetadata = buildAiTraceMetadata(input.traceContext);
+      if (traceMetadata) {
+        metadata.trace = traceMetadata.trace as Prisma.InputJsonValue;
       }
 
       return {

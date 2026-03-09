@@ -407,6 +407,7 @@ export function buildContextTools({
                   },
                   abortSignal: budgetContext.abortSignal,
                   deadlineAt: budgetContext.deadlineAt,
+                  traceContext: input.traceContext,
                 },
               ),
           });

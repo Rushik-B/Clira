@@ -8,6 +8,7 @@ import {
   type CalendarAnalysisInputDTO,
 } from '@/lib/ai/schemas/schemas';
 import type { CalendarSnapshotResult } from '@/lib/services/core/replyContextTools';
+import type { AiTraceContext } from '@/lib/ai/tracing';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Calendar Analysis Subagent
@@ -52,6 +53,7 @@ export type CalendarAnalysisContext = {
 
   /** Optional deadline timestamp for early exits */
   deadlineAt?: number;
+  traceContext?: AiTraceContext;
 };
 
 const EARLY_EXIT_BUFFER_MS = 3_000;
@@ -204,6 +206,7 @@ export async function analyzeCalendarForScheduling(
       op: 'calendar.analysis',
       concurrency: { key: 'calendar.analysis', maxConcurrency: 4 },
       retry: { maxAttempts: 2, baseDelayMs: 500 },
+      traceContext: context.traceContext,
     });
 
     logger.info(
@@ -248,6 +251,7 @@ export async function runCalendarAnalysis(
     };
     abortSignal?: AbortSignal;
     deadlineAt?: number;
+    traceContext?: AiTraceContext;
   },
 ): Promise<CalendarAnalysisResultDTO> {
   const context: CalendarAnalysisContext = {
@@ -257,6 +261,7 @@ export async function runCalendarAnalysis(
     currentTime: dependencies.currentTime,
     abortSignal: dependencies.abortSignal,
     deadlineAt: dependencies.deadlineAt,
+    traceContext: dependencies.traceContext,
   };
 
   return analyzeCalendarForScheduling(context);
