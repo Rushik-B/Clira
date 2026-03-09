@@ -85,5 +85,7 @@ logs/
 /.kiro
 /.gemini/
 /.gemini
+/.clira-runtime/
+/.clira-runtime
 
 

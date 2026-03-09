@@ -14,8 +14,12 @@ services:
       NEXTAUTH_URL: http://localhost:13000
       NEXT_PUBLIC_LANDING_PAGE_URL: ""
       GOOGLE_APPLICATION_CREDENTIALS: /app/google-service-account.json
+      CLIRA_AI_TRACE_ENABLED: "true"
+      CLIRA_AI_TRACE_DIR: /var/lib/clira/ai-traces
+      CLIRA_AI_TRACE_CAPTURE: full
     volumes:
       - ./google-service-account.json:/app/google-service-account.json:ro
+      - ./.clira-runtime:/var/lib/clira
     depends_on:
       db:
         condition: service_healthy
@@ -33,8 +37,12 @@ services:
       DIRECT_URL: postgresql://postgres:postgres@db:5432/clira
       REDIS_URL: redis://redis:6379
       GOOGLE_APPLICATION_CREDENTIALS: /app/google-service-account.json
+      CLIRA_AI_TRACE_ENABLED: "true"
+      CLIRA_AI_TRACE_DIR: /var/lib/clira/ai-traces
+      CLIRA_AI_TRACE_CAPTURE: full
     volumes:
       - ./google-service-account.json:/app/google-service-account.json:ro
+      - ./.clira-runtime:/var/lib/clira
     depends_on:
       db:
         condition: service_healthy
@@ -52,8 +60,12 @@ services:
       DIRECT_URL: postgresql://postgres:postgres@db:5432/clira
       REDIS_URL: redis://redis:6379
       GOOGLE_APPLICATION_CREDENTIALS: /app/google-service-account.json
+      CLIRA_AI_TRACE_ENABLED: "true"
+      CLIRA_AI_TRACE_DIR: /var/lib/clira/ai-traces
+      CLIRA_AI_TRACE_CAPTURE: full
     volumes:
       - ./google-service-account.json:/app/google-service-account.json:ro
+      - ./.clira-runtime:/var/lib/clira
     depends_on:
       db:
         condition: service_healthy
@@ -71,8 +83,12 @@ services:
       DIRECT_URL: postgresql://postgres:postgres@db:5432/clira
       REDIS_URL: redis://redis:6379
       GOOGLE_APPLICATION_CREDENTIALS: /app/google-service-account.json
+      CLIRA_AI_TRACE_ENABLED: "true"
+      CLIRA_AI_TRACE_DIR: /var/lib/clira/ai-traces
+      CLIRA_AI_TRACE_CAPTURE: full
     volumes:
       - ./google-service-account.json:/app/google-service-account.json:ro
+      - ./.clira-runtime:/var/lib/clira
     depends_on:
       db:
         condition: service_healthy
@@ -89,8 +105,12 @@ services:
       CRON_TARGET_BASE_URL: http://app:3000
       CRON_TIMEZONE: UTC
       GOOGLE_APPLICATION_CREDENTIALS: /app/google-service-account.json
+      CLIRA_AI_TRACE_ENABLED: "true"
+      CLIRA_AI_TRACE_DIR: /var/lib/clira/ai-traces
+      CLIRA_AI_TRACE_CAPTURE: full
     volumes:
       - ./google-service-account.json:/app/google-service-account.json:ro
+      - ./.clira-runtime:/var/lib/clira
     depends_on:
       app:
         condition: service_started
