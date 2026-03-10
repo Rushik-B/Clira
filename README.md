@@ -101,6 +101,7 @@ This starts `app`, `worker`, `cron`, `db`, and `redis` using the production imag
 | Variable | Purpose |
 | --- | --- |
 | `DATABASE_URL` | Postgres connection string |
+| `CLIRA_DB_APP_USER` / `CLIRA_DB_APP_PASSWORD` | Dedicated app DB role used by local + Docker workflows |
 | `REDIS_URL` | Redis connection for BullMQ + runtime cache |
 | `NEXTAUTH_SECRET` | Auth/session signing secret |
 | `NEXTAUTH_URL` | Canonical app URL |

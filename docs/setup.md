@@ -18,6 +18,8 @@ cp .env.example .env
 ```
 
 Set all required values in `.env`.
+Fresh Docker volumes bootstrap a dedicated app DB role from `CLIRA_DB_APP_USER` / `CLIRA_DB_APP_PASSWORD`.
+If your Postgres volume already exists, create or update that role once before starting app and workers.
 
 ## 2) Start infra
 
