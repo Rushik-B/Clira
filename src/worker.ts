@@ -64,6 +64,7 @@ import {
   deriveRunStatusFromError,
   finalizeAiTraceRun,
   withAiTraceSpan,
+  resolveAiTraceDir,
 } from '@/lib/ai/tracing';
 
 console.log('🚀 Background Worker process started...');
@@ -74,6 +75,9 @@ console.log(`  - FEATURE_FLAG_PER_EMAIL_LLM: ${process.env.FEATURE_FLAG_PER_EMAI
 console.log('🧠 Supermemory worker enabled in main process:');
 console.log(`  - SUPERMEMORY_API_KEY configured: ${isSupermemoryConfigured()}`);
 console.log(`  - NODE_ENV: ${process.env.NODE_ENV}`);
+console.log('📊 AI tracing:');
+console.log(`  - CLIRA_AI_TRACE_ENABLED: ${process.env.CLIRA_AI_TRACE_ENABLED ?? '(unset)'}`);
+console.log(`  - Trace dir: ${resolveAiTraceDir()}`);
 
 // Track active workers for graceful shutdown
 const workers: Worker[] = [];
