@@ -42,4 +42,50 @@ describe('normalizeSearchInboxContextArgs', () => {
       }),
     ).toThrow('Use either relativeWindow or startDate/endDate, not both.');
   });
+
+  test('hoists legacy filters.queryText into the root queryText field', () => {
+    const normalized = normalizeSearchInboxContextArgs({
+      action: 'find',
+      mode: 'deep',
+      filters: {
+        // Gemini occasionally nests queryText here instead of at the root.
+        queryText: 'STAT 271 syllabus midterm weight',
+        hasAttachment: true,
+      },
+      options: {
+        semantic: true,
+      },
+    } as unknown);
+
+    expect(normalized.queryText).toBe('STAT 271 syllabus midterm weight');
+    expect(normalized.filters.hasAttachment).toBe(true);
+    expect(normalized.options.semantic).toBe(true);
+  });
+
+  test('accepts common root-level query aliases', () => {
+    const normalized = normalizeSearchInboxContextArgs({
+      action: 'find',
+      query: 'midterm weight syllabus',
+    } as unknown);
+
+    expect(normalized.queryText).toBe('midterm weight syllabus');
+    expect(normalized.options.semantic).toBe(true);
+  });
+
+  test('accepts common nested query aliases inside filters', () => {
+    const normalized = normalizeSearchInboxContextArgs({
+      action: 'find',
+      filters: {
+        searchText: 'STAT 271 syllabus',
+        hasAttachment: true,
+      },
+      options: {
+        semantic: true,
+      },
+    } as unknown);
+
+    expect(normalized.queryText).toBe('STAT 271 syllabus');
+    expect(normalized.filters.hasAttachment).toBe(true);
+    expect((normalized.filters as Record<string, unknown>).searchText).toBeUndefined();
+  });
 });

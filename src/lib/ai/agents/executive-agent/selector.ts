@@ -538,6 +538,31 @@ function getDefaultPackRemindersForSelection(packIds: readonly ToolPackId[]): st
     : [];
 }
 
+function maybeInheritPriorPackSelection(params: {
+  input: ExecutiveAgentInput;
+  features: ExecutiveTurnFeatures;
+  selection: PackSelection;
+}): PackSelection {
+  if (params.selection.packId !== 'core_recall_pack') {
+    return params.selection;
+  }
+
+  if (params.features.classifierDecision !== 'followup') {
+    return params.selection;
+  }
+
+  const priorPack = params.input.runContext?.priorPack;
+  if (!priorPack) {
+    return params.selection;
+  }
+
+  return buildSelection(
+    priorPack,
+    ['inherited prior pack for follow-up turn'],
+    getDefaultPackReminders(priorPack),
+  );
+}
+
 /**
  * Bypass LLM routing for flows that are safety-critical or already explicit.
  * These branches are handled deterministically to avoid accidental escalation.
@@ -902,7 +927,11 @@ export async function selectExecutiveToolPackForTurn(params: {
   features: ExecutiveTurnFeatures;
 }): Promise<PackSelection> {
   // Deterministic selector is always computed as fallback for disabled or failed LLM runs.
-  const deterministic = selectExecutiveToolPack(params.features);
+  const deterministic = maybeInheritPriorPackSelection({
+    input: params.input,
+    features: params.features,
+    selection: selectExecutiveToolPack(params.features),
+  });
   const cacheKey = getSelectorBurstCacheKey(
     params.features.channel,
     params.input.runContext?.burstId,

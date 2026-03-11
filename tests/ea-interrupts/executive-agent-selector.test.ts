@@ -510,4 +510,37 @@ describe('Executive agent selector', () => {
     expect(selection.packId).toBe('inbox_context_pack');
     expect(selection.reasons).toContain('inherited prior pack from superseded run');
   });
+
+  test('inherits prior pack for classifier-marked follow-up turns even when selector is disabled', async () => {
+    const input = buildInput({
+      userRequest: 'dude',
+      classifierDecision: 'followup',
+      priorPack: 'inbox_context_pack',
+      history: [
+        buildAssistantMessage({
+          createdAt: '2026-03-11T20:45:06.000Z',
+          content: "I couldn't generate a response. Please try again.",
+          metadata: {
+            toolResults: [
+              {
+                toolName: 'search_inbox_context',
+                result: { ok: false, error: 'tool_budget_exceeded' },
+              },
+            ],
+          },
+        }),
+      ],
+    });
+    const features = extractExecutiveTurnFeatures({
+      input,
+      pendingCalendarChangePresent: false,
+    });
+    const selection = await selectExecutiveToolPackForTurn({
+      input,
+      features,
+    });
+
+    expect(selection.packId).toBe('inbox_context_pack');
+    expect(selection.reasons).toContain('inherited prior pack for follow-up turn');
+  });
 });
