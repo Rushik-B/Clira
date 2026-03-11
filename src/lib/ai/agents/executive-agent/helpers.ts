@@ -124,11 +124,27 @@ export function buildTerminalFallbackResponse(
     toolName: 'plan_calendar_change',
   });
   if (planResult) {
-    const previewText = planResult.previewText;
+    // Unwrap when tool result is wrapped by AI tracer ({ result, output })
+    const resolved =
+      (typeof planResult.result === 'object' && planResult.result !== null
+        ? (planResult.result as Record<string, unknown>)
+        : null) ??
+      (typeof planResult.output === 'object' && planResult.output !== null
+        ? (planResult.output as Record<string, unknown>)
+        : null) ??
+      planResult;
+
+    const previewText =
+      (typeof resolved.previewText === 'string' ? resolved.previewText : null) ??
+      (typeof resolved.plan === 'object' &&
+      resolved.plan !== null &&
+      typeof (resolved.plan as Record<string, unknown>).userPreviewText === 'string'
+        ? ((resolved.plan as Record<string, unknown>).userPreviewText as string)
+        : null);
     if (typeof previewText === 'string' && previewText.trim()) return previewText;
-    const message = planResult.message;
+    const message = resolved.message;
     if (typeof message === 'string' && message.trim()) return message;
-    if (planResult.ok === true) return 'I planned that calendar change.';
+    if (resolved.ok === true) return 'I planned that calendar change.';
     return 'I could not plan that calendar change. Please try again.';
   }
 

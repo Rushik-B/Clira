@@ -131,4 +131,24 @@ describe('buildTerminalFallbackResponse', () => {
 
     expect(response).toBe('Proposed study blocks ready. Reply to confirm.');
   });
+
+  test('unwraps tracer-wrapped result (result/output) and uses plan.userPreviewText', () => {
+    const response = buildTerminalFallbackResponse([
+      {
+        toolName: 'plan_calendar_change',
+        result: {
+          result: {
+            ok: true,
+            plan: { userPreviewText: 'Proposed: Work shift on Saturday, Mar 14. Reply to confirm.' },
+          },
+          output: {
+            ok: true,
+            plan: { userPreviewText: 'Proposed: Work shift on Saturday, Mar 14. Reply to confirm.' },
+          },
+        },
+      },
+    ]);
+
+    expect(response).toBe('Proposed: Work shift on Saturday, Mar 14. Reply to confirm.');
+  });
 });
