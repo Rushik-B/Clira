@@ -189,6 +189,18 @@ export class ConversationManager {
     return !!existing;
   }
 
+  async getMessageByTelegramMessageId(
+    conversationId: string,
+    telegramMessageId: string,
+  ): Promise<TelegramMessage | null> {
+    return prisma.telegramMessage.findFirst({
+      where: {
+        conversationId,
+        telegramMessageId,
+      },
+    });
+  }
+
   async getRecentMessages(conversationId: string, limit = 20): Promise<TelegramMessage[]> {
     const messages = await prisma.telegramMessage.findMany({
       where: { conversationId },

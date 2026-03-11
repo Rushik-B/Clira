@@ -16,7 +16,9 @@ export {
   type TelegramClientConfig,
   type TelegramSendMessageResponse,
   type TelegramInboundMessage,
+  type TelegramReplyContext,
   type TelegramPollerStateSnapshot,
+  extractTelegramInboundMessage,
 } from './telegramClient';
 
 export {
