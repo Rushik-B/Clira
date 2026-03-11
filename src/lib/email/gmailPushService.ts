@@ -816,7 +816,7 @@ export class GmailPushService {
                   email: {
                     from: emailData.from,
                     subject: emailData.subject,
-                    snippet: (emailData.body || '').slice(0, 300),
+                    snippet: (emailData.snippet || emailData.body || '').slice(0, 500),
                   },
                   alert: {
                     id: routerDecision.matchedAlertId,
