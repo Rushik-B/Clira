@@ -13,6 +13,7 @@ export const PENDING_CALENDAR_CHANGE_TTL_MS = 10 * 60 * 1000;
 /** Per-tool call limits. Sum of used tools is also capped by MESSAGING_MAX_TOOL_CALLS_TOTAL. */
 export const MESSAGING_TOOL_BUDGETS_BASE: Record<string, number> = {
   search_inbox_context: 4,
+  list_inbox_emails: 2,
   search_calendar: 2,
   check_calendar: 1,
   search_memory: 3,

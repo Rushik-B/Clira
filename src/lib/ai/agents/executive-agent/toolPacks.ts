@@ -10,6 +10,7 @@ export const EXECUTIVE_TOOL_NAMES = [
   'append_to_supermemory',
   'send_progress_update',
   'search_inbox_context',
+  'list_inbox_emails',
   'search_calendar',
   'check_calendar',
   'plan_calendar_change',
@@ -32,12 +33,14 @@ const RAW_TOOL_PACKS: Record<ToolPackId, readonly ExecutiveToolName[]> = {
     'search_memory',
     'append_to_supermemory',
     'send_progress_update',
+    'list_inbox_emails',
   ],
   inbox_context_pack: [
     'search_memory',
     'append_to_supermemory',
     'send_progress_update',
     'search_inbox_context',
+    'list_inbox_emails',
     'search_calendar',
   ],
   calendar_query_pack: [
@@ -47,6 +50,7 @@ const RAW_TOOL_PACKS: Record<ToolPackId, readonly ExecutiveToolName[]> = {
     'search_calendar',
     'check_calendar',
     'search_inbox_context',
+    'list_inbox_emails',
   ],
   calendar_mutation_pack: [
     'search_memory',
