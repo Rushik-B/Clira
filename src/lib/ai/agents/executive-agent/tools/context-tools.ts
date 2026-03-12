@@ -7,6 +7,7 @@ import {
   getCalendarSnapshot,
   gatherMemoryContextForReply,
 } from '@/lib/services/core/replyContextTools';
+import { listInboxEmails } from '@/lib/services/inbox-search';
 import {
   addDaysToDateOnly,
   endOfDayInTimezone,
@@ -18,6 +19,11 @@ import {
 import { runCalendarAnalysis } from '@/lib/ai/agents/calendarAnalysisSubagent';
 import { runCalendarSearch } from '@/lib/ai/agents/calendarSearchSubagent';
 import { runEmailRetrieval } from '@/lib/ai/agents/emailRetrievalSubagent';
+import {
+  listInboxEmailsArgsSchema,
+  listInboxEmailsProviderSchema,
+  normalizeListInboxEmailsArgs,
+} from '../list-inbox-emails-contract';
 import {
   normalizeSearchInboxContextArgs,
   searchInboxContextArgsSchema,
@@ -35,11 +41,15 @@ import {
 } from '../helpers';
 import type {
   ExecutiveRuntimeContext,
+  ListInboxEmailsArgs,
   SearchInboxContextArgs,
 } from '../types';
 
 const searchInboxContextToolDescription = readPromptFile(
   'executive-agent/searchInboxContextTool.md',
+);
+const listInboxEmailsToolDescription = readPromptFile(
+  'executive-agent/listInboxEmailsTool.md',
 );
 
 function normalizeIntentText(value: string | undefined): string {
@@ -94,6 +104,19 @@ function buildInvalidInboxSearchResult(args: unknown, message: string) {
     },
     summary: message,
     followUpQuestions: [message],
+  };
+}
+
+function buildInvalidListInboxEmailsResult(message: string) {
+  return {
+    items: [],
+    matchedCount: 0,
+    returnedCount: 0,
+    truncated: false,
+    note: message,
+    metadata: {
+      validationError: true,
+    },
   };
 }
 
@@ -256,6 +279,50 @@ export function buildContextTools({
               ),
           });
           toolResultCache.set('search_inbox_context', cacheArgs, result);
+          return result;
+        },
+      },
+
+      list_inbox_emails: {
+        description: listInboxEmailsToolDescription,
+        inputSchema: listInboxEmailsArgsSchema,
+        providerInputSchema: listInboxEmailsProviderSchema,
+        execute: async (args: ListInboxEmailsArgs) => {
+          let normalizedArgs;
+          try {
+            normalizedArgs = normalizeListInboxEmailsArgs(args, {
+              defaultTimezone: userTimezone,
+            });
+          } catch (error) {
+            const message =
+              error instanceof Error ? error.message : 'Invalid inbox list request.';
+            logger.warn('[executiveAgent] list_inbox_emails invalid args', {
+              userId: input.userId,
+              message,
+              args,
+            });
+            return buildInvalidListInboxEmailsResult(message);
+          }
+
+          const inboxMinStoredAtMs = await getInboxMinStoredAtMs();
+          const cachedResult = toolResultCache.get('list_inbox_emails', normalizedArgs, {
+            minStoredAtMs: inboxMinStoredAtMs,
+          });
+          if (cachedResult) {
+            logger.info(
+              `[executiveAgent] list_inbox_emails cache hit: mailbox="${truncate(normalizedArgs.mailboxEmail ?? normalizedArgs.mailboxId ?? '(all)', 80)}"`,
+            );
+            return cachedResult;
+          }
+
+          logger.info(
+            `[executiveAgent] list_inbox_emails: mailbox="${truncate(normalizedArgs.mailboxEmail ?? normalizedArgs.mailboxId ?? '(all)', 80)}" limit=${normalizedArgs.options.limit}`,
+          );
+
+          const result = await listInboxEmails(normalizedArgs, {
+            userId: input.userId,
+          });
+          toolResultCache.set('list_inbox_emails', normalizedArgs, result);
           return result;
         },
       },

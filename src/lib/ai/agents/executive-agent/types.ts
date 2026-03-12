@@ -4,6 +4,7 @@ import type {
 } from '@/lib/ai/tools/sendProgressUpdate';
 import type {
   InboxSearchToolArgs,
+  ListInboxEmailsToolArgs,
 } from '@/lib/services/inbox-search/types';
 import type {
   ConversationMessageDTO,
@@ -159,6 +160,7 @@ export interface PromptContext {
 }
 
 export type SearchInboxContextArgs = InboxSearchToolArgs;
+export type ListInboxEmailsArgs = ListInboxEmailsToolArgs;
 
 export type RetrievalProfile = 'default' | 'messaging';
 
