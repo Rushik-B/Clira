@@ -93,6 +93,11 @@ function summarizeToolResult(toolName: string, result: unknown): string | null {
     return matches !== null ? `inbox matches=${matches}` : 'inbox context checked';
   }
 
+  if (toolName === 'list_inbox_emails') {
+    const items = Array.isArray(record.items) ? record.items.length : null;
+    return items !== null ? `inbox listed=${items}` : 'inbox emails listed';
+  }
+
   if (toolName === 'search_calendar') {
     const events = Array.isArray(record.events) ? record.events.length : null;
     return events !== null ? `calendar matches=${events}` : 'calendar searched';
@@ -163,6 +168,10 @@ function deriveFact(toolName: string, result: unknown): string | null {
 
   if (toolName === 'search_inbox_context' && typeof record.summary === 'string') {
     return truncateFact(record.summary);
+  }
+
+  if (toolName === 'list_inbox_emails' && typeof record.matchedCount === 'number') {
+    return truncateFact(`Listed ${record.returnedCount ?? record.matchedCount} of ${record.matchedCount} matching inbox emails.`);
   }
 
   return null;
