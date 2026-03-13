@@ -3,7 +3,7 @@ import type {
   ToolPackId,
 } from './types';
 
-export const EXECUTIVE_AGENT_PACK_VERSION = 'ea-packs-v1';
+export const EXECUTIVE_AGENT_PACK_VERSION = 'ea-packs-v2';
 
 export const EXECUTIVE_TOOL_NAMES = [
   'search_memory',
@@ -11,6 +11,7 @@ export const EXECUTIVE_TOOL_NAMES = [
   'send_progress_update',
   'search_inbox_context',
   'list_inbox_emails',
+  'read_email_pdf_attachment',
   'search_calendar',
   'check_calendar',
   'plan_calendar_change',
@@ -41,6 +42,7 @@ const RAW_TOOL_PACKS: Record<ToolPackId, readonly ExecutiveToolName[]> = {
     'send_progress_update',
     'search_inbox_context',
     'list_inbox_emails',
+    'read_email_pdf_attachment',
     'search_calendar',
   ],
   calendar_query_pack: [
@@ -51,6 +53,7 @@ const RAW_TOOL_PACKS: Record<ToolPackId, readonly ExecutiveToolName[]> = {
     'check_calendar',
     'search_inbox_context',
     'list_inbox_emails',
+    'read_email_pdf_attachment',
   ],
   calendar_mutation_pack: [
     'search_memory',
@@ -79,6 +82,7 @@ const RAW_TOOL_PACKS: Record<ToolPackId, readonly ExecutiveToolName[]> = {
     'append_to_supermemory',
     'send_progress_update',
     'search_inbox_context',
+    'read_email_pdf_attachment',
     'send_email',
   ],
 };

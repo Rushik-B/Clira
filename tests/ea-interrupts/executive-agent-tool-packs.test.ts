@@ -94,6 +94,15 @@ function buildContext(params: {
           set_ok: 0,
           set_skipped_non_cacheable: 0,
         },
+        read_email_pdf_attachment: {
+          history_hit: 0,
+          runtime_hit: 0,
+          miss_not_found: 0,
+          miss_expired: 0,
+          miss_invalidated: 0,
+          set_ok: 0,
+          set_skipped_non_cacheable: 0,
+        },
         search_calendar: {
           history_hit: 0,
           runtime_hit: 0,
@@ -154,6 +163,7 @@ describe('Executive agent tool packs', () => {
 
     expect(toolNames).toContain('search_inbox_context');
     expect(toolNames).toContain('list_inbox_emails');
+    expect(toolNames).toContain('read_email_pdf_attachment');
     expect(toolNames).not.toContain('send_email');
     expect(toolNames).not.toContain('plan_calendar_change');
     expect(toolNames).not.toContain('commit_calendar_change');
@@ -214,6 +224,7 @@ describe('Executive agent tool packs', () => {
     const recallTools = Object.keys(buildExecutiveAgentTools(recallContext));
 
     expect(recallTools).toContain('list_inbox_emails');
+    expect(recallTools).not.toContain('read_email_pdf_attachment');
 
     const sendContext = buildContext({
       input: buildInput({ userRequest: 'draft an email to Alice' }),
@@ -225,6 +236,7 @@ describe('Executive agent tool packs', () => {
       selectedPacks: ['email_send_pack'],
     }));
 
+    expect(sendTools).toContain('read_email_pdf_attachment');
     expect(sendTools).not.toContain('list_inbox_emails');
   });
 });
