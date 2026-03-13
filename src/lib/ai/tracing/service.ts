@@ -274,7 +274,12 @@ export async function finalizeAiTraceRun(
   context: AiTraceContext | undefined,
   input: AiTraceRunFinishInput,
 ): Promise<void> {
-  if (!context?.enabled) return;
+  if (!context?.runId) return;
+
+  if (!context.enabled) {
+    sequenceCounters.delete(context.runId);
+    return;
+  }
 
   const endedAt = new Date();
   const durationMs = Math.max(0, endedAt.getTime() - (context.rootStartedAtMs ?? endedAt.getTime()));
@@ -288,8 +293,12 @@ export async function finalizeAiTraceRun(
     metadata: maybeSanitizePayload(context, input.metadata ?? undefined),
   };
 
-  await appendManifestRecord(context, record);
-  await appendRawTraceLine(context, record);
+  try {
+    await appendManifestRecord(context, record);
+    await appendRawTraceLine(context, record);
+  } finally {
+    sequenceCounters.delete(context.runId);
+  }
 }
 
 export function buildAiTraceMetadata(context: AiTraceContext | undefined): Record<string, unknown> | null {
