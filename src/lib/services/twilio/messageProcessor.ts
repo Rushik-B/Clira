@@ -641,7 +641,7 @@ async function runExecutiveAgent(
 
     return {
       success: false,
-      response: "Hmm, something went wrong on my end. Can you try that again?",
+      response: "I did not finish that cleanly. Ask again and I'll retry it.",
       error: message,
     };
   }
