@@ -173,6 +173,64 @@ describe('Executive tool result reuse cache', () => {
     expect(stats.search_memory.runtime_hit).toBe(1);
   });
 
+  test('reuses list_inbox_emails history results with normalized defaults', () => {
+    vi.setSystemTime(new Date('2026-02-26T12:00:00.000Z'));
+
+    const history: ConversationMessageDTO[] = [
+      buildAssistantMessage({
+        createdAt: new Date('2026-02-26T11:58:00.000Z'),
+        metadata: {
+          toolCalls: [
+            {
+              toolName: 'list_inbox_emails',
+              toolCallId: 'call-list',
+              args: {
+                filters: {
+                  sender: 'Tim Hortons',
+                  relativeWindow: 'last_7_days',
+                },
+                options: {
+                  includeBody: true,
+                },
+              },
+            },
+          ],
+          toolResults: [
+            {
+              toolName: 'list_inbox_emails',
+              toolCallId: 'call-list',
+              result: {
+                items: [{ messageId: 'msg-1' }],
+                matchedCount: 4,
+                returnedCount: 4,
+                truncated: false,
+              },
+            },
+          ],
+        },
+      }),
+    ];
+
+    const cache = createExecutiveToolResultReuseCache({ conversationHistory: history });
+    const cached = cache.get<Record<string, unknown>>('list_inbox_emails', {
+      filters: {
+        sender: ' tim hortons ',
+        relativeWindow: 'last_7_days',
+      },
+      options: {
+        includeBody: true,
+        limit: 20,
+        sortBy: 'newest',
+      },
+    });
+
+    expect(cached).toBeTruthy();
+    expect(cached?.matchedCount).toBe(4);
+    expect((cached?._cache as { source?: string } | undefined)?.source).toBe('history');
+    const stats = cache.getStats();
+    expect(stats.list_inbox_emails.history_hit).toBe(1);
+  });
+
   test('invalidates search_memory cache entries older than successful append_to_supermemory', () => {
     vi.setSystemTime(new Date('2026-02-26T12:00:00.000Z'));
 

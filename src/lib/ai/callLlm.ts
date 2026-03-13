@@ -5,6 +5,10 @@ import { withConcurrency, type ConcurrencyOptions } from './concurrency';
 import { withRetry, type RetryOptions } from './retry';
 import { logger } from '../logger';
 import { createSchemaRepairFunction } from './utils/repair';
+import type { AiTraceContext, AiTraceUsage } from '@/lib/ai/tracing';
+import {
+  withAiTraceSpan,
+} from '@/lib/ai/tracing';
 
 // Using `any` for schema typing here to avoid tight coupling to internal AI SDK generics.
 // Zod enforces structure at runtime; callers provide precise generic type T.
@@ -15,6 +19,7 @@ export type LlmOptions = {
   temperature?: number;
   abortSignal?: AbortSignal;
   providerOptions?: AISDKProviderOptions;
+  traceContext?: AiTraceContext;
   // telemetry/meta
   op?: string; // operation name e.g. 'reply.generate'
   concurrency?: ConcurrencyOptions; // per-op keyed concurrency
@@ -376,6 +381,15 @@ export function createToolBudgetController(params: {
   };
 }
 
+function normalizeUsage(usage: any): AiTraceUsage | null {
+  if (!usage || typeof usage !== 'object') return null;
+  return {
+    inputTokens: typeof usage.inputTokens === 'number' ? usage.inputTokens : null,
+    outputTokens: typeof usage.outputTokens === 'number' ? usage.outputTokens : null,
+    totalTokens: typeof usage.totalTokens === 'number' ? usage.totalTokens : null,
+  };
+}
+
 export async function callText({
   model,
   system,
@@ -386,6 +400,7 @@ export async function callText({
   concurrency,
   retry,
   providerOptions,
+  traceContext,
 }: LlmOptions & { prompt: string }) {
   const exec = async () => {
     const start = Date.now();
@@ -397,14 +412,40 @@ export async function callText({
     );
     buildCacheSurfaceLog({ op, system, prompt });
     try {
-      const result = await generateText({
-        model,
-        system,
-        prompt,
-        temperature,
-        abortSignal,
-        providerOptions,
-      });
+      const result = await withAiTraceSpan(
+        traceContext,
+        {
+          kind: 'LLM',
+          name: op,
+          input: {
+            model: modelLabelStart,
+            system,
+            prompt,
+            temperature,
+            providerOptions,
+          },
+        },
+        async () => {
+          const value = await generateText({
+            model,
+            system,
+            prompt,
+            temperature,
+            abortSignal,
+            providerOptions,
+          });
+          const { text, usage, response } = value as any;
+          return {
+            result: value,
+            output: {
+              text,
+              usage,
+              modelId: response?.modelId ?? modelLabelStart,
+            },
+            usage: normalizeUsage(usage),
+          };
+        },
+      );
       const { text, usage, response } = result as any;
       const dur = Date.now() - start;
       const modelId = (response && (response as any).modelId) || modelLabelStart;
@@ -425,6 +466,87 @@ export async function callText({
   };
 
   return withConcurrency(() => withRetry(exec, retry), { key: concurrency?.key ?? op, maxConcurrency: concurrency?.maxConcurrency });
+}
+
+export async function callTextWithMessages({
+  model,
+  system,
+  messages,
+  temperature = 0.6,
+  abortSignal,
+  op = 'text.messages',
+  concurrency,
+  retry,
+  providerOptions,
+  traceContext,
+}: LlmOptions & { messages: any[] }) {
+  const exec = async () => {
+    const start = Date.now();
+    const messageCount = Array.isArray(messages) ? messages.length : 0;
+    const systemChars = system?.length ?? 0;
+    const modelLabelStart = typeof model === 'string' ? model : 'unknown';
+    logger.info(
+      `🚀 [llm] start op=${op} model=${modelLabelStart} messages=${messageCount} sys=${systemChars} temp=${temperature}`,
+    );
+    try {
+      const result = await withAiTraceSpan(
+        traceContext,
+        {
+          kind: 'LLM',
+          name: op,
+          input: {
+            model: modelLabelStart,
+            system,
+            messages,
+            temperature,
+            providerOptions,
+          },
+        },
+        async () => {
+          const value = await generateText({
+            model,
+            system,
+            messages,
+            temperature,
+            abortSignal,
+            providerOptions,
+          } as any);
+          const { text, usage, totalUsage, response } = value as any;
+          return {
+            result: value,
+            output: {
+              text,
+              usage: totalUsage ?? usage,
+              modelId: response?.modelId ?? modelLabelStart,
+            },
+            usage: normalizeUsage(totalUsage ?? usage),
+          };
+        },
+      );
+      const { text, usage, totalUsage, response } = result as any;
+      const dur = Date.now() - start;
+      const modelId = (response && (response as any).modelId) || modelLabelStart;
+      const u = totalUsage ?? usage;
+      logger.info(
+        `✅ [llm] done op=${op} model=${modelId} 🔢 in=${u?.inputTokens ?? '-'} out=${u?.outputTokens ?? '-'} total=${u?.totalTokens ?? '-'} ⏱️ ${dur}ms`,
+      );
+      return { text, usage: u };
+    } catch (err) {
+      const dur = Date.now() - start;
+      const usage = (err as any)?.usage;
+      const response = (err as any)?.response;
+      const modelId = (response && (response as any).modelId) || modelLabelStart;
+      logger.warn(
+        `❌ [llm] fail op=${op} model=${modelId} 🔢 in=${usage?.inputTokens ?? '-'} out=${usage?.outputTokens ?? '-'} total=${usage?.totalTokens ?? '-'} ⏱️ ${dur}ms reason=${(err as any)?.code ?? (err as any)?.name ?? 'error'}`,
+      );
+      throw err;
+    }
+  };
+
+  return withConcurrency(() => withRetry(exec, retry), {
+    key: concurrency?.key ?? op,
+    maxConcurrency: concurrency?.maxConcurrency,
+  });
 }
 
 /**
@@ -450,6 +572,7 @@ export async function callTextWithTools({
   concurrency,
   retry,
   providerOptions,
+  traceContext,
 }: LlmOptions & {
   prompt?: string;
   messages?: MessageLike[];
@@ -515,16 +638,48 @@ export async function callTextWithTools({
         ? [stepCap, ...(Array.isArray(stopWhen) ? stopWhen : [stopWhen])]
         : stepCap;
 
-      const result = await generateText({
-        model,
-        system,
-        ...(Array.isArray(messages) ? { messages } : { prompt }),
-        temperature,
-        tools: budgetedTools,
-        stopWhen: composedStopWhen,
-        abortSignal: combinedAbortSignal,
-        providerOptions,
-      } as any);
+      const result = await withAiTraceSpan(
+        traceContext,
+        {
+          kind: 'LLM',
+          name: op,
+          input: {
+            model: modelLabelStart,
+            system,
+            prompt,
+            temperature,
+            providerOptions,
+            maxSteps: maxSteps ?? null,
+            toolBudgets: budgetConfig ?? null,
+          },
+        },
+        async () => {
+          const value = await generateText({
+            model,
+            system,
+            ...(Array.isArray(messages) ? { messages } : { prompt }),
+            temperature,
+            tools: budgetedTools,
+            stopWhen: composedStopWhen,
+            abortSignal: combinedAbortSignal,
+            providerOptions,
+          } as any);
+          const { text, usage, totalUsage, response, steps, toolCalls, toolResults } = value as any;
+          const normalizedUsage = normalizeUsage(totalUsage ?? usage);
+          return {
+            result: value,
+            output: {
+              text,
+              usage: totalUsage ?? usage,
+              modelId: response?.modelId ?? modelLabelStart,
+              steps,
+              toolCalls,
+              toolResults,
+            },
+            usage: normalizedUsage,
+          };
+        },
+      );
 
       const { text, usage, totalUsage, response, steps, toolCalls, toolResults } = result as any;
       const dur = Date.now() - start;
@@ -589,6 +744,7 @@ export async function callTextWithToolsStep({
   concurrency,
   retry,
   providerOptions,
+  traceContext,
 }: LlmOptions & {
   messages: any[];
   tools: any;
@@ -616,16 +772,45 @@ export async function callTextWithToolsStep({
         ? [stepCap, ...(Array.isArray(stopWhen) ? stopWhen : [stopWhen])]
         : stepCap;
 
-      const result = await generateText({
-        model,
-        system,
-        messages,
-        temperature,
-        tools,
-        stopWhen: composedStopWhen,
-        abortSignal,
-        providerOptions,
-      } as any);
+      const result = await withAiTraceSpan(
+        traceContext,
+        {
+          kind: 'LLM',
+          name: op,
+          input: {
+            model: modelLabelStart,
+            system,
+            messages,
+            temperature,
+            providerOptions,
+          },
+        },
+        async () => {
+          const value = await generateText({
+            model,
+            system,
+            messages,
+            temperature,
+            tools,
+            stopWhen: composedStopWhen,
+            abortSignal,
+            providerOptions,
+          } as any);
+          const { text, usage, totalUsage, response, steps, toolCalls, toolResults } = value as any;
+          return {
+            result: value,
+            output: {
+              text,
+              usage: totalUsage ?? usage,
+              modelId: response?.modelId ?? modelLabelStart,
+              steps,
+              toolCalls,
+              toolResults,
+            },
+            usage: normalizeUsage(totalUsage ?? usage),
+          };
+        },
+      );
 
       const { text, usage, totalUsage, response, steps, toolCalls, toolResults } = result as any;
       const dur = Date.now() - start;
@@ -673,6 +858,7 @@ export async function callObject<T>({
   concurrency,
   retry,
   providerOptions,
+  traceContext,
 }: LlmOptions & { prompt: string; schema: any }) {
   const exec = async () => {
     const start = Date.now();
@@ -684,16 +870,43 @@ export async function callObject<T>({
     );
     buildCacheSurfaceLog({ op, system, prompt });
     try {
-      const result = await generateObject({
-        model,
-        system,
-        prompt,
-        schema,
-        temperature,
-        abortSignal,
-        experimental_repairText: createSchemaRepairFunction(),
-        providerOptions,
-      });
+      const result = await withAiTraceSpan(
+        traceContext,
+        {
+          kind: 'LLM',
+          name: op,
+          input: {
+            model: modelLabelStart,
+            system,
+            prompt,
+            schema,
+            temperature,
+            providerOptions,
+          },
+        },
+        async () => {
+          const value = await generateObject({
+            model,
+            system,
+            prompt,
+            schema,
+            temperature,
+            abortSignal,
+            experimental_repairText: createSchemaRepairFunction(),
+            providerOptions,
+          });
+          const { object, usage, response } = value as any;
+          return {
+            result: value,
+            output: {
+              object,
+              usage,
+              modelId: response?.modelId ?? modelLabelStart,
+            },
+            usage: normalizeUsage(usage),
+          };
+        },
+      );
       const { object, usage, response } = result as any;
       const dur = Date.now() - start;
       const modelId = (response && (response as any).modelId) || modelLabelStart;
@@ -735,6 +948,7 @@ export async function callObjectWithTools<T>({
   concurrency,
   retry,
   providerOptions,
+  traceContext,
 }: LlmOptions & {
   prompt: string;
   schema: any;
@@ -757,18 +971,49 @@ export async function callObjectWithTools<T>({
     });
 
     try {
-      const result = await generateText({
-        model,
-        system,
-        prompt,
-        temperature,
-        tools,
-        // Structured output adds an extra step after tool calls to produce the final object.
-        stopWhen: stepCountIs((maxSteps ?? 5) + 1),
-        output: Output.object({ schema }),
-        abortSignal,
-        providerOptions,
-      } as any);
+      const result = await withAiTraceSpan(
+        traceContext,
+        {
+          kind: 'LLM',
+          name: op,
+          input: {
+            model: modelLabelStart,
+            system,
+            prompt,
+            schema,
+            temperature,
+            providerOptions,
+            maxSteps: maxSteps ?? null,
+          },
+        },
+        async () => {
+          const value = await generateText({
+            model,
+            system,
+            prompt,
+            temperature,
+            tools,
+            // Structured output adds an extra step after tool calls to produce the final object.
+            stopWhen: stepCountIs((maxSteps ?? 5) + 1),
+            output: Output.object({ schema }),
+            abortSignal,
+            providerOptions,
+          } as any);
+          const { output, usage, totalUsage, response, steps, toolCalls, toolResults } = value as any;
+          return {
+            result: value,
+            output: {
+              object: output,
+              usage: totalUsage ?? usage,
+              modelId: response?.modelId ?? modelLabelStart,
+              steps,
+              toolCalls,
+              toolResults,
+            },
+            usage: normalizeUsage(totalUsage ?? usage),
+          };
+        },
+      );
 
       const { output, usage, totalUsage, response, steps, toolCalls, toolResults } = result as any;
       const dur = Date.now() - start;

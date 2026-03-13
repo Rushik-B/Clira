@@ -7,7 +7,7 @@ import { resolve } from 'path';
 config({ path: resolve(__dirname, '../.env') });
 config({ path: resolve(__dirname, '../.env.local') });
 
-import { Worker, Job, JobProgress } from 'bullmq';
+import { Worker, Job, JobProgress, UnrecoverableError } from 'bullmq';
 import redisConnection from './lib/services/utils/redis';
 import { 
   OnboardingJobData, 
@@ -48,6 +48,7 @@ import { encryptEmailContent, decryptEmailContent } from '@/lib/security/emailCr
 // AI queue label removed: no longer creating/applying a dedicated Gmail label
 import { normalizeGmailLabelColor } from '@/lib/gmail/labelColors';
 import { triggerReminderNotification, markReminderMissed } from '@/lib/services/reminderNotificationService';
+import { isPrismaAuthenticationFailure } from '@/lib/prismaErrors';
 import {
   isTelegramEnabled,
   startTelegramMonitor,
@@ -57,6 +58,15 @@ import {
   writeTelegramWorkerHeartbeat,
 } from '@/lib/services/telegram';
 import { processInboxIndexJob } from '@/lib/services/inbox-search/worker-handlers';
+import {
+  type AiTraceContext,
+  createAiTraceRoot,
+  deriveOutputPreview,
+  deriveRunStatusFromError,
+  finalizeAiTraceRun,
+  withAiTraceSpan,
+  resolveAiTraceDir,
+} from '@/lib/ai/tracing';
 
 console.log('🚀 Background Worker process started...');
 console.log('🔧 Environment variables loaded:');
@@ -66,6 +76,9 @@ console.log(`  - FEATURE_FLAG_PER_EMAIL_LLM: ${process.env.FEATURE_FLAG_PER_EMAI
 console.log('🧠 Supermemory worker enabled in main process:');
 console.log(`  - SUPERMEMORY_API_KEY configured: ${isSupermemoryConfigured()}`);
 console.log(`  - NODE_ENV: ${process.env.NODE_ENV}`);
+console.log('📊 AI tracing:');
+console.log(`  - CLIRA_AI_TRACE_ENABLED: ${process.env.CLIRA_AI_TRACE_ENABLED ?? '(unset)'}`);
+console.log(`  - Trace dir: ${resolveAiTraceDir()}`);
 
 // Track active workers for graceful shutdown
 const workers: Worker[] = [];
@@ -320,6 +333,7 @@ const masterPromptWorker = new Worker<MasterPromptJobData>('master-prompt-genera
 const replyWorker = new Worker<ReplyGenerationJobData>('reply-generation', async (job: any) => {
   const { emailId, userId } = job.data;
   console.log(`[REPLY START] Generating reply for email: ${emailId} (Job ID: ${job.id})`);
+  let traceContext: AiTraceContext | undefined;
 
   try {
     job.updateProgress(10);
@@ -343,13 +357,31 @@ const replyWorker = new Worker<ReplyGenerationJobData>('reply-generation', async
 
     job.updateProgress(30);
 
+    traceContext = await createAiTraceRoot({
+      runId: `reply-job:${job.id}`,
+      pipeline: 'reply-generation',
+      userId,
+      channel: 'email',
+      emailId,
+      mailboxId: email.mailboxId ?? undefined,
+      externalMessageId: email.messageId,
+      label: 'worker.replyGeneration',
+      inputPreview: `${email.subject} <- ${email.from}`,
+      metadata: {
+        source: 'worker.replyGeneration',
+        bullmqJobId: job.id,
+      },
+    });
+
     // Generate the reply
     const replyGenerator = new ReplyGeneratorService();
     const replyResult = await replyGenerator.generateReply({
       userId: userId,
+      emailId,
       mailboxId: email.mailboxId ?? undefined,
       gmailMessageId: email.messageId, // Gmail message ID for label application
       currentLabelIds: [], // Labels not stored in DB; will be fetched by planner if needed
+      traceContext,
       incomingEmail: {
         from: email.from,
         to: email.to,
@@ -396,17 +428,33 @@ const replyWorker = new Worker<ReplyGenerationJobData>('reply-generation', async
 
         // No dedicated AI label tagging on source message
 
-          const draftResult = await gmailResult.gmail.createDraftReply({
-          to: email.from,
-          cc: replyResult.ccRecipients || [],
-          subject: email.subject.startsWith('Re: ') ? email.subject : `Re: ${email.subject}`,
-          body: trimmed,
-          inReplyTo: email.rfc2822MessageId || undefined,
-          references: email.references || undefined,
-          threadId: email.gmailThreadId || undefined,
-            // No dedicated AI label on drafts
-            labelIds: undefined,
-        });
+        const draftResult = await withAiTraceSpan(
+          traceContext,
+          {
+            kind: 'STAGE',
+            name: 'create-gmail-draft',
+            input: {
+              to: email.from,
+              cc: replyResult.ccRecipients || [],
+              subject: email.subject,
+              threadId: email.gmailThreadId || undefined,
+            },
+          },
+          async () => {
+            const result = await gmailResult.gmail.createDraftReply({
+              to: email.from,
+              cc: replyResult.ccRecipients || [],
+              subject: email.subject.startsWith('Re: ') ? email.subject : `Re: ${email.subject}`,
+              body: trimmed,
+              inReplyTo: email.rfc2822MessageId || undefined,
+              references: email.references || undefined,
+              threadId: email.gmailThreadId || undefined,
+              // No dedicated AI label on drafts
+              labelIds: undefined,
+            });
+            return { result, output: result };
+          },
+        );
 
         gmailDraftId = draftResult.draftId;
         console.log(`✅ Gmail draft created in worker: ${gmailDraftId} for email ${emailId}`);
@@ -453,6 +501,15 @@ const replyWorker = new Worker<ReplyGenerationJobData>('reply-generation', async
 
     job.updateProgress(100);
     console.log(`[REPLY COMPLETE] Reply generated for email ${emailId} with ${replyResult.confidence}% confidence`);
+
+    await finalizeAiTraceRun(traceContext, {
+      status: 'OK',
+      outputPreview: deriveOutputPreview(replyResult.reply),
+      metadata: {
+        confidence: replyResult.confidence,
+        gmailDraftId,
+      },
+    });
     
     return {
       emailId,
@@ -461,6 +518,11 @@ const replyWorker = new Worker<ReplyGenerationJobData>('reply-generation', async
     };
   } catch (error) {
     console.error(`[REPLY FAILED] Reply generation failed for email ${emailId}:`, error);
+    await finalizeAiTraceRun(traceContext, {
+      status: deriveRunStatusFromError(error),
+      outputPreview: null,
+      errorMessage: error instanceof Error ? error.message : String(error),
+    });
     throw error;
   }
 }, { 
@@ -489,6 +551,11 @@ const reminderNotificationWorker = new Worker<ReminderNotificationJobData>(
       console.log(`[REMINDER NOTIFY COMPLETE] reminder=${reminderId} (Job ID: ${job.id})`);
     } catch (error) {
       console.error(`[REMINDER NOTIFY FAILED] reminder=${reminderId} (Job ID: ${job.id})`, error);
+      if (isPrismaAuthenticationFailure(error)) {
+        throw new UnrecoverableError(
+          `Non-retryable database authentication failure while processing reminder ${reminderId}`,
+        );
+      }
       throw error;
     }
   },
@@ -500,6 +567,13 @@ const reminderNotificationWorker = new Worker<ReminderNotificationJobData>(
 
 reminderNotificationWorker.on('failed', async (job, error) => {
   if (!job) return;
+  if (isPrismaAuthenticationFailure(error)) {
+    console.error(
+      `[REMINDER NOTIFY NON-RETRYABLE] reminder=${job.data.reminderId} skipping retry and missed-state write due to Prisma authentication failure`,
+    );
+    return;
+  }
+
   const attempts = job.opts.attempts ?? 1;
   const attemptsMade = job.attemptsMade ?? 0;
   if (attemptsMade < attempts) {
@@ -510,11 +584,18 @@ reminderNotificationWorker.on('failed', async (job, error) => {
   }
 
   const reason = error instanceof Error ? error.message : 'delivery-failed';
-  await markReminderMissed({
-    reminderId: job.data.reminderId,
-    userId: job.data.userId,
-    reason,
-  });
+  try {
+    await markReminderMissed({
+      reminderId: job.data.reminderId,
+      userId: job.data.userId,
+      reason,
+    });
+  } catch (markError) {
+    console.error(
+      `[REMINDER NOTIFY MISS MARK FAILED] reminder=${job.data.reminderId} unable to persist MISSED state after terminal failure`,
+      markError,
+    );
+  }
 });
 
 // --- Worker for Creating Gmail Labels & Fast Onboarding Mapping ---

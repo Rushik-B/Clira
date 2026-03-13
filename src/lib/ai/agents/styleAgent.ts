@@ -2,6 +2,7 @@ import { readPromptFile } from '@/lib/prompts';
 import { callObject } from '@/lib/ai/callLlm';
 import { models } from '@/lib/ai/models';
 import { ReplyGenerationResultSchema, type ReplyGenerationResultDTO, type ReplyPlanDTO } from '@/lib/ai/schemas/schemas';
+import type { AiTraceContext } from '@/lib/ai/tracing';
 
 type IncomingEmailForStyleAgent = {
   from: string;
@@ -31,6 +32,7 @@ export type StyleAgentInput = {
    * Useful for deterministic testing (Injection Harness).
    */
   strict?: boolean;
+  traceContext?: AiTraceContext;
 };
 
 function truncate(text: string, maxChars: number): string {
@@ -107,6 +109,7 @@ export class StyleAgent {
         concurrency: { key: 'reply', maxConcurrency: 2 },
         retry: { maxAttempts: 3, baseDelayMs: 600 },
         abortSignal: input.abortSignal,
+        traceContext: input.traceContext,
       });
 
       return object;
@@ -129,4 +132,3 @@ export class StyleAgent {
     }
   }
 }
-

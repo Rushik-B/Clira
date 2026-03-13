@@ -7,6 +7,8 @@ Use the structured contract:
 Rules:
 - Use `queryText` only for actual text search terms.
 - Put sender, recipient, date range, relative window, attachment, thread, message, and mailbox scope into typed fields.
+- `filters` is only for narrowing constraints. Do not put the main search phrase inside `filters`.
+- Use `list_inbox_emails` instead when you need the complete bounded set of matching emails, not ranked evidence.
 - Use `find` for ranked email matches.
 - Use `summarize_range` for summaries over a constrained slice of mail.
 - Use `count` for deterministic totals.
@@ -15,6 +17,8 @@ Rules:
 - Use `quick` for simple lookup.
 
 Examples:
+- Good: `queryText="STAT 271 syllabus"` with `filters.hasAttachment=true`
+- Bad: `filters.queryText="STAT 271 syllabus"`
 - Check my inbox for Feb 19 -> `action="summarize_range"` with `filters.startDate` and `filters.endDate`
 - Any emails from Alice with attachments last week? -> `action="find"` with `filters.sender`, `filters.hasAttachment`, and date filters
 - How many recruiter emails last month? -> `action="count"` with `queryText="recruiter"` and `filters.relativeWindow="last_30_days"`

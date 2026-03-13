@@ -259,6 +259,44 @@ function createDeterministicSummary(
   return `Found ${candidates.length} matching email${candidates.length === 1 ? '' : 's'}.`;
 }
 
+const SOURCE_TAG_MAX = 12;
+
+/** Extracts a short sender tag from "Display Name <email>" or "email@domain.com". */
+function shortSenderTag(from: string): string {
+  const beforeAngle = from.split('<')[0]?.trim() ?? '';
+  if (beforeAngle.length > 0) {
+    return beforeAngle.slice(0, SOURCE_TAG_MAX);
+  }
+  const email = from.match(/<([^>]+)>/)?.[1] ?? from.trim();
+  const local = email.split('@')[0] ?? '';
+  return local.slice(0, SOURCE_TAG_MAX) || '?';
+}
+
+/**
+ * Prepends source date and sender so relative time ("yesterday") and pronouns ("I")
+ * are anchored correctly. Lean format: [Mar 5, 2026 · Sonja]
+ */
+function sourceGroundContent(
+  content: string,
+  sourceDateIso: string,
+  from: string,
+  maxChars: number,
+): string {
+  if (!content.trim()) return content;
+  try {
+    const d = new Date(sourceDateIso);
+    if (Number.isNaN(d.getTime())) return content.slice(0, maxChars);
+    const dateStr = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    const sender = shortSenderTag(from);
+    const prefix = sender ? `[${dateStr} · ${sender}] ` : `[${dateStr}] `;
+    const budget = Math.max(0, maxChars - prefix.length);
+    const trimmed = content.slice(0, budget);
+    return trimmed ? `${prefix}${trimmed}` : prefix.trimEnd();
+  } catch {
+    return content.slice(0, maxChars);
+  }
+}
+
 function createDeterministicEvidencePack(params: {
   action: EmailRetrievalAction;
   candidates: InboxSearchCandidate[];
@@ -313,6 +351,7 @@ function createDeterministicEvidencePack(params: {
     ).length,
   });
 
+  const QUOTE_MAX = 400;
   return {
     action,
     matches: topCandidates.map((candidate) => ({
@@ -324,7 +363,9 @@ function createDeterministicEvidencePack(params: {
       subject: candidate.subject,
       date: candidate.date,
       whyRelevant: candidate.whyRelevant,
-      quote: includeSnippets ? candidate.snippet.slice(0, 360) : '',
+      quote: includeSnippets
+        ? sourceGroundContent(candidate.snippet, candidate.date, candidate.from, QUOTE_MAX)
+        : '',
     })),
     quotes: includeQuotes
       ? topCandidates.slice(0, COMPACT_QUOTE_LIMIT).map((candidate) => ({
@@ -332,7 +373,7 @@ function createDeterministicEvidencePack(params: {
           messageId: candidate.messageId,
           mailboxId: candidate.mailboxId,
           mailboxEmail: candidate.mailboxEmail,
-          quote: candidate.snippet.slice(0, 360),
+          quote: sourceGroundContent(candidate.snippet, candidate.date, candidate.from, QUOTE_MAX),
           note: candidate.whyRelevant.slice(0, 200),
         }))
       : [],
@@ -596,7 +637,7 @@ async function applyAdaptiveExpansion(params: {
     };
   }
 
-  let decision: EmailExpansionDecisionDTO;
+  let decision: EmailExpansionDecisionDTO; 
   try {
     decision = await runExpansionDecision({
       request: params.request,
@@ -675,6 +716,11 @@ async function applyAdaptiveExpansion(params: {
       }
 
       remainingChars -= slice.bodyCharsUsed;
+      const BODY_MAX = 5000;
+      const groundedMessages = slice.messages.map((msg) => ({
+        ...msg,
+        bodyText: sourceGroundContent(msg.bodyText ?? '', msg.date, msg.from, BODY_MAX),
+      }));
       expandedThreads.push({
         threadId: slice.threadId,
         mailboxId: slice.mailboxId,
@@ -686,7 +732,7 @@ async function applyAdaptiveExpansion(params: {
         hasMoreBefore: slice.hasMoreBefore,
         hasMoreAfter: slice.hasMoreAfter,
         messagesReturned: slice.messagesReturned,
-        messages: slice.messages,
+        messages: groundedMessages,
       });
 
       if (anchor.promoted) {

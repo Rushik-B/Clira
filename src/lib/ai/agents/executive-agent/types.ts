@@ -4,6 +4,7 @@ import type {
 } from '@/lib/ai/tools/sendProgressUpdate';
 import type {
   InboxSearchToolArgs,
+  ListInboxEmailsToolArgs,
 } from '@/lib/services/inbox-search/types';
 import type {
   ConversationMessageDTO,
@@ -17,6 +18,7 @@ import type {
   ExecutiveToolResultReuseCache,
   ExecutiveToolResultCacheStats,
 } from './toolResultReuseCache';
+import type { AiTraceContext } from '@/lib/ai/tracing';
 
 export interface ExecutiveAgentInput {
   userId: string;
@@ -27,6 +29,7 @@ export interface ExecutiveAgentInput {
   conversationHistory: ConversationMessageDTO[];
   abortSignal?: AbortSignal;
   progressContext?: ProgressUpdateContext;
+  traceContext?: AiTraceContext;
   runContext?: {
     runId: string;
     burstId: string;
@@ -125,6 +128,7 @@ export interface ExecutiveTurnFeatures {
 
 export interface PackSelection {
   packId: ToolPackId;
+  packIds: ToolPackId[];
   reasons: string[];
   reminders: string[];
 }
@@ -156,6 +160,7 @@ export interface PromptContext {
 }
 
 export type SearchInboxContextArgs = InboxSearchToolArgs;
+export type ListInboxEmailsArgs = ListInboxEmailsToolArgs;
 
 export type RetrievalProfile = 'default' | 'messaging';
 
@@ -164,6 +169,7 @@ export type ExecutiveRuntimeContext = {
   channel: ProgressUpdateChannel;
   retrievalProfile: RetrievalProfile;
   selectedPack: ToolPackId;
+  selectedPacks: ToolPackId[];
   selectorReasons: string[];
   turnFeatures: ExecutiveTurnFeatures;
   userTimezone: string;

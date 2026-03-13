@@ -1,8 +1,13 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { EmailEvidencePackSchema } from '@/lib/ai/schemas/emailRetrievalSchemas';
+import { MESSAGING_INBOX_CALL_LIMITS } from '@/lib/ai/agents/executive-agent/constants';
 
 const retrievalMocks = vi.hoisted(() => ({
   runEmailRetrieval: vi.fn(),
+}));
+
+const listInboxMocks = vi.hoisted(() => ({
+  listInboxEmails: vi.fn(),
 }));
 
 const helperMocks = vi.hoisted(() => ({
@@ -36,6 +41,10 @@ const prismaMocks = vi.hoisted(() => ({
 
 vi.mock('@/lib/ai/agents/emailRetrievalSubagent', () => ({
   runEmailRetrieval: retrievalMocks.runEmailRetrieval,
+}));
+
+vi.mock('@/lib/services/inbox-search', () => ({
+  listInboxEmails: listInboxMocks.listInboxEmails,
 }));
 
 vi.mock('@/lib/ai/agents/executive-agent/helpers', () => ({
@@ -116,6 +125,31 @@ function createEvidencePack(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function createListInboxEmailsResult(overrides: Record<string, unknown> = {}) {
+  return {
+    items: [
+      {
+        messageId: 'message-1',
+        threadId: 'thread-1',
+        mailboxId: 'mailbox-1',
+        mailboxEmail: 'user@example.com',
+        sentAt: '2026-03-01T10:00:00.000Z',
+        from: 'Tim Hortons <noreply@noreply.timhortons.ca>',
+        to: ['user@example.com'],
+        cc: [],
+        subject: 'Thanks for your order',
+        snippet: "Here's your receipt for order 9190.",
+        hasAttachment: false,
+        bodyText: 'Total $9.66',
+      },
+    ],
+    matchedCount: 1,
+    returnedCount: 1,
+    truncated: false,
+    ...overrides,
+  };
+}
+
 function normalizeCacheValue(value: unknown): unknown {
   if (typeof value === 'string') {
     return value.trim().replace(/\s+/g, ' ').toLowerCase();
@@ -166,6 +200,15 @@ function createMockToolResultCache() {
     getStats() {
       return {
         search_inbox_context: {
+          history_hit: 0,
+          runtime_hit: 0,
+          miss_not_found: 0,
+          miss_expired: 0,
+          miss_invalidated: 0,
+          set_ok: 0,
+          set_skipped_non_cacheable: 0,
+        },
+        list_inbox_emails: {
           history_hit: 0,
           runtime_hit: 0,
           miss_not_found: 0,
@@ -284,6 +327,7 @@ describe('buildContextTools search_inbox_context', () => {
       }),
     );
     retrievalMocks.runEmailRetrieval.mockResolvedValue(createEvidencePack());
+    listInboxMocks.listInboxEmails.mockResolvedValue(createListInboxEmailsResult());
     supermemoryMocks.isSupermemoryConfigured.mockReturnValue(false);
     prismaMocks.mailboxFindMany.mockResolvedValue([]);
   });
@@ -329,6 +373,7 @@ describe('buildContextTools search_inbox_context', () => {
       context: createContext(),
       nextSubagentCallIndex: () => 0,
     }) as Record<string, { execute: (args: Record<string, unknown>) => Promise<unknown> }>;
+    const quickLimit = MESSAGING_INBOX_CALL_LIMITS.quick;
 
     const first = await tools.search_inbox_context.execute({
       action: 'find',
@@ -340,27 +385,30 @@ describe('buildContextTools search_inbox_context', () => {
       mode: 'quick',
       queryText: 'find invoice a',
     });
-    const secondDistinct = await tools.search_inbox_context.execute({
-      action: 'find',
-      mode: 'quick',
-      queryText: 'Find invoice B',
-    });
+    const distinctResults: unknown[] = [];
+    for (let index = 1; index < quickLimit; index += 1) {
+      distinctResults.push(await tools.search_inbox_context.execute({
+        action: 'find',
+        mode: 'quick',
+        queryText: `Find invoice ${String.fromCharCode(65 + index)}`,
+      }));
+    }
     const overBudget = await tools.search_inbox_context.execute({
       action: 'find',
       mode: 'quick',
-      queryText: 'Find invoice C',
+      queryText: `Find invoice ${String.fromCharCode(65 + quickLimit)}`,
     });
 
     expect(EmailEvidencePackSchema.parse(first)).toBeTruthy();
     expect(EmailEvidencePackSchema.parse(duplicate)).toBeTruthy();
-    expect(EmailEvidencePackSchema.parse(secondDistinct)).toBeTruthy();
+    expect(EmailEvidencePackSchema.parse(distinctResults.at(-1))).toBeTruthy();
     expect((duplicate as any).metadata?.cached).toBe(true);
-    expect(retrievalMocks.runEmailRetrieval).toHaveBeenCalledTimes(2);
+    expect(retrievalMocks.runEmailRetrieval).toHaveBeenCalledTimes(quickLimit);
     expect(helperMocks.buildToolBudgetExceededResult).toHaveBeenCalledTimes(1);
     expect(overBudget).toEqual({
       toolName: 'search_inbox_context',
       message: 'Max quick inbox searches reached.',
-      counts: { total: 2, tool: 2 },
+      counts: { total: quickLimit, tool: quickLimit },
       budgetExceeded: true,
     });
   });
@@ -453,6 +501,89 @@ describe('buildContextTools search_inbox_context', () => {
         },
       }),
     );
+  });
+
+  test('memoizes duplicate list_inbox_emails calls within one run and avoids subagent execution', async () => {
+    const nextSubagentCallIndex = vi.fn(() => 0);
+    const tools = buildContextTools({
+      context: createContext({
+        input: {
+          userRequest: 'How much did I spend at Tim Hortons this week?',
+        },
+      }),
+      nextSubagentCallIndex,
+    }) as Record<string, { execute: (args: Record<string, unknown>) => Promise<unknown> }>;
+
+    const first = await tools.list_inbox_emails.execute({
+      filters: {
+        sender: 'Tim Hortons',
+        relativeWindow: 'last_7_days',
+      },
+      options: {
+        includeBody: true,
+        limit: 50,
+      },
+    });
+    const second = await tools.list_inbox_emails.execute({
+      filters: {
+        sender: 'tim hortons',
+        relativeWindow: 'last_7_days',
+      },
+      options: {
+        includeBody: true,
+        limit: 20,
+      },
+    });
+
+    expect(listInboxMocks.listInboxEmails).toHaveBeenCalledTimes(1);
+    expect(listInboxMocks.listInboxEmails).toHaveBeenCalledWith(
+      expect.objectContaining({
+        filters: expect.objectContaining({
+          sender: 'Tim Hortons',
+          relativeWindow: 'last_7_days',
+        }),
+        options: expect.objectContaining({
+          includeBody: true,
+          limit: 20,
+          sortBy: 'newest',
+          timezone: 'America/Vancouver',
+        }),
+      }),
+      expect.objectContaining({
+        userId: 'user-1',
+      }),
+    );
+    expect(retrievalMocks.runEmailRetrieval).toHaveBeenCalledTimes(0);
+    expect(helperMocks.runWithSubagentBudget).toHaveBeenCalledTimes(0);
+    expect(nextSubagentCallIndex).toHaveBeenCalledTimes(0);
+    expect((first as any).metadata).toBeUndefined();
+    expect((second as any).metadata?.cached).toBe(true);
+  });
+
+  test('returns an explicit validation result for invalid list_inbox_emails arguments', async () => {
+    const tools = buildContextTools({
+      context: createContext(),
+      nextSubagentCallIndex: () => 0,
+    }) as Record<string, { execute: (args: Record<string, unknown>) => Promise<unknown> }>;
+
+    const result = await tools.list_inbox_emails.execute({
+      options: {
+        includeBody: true,
+      },
+    });
+
+    expect(listInboxMocks.listInboxEmails).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      items: [],
+      matchedCount: 0,
+      returnedCount: 0,
+      truncated: false,
+      note:
+        'list_inbox_emails requires threadId or messageId, or at least one identity/content constraint (sender, recipient, or subjectContains) plus one scope constraint (mailbox scope or date range).',
+      metadata: {
+        validationError: true,
+      },
+    });
   });
 
   test('memory and calendar context tools keep existing local behavior', async () => {

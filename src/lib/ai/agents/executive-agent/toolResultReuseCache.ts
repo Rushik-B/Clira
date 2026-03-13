@@ -4,6 +4,7 @@ import type {
 
 const TOOL_RESULT_TTL_MS = {
   search_inbox_context: 10 * 60 * 1000,
+  list_inbox_emails: 10 * 60 * 1000,
   search_calendar: 5 * 60 * 1000,
   check_calendar: 5 * 60 * 1000,
   search_memory: 15 * 60 * 1000,
@@ -11,6 +12,7 @@ const TOOL_RESULT_TTL_MS = {
 
 const CACHEABLE_TOOL_NAMES = [
   'search_inbox_context',
+  'list_inbox_emails',
   'search_calendar',
   'check_calendar',
   'search_memory',
@@ -135,6 +137,10 @@ function normalizeValue(value: unknown): unknown {
   return Object.fromEntries(normalizedEntries);
 }
 
+function normalizeCaseInsensitiveString(value: unknown): unknown {
+  return typeof value === 'string' ? value.trim().toLowerCase() : value;
+}
+
 function deriveSearchInboxIntentFingerprint(args: unknown, result?: unknown): string {
   const argsRecord = isRecord(args) ? args : null;
   const resultRecord = isRecord(result) ? result : null;
@@ -174,6 +180,33 @@ function normalizeToolArgs(toolName: CacheableToolName, args: unknown): unknown 
       ...normalized,
       mode: normalized.mode ?? 'quick',
       intentFingerprint: deriveSearchInboxIntentFingerprint(normalized),
+    };
+  }
+
+  if (toolName === 'list_inbox_emails') {
+    const rawFilters = isRecord(normalized.filters) ? normalized.filters : {};
+    const normalizedFilters = isRecord(normalized.filters)
+      ? {
+          ...rawFilters,
+          sender: normalizeCaseInsensitiveString(rawFilters.sender),
+          recipient: normalizeCaseInsensitiveString(rawFilters.recipient),
+          subjectContains: normalizeCaseInsensitiveString(rawFilters.subjectContains),
+          includeDeleted: rawFilters.includeDeleted ?? false,
+        }
+      : {
+          includeDeleted: false,
+        };
+    const rawOptions = isRecord(normalized.options) ? normalized.options : {};
+    return {
+      ...normalized,
+      mailboxEmail: normalizeCaseInsensitiveString(normalized.mailboxEmail),
+      filters: normalizedFilters,
+      options: {
+        ...rawOptions,
+        limit: rawOptions.limit ?? 20,
+        sortBy: rawOptions.sortBy ?? 'newest',
+        includeBody: rawOptions.includeBody ?? false,
+      },
     };
   }
 
@@ -513,7 +546,7 @@ function extractToolResultsFromMessage(params: {
             ...args,
             intentFingerprint: deriveSearchInboxIntentFingerprint(args, result),
           }
-        : args;
+        : normalizeToolArgs(toolName, args);
 
     extracted.push({ toolName, args: normalizedArgs, result });
   }

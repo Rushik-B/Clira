@@ -42,6 +42,15 @@ export interface TelegramInboundMessage {
   imageFileId?: string;
   imageMimeType?: string;
   imageCaption?: string;
+  replyContext?: TelegramReplyContext;
+}
+
+export interface TelegramReplyContext {
+  messageId: string;
+  senderName?: string;
+  text?: string;
+  quote?: string;
+  isBot?: boolean;
 }
 
 export interface TelegramPollerStateSnapshot {
@@ -108,11 +117,52 @@ function buildSenderName(ctx: Context): string {
   return 'Unknown';
 }
 
+function buildSenderNameFromUserLike(
+  user: { first_name?: string; last_name?: string; username?: string } | null | undefined,
+): string | undefined {
+  if (!user) return undefined;
+  const first = user.first_name?.trim() ?? '';
+  const last = user.last_name?.trim() ?? '';
+  const combined = `${first} ${last}`.trim();
+  if (combined) return combined;
+  if (user.username) return `@${user.username}`;
+  return undefined;
+}
+
+function extractReplyContext(message: Record<string, unknown>): TelegramReplyContext | undefined {
+  const replyToMessage = message.reply_to_message as Record<string, unknown> | undefined;
+  if (!replyToMessage) return undefined;
+
+  const replyMessageId = replyToMessage.message_id;
+  if (replyMessageId == null) return undefined;
+
+  const replyText = typeof replyToMessage.text === 'string' && replyToMessage.text.trim().length > 0
+    ? replyToMessage.text
+    : typeof replyToMessage.caption === 'string' && replyToMessage.caption.trim().length > 0
+      ? replyToMessage.caption
+      : undefined;
+  const replyFrom = replyToMessage.from as {
+    first_name?: string;
+    last_name?: string;
+    username?: string;
+    is_bot?: boolean;
+  } | undefined;
+  const quote = (message.quote as { text?: string } | undefined)?.text;
+
+  return {
+    messageId: String(replyMessageId),
+    senderName: buildSenderNameFromUserLike(replyFrom),
+    text: replyText,
+    quote: typeof quote === 'string' && quote.trim().length > 0 ? quote : undefined,
+    isBot: replyFrom?.is_bot === true,
+  };
+}
+
 function toTelegramChatId(chatId: string): string {
   return chatId;
 }
 
-function toInboundMessage(ctx: Context): TelegramInboundMessage | null {
+export function extractTelegramInboundMessage(ctx: Context): TelegramInboundMessage | null {
   const updateId = ctx.update.update_id;
   const from = ctx.from;
   const chat = ctx.chat;
@@ -131,6 +181,7 @@ function toInboundMessage(ctx: Context): TelegramInboundMessage | null {
     senderName: buildSenderName(ctx),
     text: '',
     timestamp,
+    replyContext: extractReplyContext(message),
   };
 
   if (typeof message.text === 'string' && message.text.trim().length > 0) {
@@ -193,7 +244,7 @@ export class TelegramClient {
 
     this.bot.on('message', async (ctx) => {
       if (!this.onMessageHandler) return;
-      const inbound = toInboundMessage(ctx);
+      const inbound = extractTelegramInboundMessage(ctx);
       if (!inbound) return;
       await this.onMessageHandler(inbound);
     });

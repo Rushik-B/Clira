@@ -8,11 +8,18 @@ services:
       - .env
     environment:
       NODE_ENV: production
-      DATABASE_URL: postgresql://postgres:postgres@db:5432/clira
-      DIRECT_URL: postgresql://postgres:postgres@db:5432/clira
+      DATABASE_URL: postgresql://${CLIRA_DB_APP_USER:-clira_app}:${CLIRA_DB_APP_PASSWORD:-clira_app}@db:5432/clira
+      DIRECT_URL: postgresql://${CLIRA_DB_APP_USER:-clira_app}:${CLIRA_DB_APP_PASSWORD:-clira_app}@db:5432/clira
       REDIS_URL: redis://redis:6379
       NEXTAUTH_URL: http://localhost:13000
       NEXT_PUBLIC_LANDING_PAGE_URL: ""
+      GOOGLE_APPLICATION_CREDENTIALS: /app/google-service-account.json
+      CLIRA_AI_TRACE_ENABLED: "true"
+      CLIRA_AI_TRACE_DIR: /var/lib/clira/ai-traces
+      CLIRA_AI_TRACE_CAPTURE: full
+    volumes:
+      - ./google-service-account.json:/app/google-service-account.json:ro
+      - ./.clira-runtime:/var/lib/clira
     depends_on:
       db:
         condition: service_healthy
@@ -26,9 +33,16 @@ services:
       - .env
     environment:
       NODE_ENV: production
-      DATABASE_URL: postgresql://postgres:postgres@db:5432/clira
-      DIRECT_URL: postgresql://postgres:postgres@db:5432/clira
+      DATABASE_URL: postgresql://${CLIRA_DB_APP_USER:-clira_app}:${CLIRA_DB_APP_PASSWORD:-clira_app}@db:5432/clira
+      DIRECT_URL: postgresql://${CLIRA_DB_APP_USER:-clira_app}:${CLIRA_DB_APP_PASSWORD:-clira_app}@db:5432/clira
       REDIS_URL: redis://redis:6379
+      GOOGLE_APPLICATION_CREDENTIALS: /app/google-service-account.json
+      CLIRA_AI_TRACE_ENABLED: "true"
+      CLIRA_AI_TRACE_DIR: /var/lib/clira/ai-traces
+      CLIRA_AI_TRACE_CAPTURE: full
+    volumes:
+      - ./google-service-account.json:/app/google-service-account.json:ro
+      - ./.clira-runtime:/var/lib/clira
     depends_on:
       db:
         condition: service_healthy
@@ -42,9 +56,16 @@ services:
       - .env
     environment:
       NODE_ENV: production
-      DATABASE_URL: postgresql://postgres:postgres@db:5432/clira
-      DIRECT_URL: postgresql://postgres:postgres@db:5432/clira
+      DATABASE_URL: postgresql://${CLIRA_DB_APP_USER:-clira_app}:${CLIRA_DB_APP_PASSWORD:-clira_app}@db:5432/clira
+      DIRECT_URL: postgresql://${CLIRA_DB_APP_USER:-clira_app}:${CLIRA_DB_APP_PASSWORD:-clira_app}@db:5432/clira
       REDIS_URL: redis://redis:6379
+      GOOGLE_APPLICATION_CREDENTIALS: /app/google-service-account.json
+      CLIRA_AI_TRACE_ENABLED: "true"
+      CLIRA_AI_TRACE_DIR: /var/lib/clira/ai-traces
+      CLIRA_AI_TRACE_CAPTURE: full
+    volumes:
+      - ./google-service-account.json:/app/google-service-account.json:ro
+      - ./.clira-runtime:/var/lib/clira
     depends_on:
       db:
         condition: service_healthy
@@ -58,9 +79,16 @@ services:
       - .env
     environment:
       NODE_ENV: production
-      DATABASE_URL: postgresql://postgres:postgres@db:5432/clira
-      DIRECT_URL: postgresql://postgres:postgres@db:5432/clira
+      DATABASE_URL: postgresql://${CLIRA_DB_APP_USER:-clira_app}:${CLIRA_DB_APP_PASSWORD:-clira_app}@db:5432/clira
+      DIRECT_URL: postgresql://${CLIRA_DB_APP_USER:-clira_app}:${CLIRA_DB_APP_PASSWORD:-clira_app}@db:5432/clira
       REDIS_URL: redis://redis:6379
+      GOOGLE_APPLICATION_CREDENTIALS: /app/google-service-account.json
+      CLIRA_AI_TRACE_ENABLED: "true"
+      CLIRA_AI_TRACE_DIR: /var/lib/clira/ai-traces
+      CLIRA_AI_TRACE_CAPTURE: full
+    volumes:
+      - ./google-service-account.json:/app/google-service-account.json:ro
+      - ./.clira-runtime:/var/lib/clira
     depends_on:
       db:
         condition: service_healthy
@@ -76,6 +104,13 @@ services:
       NODE_ENV: production
       CRON_TARGET_BASE_URL: http://app:3000
       CRON_TIMEZONE: UTC
+      GOOGLE_APPLICATION_CREDENTIALS: /app/google-service-account.json
+      CLIRA_AI_TRACE_ENABLED: "true"
+      CLIRA_AI_TRACE_DIR: /var/lib/clira/ai-traces
+      CLIRA_AI_TRACE_CAPTURE: full
+    volumes:
+      - ./google-service-account.json:/app/google-service-account.json:ro
+      - ./.clira-runtime:/var/lib/clira
     depends_on:
       app:
         condition: service_started
@@ -88,10 +123,13 @@ services:
       POSTGRES_DB: clira
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
+      CLIRA_DB_APP_USER: ${CLIRA_DB_APP_USER:-clira_app}
+      CLIRA_DB_APP_PASSWORD: ${CLIRA_DB_APP_PASSWORD:-clira_app}
     ports:
       - "15432:5432"
     volumes:
       - clira-postgres:/var/lib/postgresql/data
+      - ./docker/postgres-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d clira"]
       interval: 3s

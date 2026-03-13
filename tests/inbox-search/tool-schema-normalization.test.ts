@@ -1,5 +1,8 @@
 import { describe, expect, test } from 'vitest';
 import {
+  listInboxEmailsProviderSchema,
+} from '@/lib/ai/agents/executive-agent/list-inbox-emails-contract';
+import {
   searchInboxContextProviderSchema,
 } from '@/lib/ai/agents/executive-agent/search-inbox-context-contract';
 import {
@@ -34,8 +37,17 @@ describe('normalizeExecutiveAgentToolSchema', () => {
         description: 'Search inbox',
         providerInputSchema: searchInboxContextProviderSchema,
       },
+      list_inbox_emails: {
+        description: 'List inbox emails',
+        providerInputSchema: listInboxEmailsProviderSchema,
+      },
     });
     const normalizedTool = tools.search_inbox_context as unknown as {
+      inputSchema: {
+        jsonSchema: Record<string, unknown>;
+      };
+    };
+    const normalizedListTool = tools.list_inbox_emails as unknown as {
       inputSchema: {
         jsonSchema: Record<string, unknown>;
       };
@@ -51,5 +63,17 @@ describe('normalizeExecutiveAgentToolSchema', () => {
       },
     });
     expect(normalizedTool.inputSchema.jsonSchema.anyOf).toBeUndefined();
+    expect(normalizedListTool.inputSchema.jsonSchema).toMatchObject({
+      type: 'object',
+      properties: {
+        options: {
+          properties: {
+            includeBody: {
+              type: 'boolean',
+            },
+          },
+        },
+      },
+    });
   });
 });

@@ -58,6 +58,10 @@ import {
 import { stripCacheDebugMetadataForPersistence } from './persistence';
 import { normalizeExecutiveAgentToolsForModel } from './tool-schema-normalization';
 import { createInitialWorkingState, createWorkingStateController } from './workingState';
+import {
+  buildAiTraceMetadata,
+  wrapToolsWithAiTracing,
+} from '@/lib/ai/tracing';
 import type {
   ExecutiveAgentInput,
   ExecutiveAgentOutput,
@@ -88,6 +92,7 @@ export class ExecutiveAgent {
 
     let toolAbort: ReturnType<typeof createDeadlineController> | undefined;
     let selectedPack: ToolPackId | null = null;
+    let selectedPacks: ToolPackId[] = [];
     let selectorReasons: string[] = [];
     let turnFeatures: ExecutiveTurnFeatures | null = null;
     let workingStateController: ReturnType<typeof createWorkingStateController> | null = null;
@@ -100,6 +105,7 @@ export class ExecutiveAgent {
 
       return stripUndefined({
           selectedPack,
+          selectedPacks,
           selectorReasons,
           workingState: workingStateController.getState(),
           promptVersion: EXECUTIVE_AGENT_PROMPT_VERSION,
@@ -161,20 +167,23 @@ export class ExecutiveAgent {
         pendingCalendarChangePresent: Boolean(pendingRecord),
       });
       turnFeatures = activeTurnFeatures;
-      // Pack selection is deterministic by default and can optionally run an
-      // LLM classifier behind a feature flag. The selector itself enforces
-      // confidence thresholds and safety downgrades before returning.
+      // Pack selection uses the LLM selector when available. Safety-critical
+      // flows can still bypass it deterministically, but selector outages now
+      // expose every pack and rely on downstream tool gating.
       const selection = await selectExecutiveToolPackForTurn({
         input,
         features: activeTurnFeatures,
       });
       const activePack = selection.packId;
+      const activePacks = selection.packIds;
       input.runContext?.setSelectedPack?.(activePack);
       selectedPack = activePack;
+      selectedPacks = activePacks;
       selectorReasons = selection.reasons;
 
       logger.info('[executiveAgent] harness.selection', {
         selectedPack,
+        selectedPacks,
         selectorReasons,
         draftCandidatePresent: activeTurnFeatures.draftCandidatePresent,
         draftCandidateReason: activeTurnFeatures.draftCandidateReason,
@@ -225,6 +234,7 @@ export class ExecutiveAgent {
         channel: resolvedChannel,
         retrievalProfile,
         selectedPack: activePack,
+        selectedPacks: activePacks,
         selectorReasons,
         turnFeatures: activeTurnFeatures,
         userTimezone,
@@ -290,8 +300,9 @@ export class ExecutiveAgent {
           }
         },
       });
+      const tracedTools = wrapToolsWithAiTracing(input.traceContext, timedTools);
       const modelTools = normalizeExecutiveAgentToolsForModel(
-        timedTools as Record<string, any>,
+        tracedTools as Record<string, any>,
       );
 
       const stopConditions = [
@@ -338,6 +349,7 @@ export class ExecutiveAgent {
             abortSignal: toolAbortSignal,
             providerOptions,
             runContext: input.runContext as unknown as SteerRunContext,
+            traceContext: input.traceContext,
           })
         : await callTextWithTools({
             model: models.execAgent(),
@@ -355,6 +367,7 @@ export class ExecutiveAgent {
             retry: { maxAttempts: 3, baseDelayMs: 500 },
             abortSignal: toolAbortSignal,
             providerOptions,
+            traceContext: input.traceContext,
           });
 
       const { text, toolCalls, toolResults, steps, toolBudget } = exec;
@@ -396,7 +409,7 @@ export class ExecutiveAgent {
 
       let response = (text || '').trim();
       if (!response) {
-        response = buildTerminalFallbackResponse(toolResults);
+        response = buildTerminalFallbackResponse(toolResults, steps);
         logger.info(`[executiveAgent] Empty model text, using fallback: ${response}`);
       }
       const sanitizedResponse = stripInternalMetadataFromAssistantResponse(response);
@@ -405,7 +418,7 @@ export class ExecutiveAgent {
       }
       response = sanitizedResponse.response;
       if (!response) {
-        response = buildTerminalFallbackResponse(toolResults);
+        response = buildTerminalFallbackResponse(toolResults, steps);
         logger.warn(`[executiveAgent] Sanitized response became empty, using fallback: ${response}`);
       }
       workingStateController.updateFromResponse(response);
@@ -437,6 +450,10 @@ export class ExecutiveAgent {
       const orchestrationMetadata = buildOrchestrationMetadata();
       if (orchestrationMetadata) {
         metadata.orchestration = orchestrationMetadata;
+      }
+      const traceMetadata = buildAiTraceMetadata(input.traceContext);
+      if (traceMetadata) {
+        metadata.trace = traceMetadata.trace as Prisma.InputJsonValue;
       }
 
       return {

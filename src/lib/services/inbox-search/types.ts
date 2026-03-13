@@ -90,6 +90,57 @@ export type InboxSearchToolArgs = {
   options?: InboxSearchOptions;
 };
 
+export type ListInboxEmailsSortBy = 'newest' | 'oldest';
+
+export type ListInboxEmailsFilters = {
+  sender?: string;
+  recipient?: string;
+  subjectContains?: string;
+  startDate?: string;
+  endDate?: string;
+  relativeWindow?: InboxSearchRelativeWindow;
+  threadId?: string;
+  messageId?: string;
+  hasAttachment?: boolean;
+  includeDeleted?: boolean;
+};
+
+export type ListInboxEmailsOptions = {
+  limit?: number;
+  sortBy?: ListInboxEmailsSortBy;
+  includeBody?: boolean;
+  timezone?: string;
+};
+
+export type ListInboxEmailsToolArgs = {
+  mailboxId?: string;
+  mailboxEmail?: string;
+  filters?: ListInboxEmailsFilters;
+  options?: ListInboxEmailsOptions;
+};
+
+export type ListInboxEmailItem = {
+  messageId: string;
+  threadId: string;
+  mailboxId: string;
+  mailboxEmail: string;
+  sentAt: string;
+  from: string;
+  to: string[];
+  cc: string[];
+  subject: string;
+  snippet: string | null;
+  hasAttachment: boolean;
+  bodyText?: string;
+};
+
+export type ListInboxEmailsResult = {
+  items: ListInboxEmailItem[];
+  matchedCount: number;
+  returnedCount: number;
+  truncated: boolean;
+};
+
 export type InboxSearchScopedMailbox = {
   id: string;
   emailAddress: string;

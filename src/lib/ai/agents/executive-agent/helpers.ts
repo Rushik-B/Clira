@@ -47,7 +47,10 @@ export function formatRelativeTime(msAgo: number): string {
   return 'just now';
 }
 
-export function extractLatestToolResult(toolResults: unknown, toolName: string): Record<string, unknown> | null {
+export function extractLatestToolResult(
+  toolResults: unknown,
+  toolName: string,
+): Record<string, unknown> | null {
   if (!Array.isArray(toolResults)) return null;
 
   for (let i = toolResults.length - 1; i >= 0; i -= 1) {
@@ -66,8 +69,36 @@ export function extractLatestToolResult(toolResults: unknown, toolName: string):
   return null;
 }
 
-export function buildTerminalFallbackResponse(toolResults: unknown): string {
-  const sendResult = extractLatestToolResult(toolResults, 'send_email');
+function extractLatestToolResultFromExecution(params: {
+  toolResults: unknown;
+  steps?: unknown;
+  toolName: string;
+}): Record<string, unknown> | null {
+  const direct = extractLatestToolResult(params.toolResults, params.toolName);
+  if (direct) return direct;
+
+  if (!Array.isArray(params.steps)) return null;
+
+  for (let i = params.steps.length - 1; i >= 0; i -= 1) {
+    const step = params.steps[i];
+    if (!step || typeof step !== 'object') continue;
+    const stepToolResults = (step as Record<string, unknown>).toolResults;
+    const nested = extractLatestToolResult(stepToolResults, params.toolName);
+    if (nested) return nested;
+  }
+
+  return null;
+}
+
+export function buildTerminalFallbackResponse(
+  toolResults: unknown,
+  steps?: unknown,
+): string {
+  const sendResult = extractLatestToolResultFromExecution({
+    toolResults,
+    steps,
+    toolName: 'send_email',
+  });
   if (sendResult) {
     if (sendResult.success === true) return 'Sent!';
     const message = sendResult.message;
@@ -75,7 +106,11 @@ export function buildTerminalFallbackResponse(toolResults: unknown): string {
     return 'I could not send that email. Please try again.';
   }
 
-  const commitResult = extractLatestToolResult(toolResults, 'commit_calendar_change');
+  const commitResult = extractLatestToolResultFromExecution({
+    toolResults,
+    steps,
+    toolName: 'commit_calendar_change',
+  });
   if (commitResult) {
     const message = commitResult.message;
     if (typeof message === 'string' && message.trim()) return message;
@@ -83,13 +118,33 @@ export function buildTerminalFallbackResponse(toolResults: unknown): string {
     return 'I could not complete that calendar change.';
   }
 
-  const planResult = extractLatestToolResult(toolResults, 'plan_calendar_change');
+  const planResult = extractLatestToolResultFromExecution({
+    toolResults,
+    steps,
+    toolName: 'plan_calendar_change',
+  });
   if (planResult) {
-    const previewText = planResult.previewText;
+    // Unwrap when tool result is wrapped by AI tracer ({ result, output })
+    const resolved =
+      (typeof planResult.result === 'object' && planResult.result !== null
+        ? (planResult.result as Record<string, unknown>)
+        : null) ??
+      (typeof planResult.output === 'object' && planResult.output !== null
+        ? (planResult.output as Record<string, unknown>)
+        : null) ??
+      planResult;
+
+    const previewText =
+      (typeof resolved.previewText === 'string' ? resolved.previewText : null) ??
+      (typeof resolved.plan === 'object' &&
+      resolved.plan !== null &&
+      typeof (resolved.plan as Record<string, unknown>).userPreviewText === 'string'
+        ? ((resolved.plan as Record<string, unknown>).userPreviewText as string)
+        : null);
     if (typeof previewText === 'string' && previewText.trim()) return previewText;
-    const message = planResult.message;
+    const message = resolved.message;
     if (typeof message === 'string' && message.trim()) return message;
-    if (planResult.ok === true) return 'I planned that calendar change.';
+    if (resolved.ok === true) return 'I planned that calendar change.';
     return 'I could not plan that calendar change. Please try again.';
   }
 

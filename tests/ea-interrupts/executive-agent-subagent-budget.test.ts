@@ -113,4 +113,42 @@ describe('buildTerminalFallbackResponse', () => {
       'Proposed deletion: deadline on March 8. Reply to confirm and I will delete it.',
     );
   });
+
+  test('uses nested step tool results when top-level tool results are empty', () => {
+    const response = buildTerminalFallbackResponse([], [
+      {
+        toolResults: [
+          {
+            toolName: 'plan_calendar_change',
+            result: {
+              ok: true,
+              previewText: 'Proposed study blocks ready. Reply to confirm.',
+            },
+          },
+        ],
+      },
+    ]);
+
+    expect(response).toBe('Proposed study blocks ready. Reply to confirm.');
+  });
+
+  test('unwraps tracer-wrapped result (result/output) and uses plan.userPreviewText', () => {
+    const response = buildTerminalFallbackResponse([
+      {
+        toolName: 'plan_calendar_change',
+        result: {
+          result: {
+            ok: true,
+            plan: { userPreviewText: 'Proposed: Work shift on Saturday, Mar 14. Reply to confirm.' },
+          },
+          output: {
+            ok: true,
+            plan: { userPreviewText: 'Proposed: Work shift on Saturday, Mar 14. Reply to confirm.' },
+          },
+        },
+      },
+    ]);
+
+    expect(response).toBe('Proposed: Work shift on Saturday, Mar 14. Reply to confirm.');
+  });
 });

@@ -5,6 +5,14 @@ import { StyleAgent } from '@/lib/ai/agents/styleAgent';
 import { createGmailServiceForUser } from '@/lib/security/getUserGmailCredentials';
 import { GmailService, EmailData } from '@/lib/email/gmail';
 import type { EmailContext, ReplyGenerationResult } from '../../ml/llm';
+import type { AiTraceContext } from '@/lib/ai/tracing';
+import {
+  createAiTraceRoot,
+  deriveOutputPreview,
+  deriveRunStatusFromError,
+  finalizeAiTraceRun,
+  withAiTraceSpan,
+} from '@/lib/ai/tracing';
 
 export interface IncomingEmailData {
   from: string;
@@ -17,6 +25,7 @@ export interface IncomingEmailData {
 
 export interface ReplyGenerationParams {
   userId: string;
+  emailId?: string;
   /**
    * Optional mailbox context for multi-inbox support.
    * When provided, Gmail reads/writes are scoped to this mailbox.
@@ -41,6 +50,7 @@ export interface ReplyGenerationParams {
    * failures must be visible (no hidden fallbacks).
    */
   strict?: boolean;
+  traceContext?: AiTraceContext;
 }
 
 export interface EnhancedReplyResult extends ReplyGenerationResult {
@@ -51,6 +61,7 @@ export interface EnhancedReplyResult extends ReplyGenerationResult {
     contextConfidence: number;
     emailSummary?: string;
     plannerPlan?: unknown;
+    traceRunId?: string;
   };
 }
 
@@ -66,6 +77,22 @@ export class ReplyGeneratorService {
     const logBlock = (lines: string[]) => {
       console.log(lines.map((l) => `[reply-gen] ${l}`).join('\n'));
     };
+
+    const ownsTraceContext = !params.traceContext;
+    const traceContext = params.traceContext ?? await createAiTraceRoot({
+      pipeline: 'reply-generation',
+      userId: params.userId,
+      channel: 'email',
+      emailId: params.emailId ?? null,
+      mailboxId: params.mailboxId ?? null,
+      externalMessageId: params.gmailMessageId ?? null,
+      label: 'reply-generator',
+      inputPreview: `${params.incomingEmail.subject} <- ${params.incomingEmail.from}`,
+      metadata: {
+        source: 'ReplyGeneratorService',
+        threadId: params.incomingEmail.threadId ?? null,
+      },
+    });
 
     logBlock([
       `🚀 Start v4 user=${params.userId}`,
@@ -93,7 +120,7 @@ export class ReplyGeneratorService {
           masterPrompt: user.masterPromptGenerated
         });
 
-        return {
+        const fallbackResult: EnhancedReplyResult = {
           reply: "System is still setting up your personalized email style. Please wait a moment and try again.",
           confidence: 0,
           reasoning: "User onboarding not complete",
@@ -101,17 +128,44 @@ export class ReplyGeneratorService {
             calendarUsed: false,
             emailsAnalyzed: 0,
             suggestedActions: [],
-            contextConfidence: 0
+            contextConfidence: 0,
+            traceRunId: traceContext.runId,
           }
         };
+        if (ownsTraceContext) {
+          await finalizeAiTraceRun(traceContext, {
+            status: 'FALLBACK',
+            outputPreview: deriveOutputPreview(fallbackResult.reply),
+            errorMessage: 'user_onboarding_incomplete',
+            metadata: {
+              masterPromptGenerated: user.masterPromptGenerated,
+            },
+          });
+        }
+        return fallbackResult;
       }
 
-      const mailboxContext = await this.resolveMailboxContext({
-        userId: params.userId,
-        mailboxId: params.mailboxId,
-        mailboxEmail: params.mailboxEmail,
-        gmailMessageId: params.gmailMessageId,
-      });
+      const mailboxContext = await withAiTraceSpan(
+        traceContext,
+        {
+          kind: 'STAGE',
+          name: 'resolve-mailbox-context',
+          input: {
+            mailboxId: params.mailboxId ?? null,
+            mailboxEmail: params.mailboxEmail ?? null,
+            gmailMessageId: params.gmailMessageId ?? null,
+          },
+        },
+        async () => {
+          const result = await this.resolveMailboxContext({
+            userId: params.userId,
+            mailboxId: params.mailboxId,
+            mailboxEmail: params.mailboxEmail,
+            gmailMessageId: params.gmailMessageId,
+          });
+          return { result, output: result };
+        },
+      );
 
       const mailboxId = mailboxContext?.mailboxId ?? params.mailboxId ?? undefined;
       const mailboxEmail = mailboxContext?.mailboxEmail ?? params.mailboxEmail ?? undefined;
@@ -128,23 +182,39 @@ export class ReplyGeneratorService {
       logBlock(['🧠 Stage 1: Planner (tool-using)']);
 
       const planner = new ReplyPlannerAgent();
-      const plan = await planner.plan({
-        userId: params.userId,
-        userEmail: effectiveUserEmail,
-        mailboxId,
-        message: {
-          messageId: params.gmailMessageId || 'unknown',
-          labelIds: params.currentLabelIds || [],
-          from: params.incomingEmail.from,
-          to: params.incomingEmail.to || [],
-          cc: [],
-          subject: params.incomingEmail.subject,
-          body: params.incomingEmail.body,
+      const plan = await withAiTraceSpan(
+        traceContext,
+        {
+          kind: 'STAGE',
+          name: 'planner',
+          input: {
+            subject: params.incomingEmail.subject,
+            from: params.incomingEmail.from,
+            threadId: params.incomingEmail.threadId ?? null,
+          },
         },
-        receivedAt: params.incomingEmail.date,
-        threadId: params.incomingEmail.threadId ?? null,
-        strict: params.strict,
-      });
+        async (plannerTraceContext) => {
+          const result = await planner.plan({
+            userId: params.userId,
+            userEmail: effectiveUserEmail,
+            mailboxId,
+            message: {
+              messageId: params.gmailMessageId || 'unknown',
+              labelIds: params.currentLabelIds || [],
+              from: params.incomingEmail.from,
+              to: params.incomingEmail.to || [],
+              cc: [],
+              subject: params.incomingEmail.subject,
+              body: params.incomingEmail.body,
+            },
+            receivedAt: params.incomingEmail.date,
+            threadId: params.incomingEmail.threadId ?? null,
+            strict: params.strict,
+            traceContext: plannerTraceContext,
+          });
+          return { result, output: result };
+        },
+      );
 
       const contextualDraft = plan.draft?.trim() || undefined;
       const plannerCcRecipients = plan.ccSuggestions.map((x) => x.email.trim()).filter((email) => email.length > 0);
@@ -158,18 +228,31 @@ export class ReplyGeneratorService {
 
       // Apply label if recommended by Planner (before style generation to ensure it happens even if style fails)
       if (plan.labelAnalysis && params.gmailMessageId) {
+        const labelAnalysis = plan.labelAnalysis;
         if (!mailboxId) {
           logBlock([
-            `⚠️ Label analysis present but mailboxId missing - skipping label "${plan.labelAnalysis.label}"`,
+            `⚠️ Label analysis present but mailboxId missing - skipping label "${labelAnalysis.label}"`,
           ]);
         } else {
-          await this.applyLabelFromAnalysis({
-            userId: params.userId,
-            gmailMessageId: params.gmailMessageId,
-            labelAnalysis: plan.labelAnalysis,
-            currentLabelIds: params.currentLabelIds || [],
-            mailboxId,
-          });
+          await withAiTraceSpan(
+            traceContext,
+            {
+              kind: 'STAGE',
+              name: 'apply-label-analysis',
+              input: labelAnalysis,
+            },
+            async (labelTraceContext) => {
+              await this.applyLabelFromAnalysis({
+                userId: params.userId,
+                gmailMessageId: params.gmailMessageId!,
+                labelAnalysis,
+                currentLabelIds: params.currentLabelIds || [],
+                mailboxId,
+                traceContext: labelTraceContext,
+              });
+              return { result: undefined, output: { label: labelAnalysis.label } };
+            },
+          );
         }
       } else if (plan.labelAnalysis && !params.gmailMessageId) {
         logBlock([
@@ -181,24 +264,65 @@ export class ReplyGeneratorService {
       logBlock(['🎨 Stage 2: Style Agent']);
 
       // Get user's Master Prompt
-      const masterPrompt = await this.getMasterPrompt(params.userId);
+      const masterPrompt = await withAiTraceSpan(
+        traceContext,
+        {
+          kind: 'STAGE',
+          name: 'get-master-prompt',
+          input: { userId: params.userId },
+        },
+        async () => {
+          const result = await this.getMasterPrompt(params.userId);
+          return { result, output: { length: result.length } };
+        },
+      );
       logBlock([`📝 Master Prompt: chars=${masterPrompt.length}`]);
 
       // Get historical emails with sender for style examples (limit to 6 most recent)
-      const emailHistory = await this.fetchEmailHistory(params.userId, params.incomingEmail.from, mailboxId);
+      const emailHistory = await withAiTraceSpan(
+        traceContext,
+        {
+          kind: 'STAGE',
+          name: 'fetch-style-history',
+          input: {
+            sender: params.incomingEmail.from,
+            mailboxId,
+          },
+        },
+        async () => {
+          const result = await this.fetchEmailHistory(params.userId, params.incomingEmail.from, mailboxId);
+          return { result, output: { count: result.length } };
+        },
+      );
       logBlock([`📧 Style examples: emails=${emailHistory.length}`]);
 
       // Call Style Agent to generate final styled reply
       const styleAgent = new StyleAgent();
-      const result = await styleAgent.generate({
-        userId: params.userId,
-        userEmail: effectiveUserEmail,
-        incomingEmail: params.incomingEmail,
-        plan,
-        masterPrompt,
-        styleExamples: emailHistory.slice(0, 6), // Limit to 6 most recent for token efficiency
-        strict: params.strict,
-      });
+      const result = await withAiTraceSpan(
+        traceContext,
+        {
+          kind: 'STAGE',
+          name: 'style-agent',
+          input: {
+            subject: params.incomingEmail.subject,
+            from: params.incomingEmail.from,
+            styleExampleCount: Math.min(emailHistory.length, 6),
+          },
+        },
+        async (styleTraceContext) => {
+          const generated = await styleAgent.generate({
+            userId: params.userId,
+            userEmail: effectiveUserEmail,
+            incomingEmail: params.incomingEmail,
+            plan,
+            masterPrompt,
+            styleExamples: emailHistory.slice(0, 6), // Limit to 6 most recent for token efficiency
+            strict: params.strict,
+            traceContext: styleTraceContext,
+          });
+          return { result: generated, output: generated };
+        },
+      );
 
       // Planner CC suggestions are authoritative
       const unique = Array.from(new Set(plannerCcRecipients)).filter(Boolean);
@@ -221,6 +345,7 @@ export class ReplyGeneratorService {
           contextConfidence,
           emailSummary: undefined,
           plannerPlan: plan, // Debug-only: surfaced in Injection Harness + dev UI
+          traceRunId: traceContext.runId,
         }
       };
 
@@ -231,11 +356,33 @@ export class ReplyGeneratorService {
 
       // Per-call token usage is logged via src/lib/ai/callLlm.ts
 
+      if (ownsTraceContext) {
+        await finalizeAiTraceRun(traceContext, {
+          status: 'OK',
+          outputPreview: deriveOutputPreview(enhancedResult.reply),
+          metadata: {
+            confidence: enhancedResult.confidence,
+            ccRecipients: enhancedResult.ccRecipients ?? [],
+            plannerToolUsage: toolUsage,
+          },
+        });
+      }
+
       return enhancedResult;
 
     } catch (error) {
       console.error('❌ Error in reply generation:', error);
       const message = error instanceof Error ? error.message : 'Unknown error';
+      if (ownsTraceContext) {
+        await finalizeAiTraceRun(traceContext, {
+          status: deriveRunStatusFromError(error),
+          outputPreview: null,
+          errorMessage: message,
+          metadata: {
+            failure: 'reply-generation',
+          },
+        });
+      }
       throw new Error(`ReplyGenerationFailed: ${message}`);
     }
   }
@@ -255,6 +402,7 @@ export class ReplyGeneratorService {
     labelAnalysis: { label: string; reasoning?: string };
     currentLabelIds: string[];
     mailboxId: string;
+    traceContext?: AiTraceContext;
   }): Promise<void> {
     const { userId, gmailMessageId, labelAnalysis, currentLabelIds, mailboxId } = params;
 

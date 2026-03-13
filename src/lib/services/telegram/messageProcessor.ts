@@ -19,10 +19,17 @@ import { transcribeVoiceMemo } from '@/lib/ai/transcribeVoiceMemo';
 import { describeIncomingImage } from '@/lib/ai/describeIncomingImage';
 import type { ProgressUpdateContext } from '@/lib/ai/tools/sendProgressUpdate';
 import {
+  createAiTraceRoot,
+  deriveOutputPreview,
+  deriveRunStatusFromError,
+  finalizeAiTraceRun,
+} from '@/lib/ai/tracing';
+import {
   getConversationManager,
   getPairingManager,
   getTelegramClient,
   type TelegramInboundMessage,
+  type TelegramReplyContext,
 } from '@/lib/services/telegram';
 import {
   buildOrchestrationMessageMetadata,
@@ -132,6 +139,84 @@ function detectCommand(text: string): Command {
   }
 
   return null;
+}
+
+type ResolvedReplyContext = {
+  messageId: string;
+  role: 'USER' | 'ASSISTANT' | 'SYSTEM' | 'UNKNOWN';
+  direction?: 'INBOUND' | 'OUTBOUND';
+  content?: string;
+  quote?: string;
+  senderName?: string;
+  source: 'conversation-history' | 'telegram-update';
+};
+
+function truncateReplyContext(text: string, maxLength = 400): string {
+  const normalized = text.replace(/\s+/g, ' ').trim();
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, maxLength - 1)}…`;
+}
+
+async function resolveReplyContext(
+  conversationManager: ReturnType<typeof getConversationManager>,
+  conversationId: string,
+  replyContext: TelegramReplyContext | undefined,
+): Promise<ResolvedReplyContext | null> {
+  if (!replyContext?.messageId) return null;
+
+  const storedMessage = await conversationManager.getMessageByTelegramMessageId(
+    conversationId,
+    replyContext.messageId,
+  );
+
+  if (storedMessage) {
+    return {
+      messageId: replyContext.messageId,
+      role: storedMessage.role,
+      direction: storedMessage.direction,
+      content: storedMessage.content,
+      quote: replyContext.quote,
+      senderName: replyContext.senderName,
+      source: 'conversation-history',
+    };
+  }
+
+  return {
+    messageId: replyContext.messageId,
+    role: replyContext.isBot ? 'ASSISTANT' : 'UNKNOWN',
+    content: replyContext.text,
+    quote: replyContext.quote,
+    senderName: replyContext.senderName,
+    source: 'telegram-update',
+  };
+}
+
+function formatReplyContextForAgent(replyContext: ResolvedReplyContext | null): string | null {
+  if (!replyContext) return null;
+
+  const actor = replyContext.role === 'ASSISTANT'
+    ? 'Assistant'
+    : replyContext.role === 'USER'
+      ? 'User'
+      : replyContext.senderName?.trim() || 'someone';
+  const lines = [`User is replying to an earlier ${actor} message on Telegram.`];
+
+  if (replyContext.content?.trim()) {
+    lines.push(`Replied-to message: ${truncateReplyContext(replyContext.content)}`);
+  }
+
+  const quote = replyContext.quote?.trim();
+  if (quote) {
+    const normalizedQuote = truncateReplyContext(quote, 200);
+    const normalizedContent = replyContext.content?.trim()
+      ? truncateReplyContext(replyContext.content, 200)
+      : null;
+    if (normalizedQuote !== normalizedContent) {
+      lines.push(`Quoted excerpt: ${normalizedQuote}`);
+    }
+  }
+
+  return lines.join('\n');
 }
 
 async function handleSendCommand(
@@ -327,12 +412,20 @@ export async function processTelegramMessage(
     telegramUserId,
   );
   activeConversationId = conversation.id;
+  const resolvedReplyContext = await resolveReplyContext(
+    conversationManager,
+    conversation.id,
+    message.replyContext,
+  );
+  const replyContextForAgent = formatReplyContextForAgent(resolvedReplyContext);
+  let commandText = message.text;
 
   if (message.voiceFileId || message.imageFileId) {
     try {
       if (message.voiceFileId) {
         const media = await telegramClient.getFileBuffer(message.voiceFileId);
         effectiveText = await transcribeVoiceMemo(media.data, message.voiceMimeType ?? media.mimeType);
+        commandText = effectiveText;
 
         if (!effectiveText.trim() || isVoiceMemoNoContent(effectiveText)) {
           await telegramClient.sendMessage(
@@ -348,8 +441,12 @@ export async function processTelegramMessage(
         inboundMetadata = { senderName, fromVoiceMemo: true };
       } else {
         const media = await telegramClient.getFileBuffer(message.imageFileId!);
-        const description = await describeIncomingImage(media.data, message.imageMimeType ?? media.mimeType);
         const caption = message.imageCaption?.trim();
+        const description = await describeIncomingImage(media.data, message.imageMimeType ?? media.mimeType, {
+          channelLabel: 'Telegram',
+          userCaption: caption,
+        });
+        commandText = caption ?? '';
         effectiveText = [
           'User sent an image on Telegram.',
           caption ? `User caption: ${caption}` : null,
@@ -393,12 +490,29 @@ export async function processTelegramMessage(
     }
   } else {
     effectiveText = message.text;
+    commandText = message.text;
     inboundMetadata = { senderName };
+  }
+
+  if (replyContextForAgent) {
+    effectiveText = [replyContextForAgent, effectiveText].filter(Boolean).join('\n\n');
+    inboundMetadata = {
+      ...inboundMetadata,
+      replyContext: {
+        messageId: resolvedReplyContext?.messageId ?? message.replyContext?.messageId ?? null,
+        role: resolvedReplyContext?.role ?? null,
+        direction: resolvedReplyContext?.direction ?? null,
+        source: resolvedReplyContext?.source ?? null,
+        senderName: resolvedReplyContext?.senderName ?? null,
+        quotedText: resolvedReplyContext?.quote ?? null,
+        repliedText: resolvedReplyContext?.content ?? message.replyContext?.text ?? null,
+      },
+    };
   }
 
   await adapter.persistInbound();
 
-  let activeCommand: Command = detectCommand(effectiveText);
+  let activeCommand: Command = detectCommand(commandText);
 
   const orchestrator = getMessagingOrchestrator();
   const orchestrationDecision = await orchestrator.prepareRunWithAdapter({
@@ -531,9 +645,35 @@ async function runExecutiveAgent(
 ): Promise<ProcessMessageResult> {
   const conversationManager = getConversationManager();
   const agent = getExecutiveAgent();
+  let traceContext = options?.runContext?.runId
+    ? await createAiTraceRoot({
+        runId: options.runContext.runId,
+        pipeline: 'executive-agent',
+        userId,
+        channel: 'telegram',
+        conversationId,
+        inputPreview: userRequest,
+        metadata: {
+          source: 'telegram.messageProcessor',
+          bootstrapped: true,
+        },
+      })
+    : undefined;
 
   try {
     const recentMessages = await conversationManager.getRecentMessages(conversationId, 15);
+    traceContext = traceContext ?? await createAiTraceRoot({
+      runId: options?.runContext?.runId,
+      pipeline: 'executive-agent',
+      userId,
+      channel: 'telegram',
+      conversationId,
+      inputPreview: userRequest,
+      metadata: {
+        source: 'telegram.messageProcessor',
+        historyLength: recentMessages.length,
+      },
+    });
     const conversationHistory = recentMessages.map((msg) => ({
       id: msg.id,
       content: msg.content,
@@ -553,6 +693,7 @@ async function runExecutiveAgent(
       channel: 'telegram',
       conversationHistory,
       progressContext: options?.progressContext,
+      traceContext,
       abortSignal: options?.abortSignal,
       runContext: options?.runContext
         ? {
@@ -572,6 +713,16 @@ async function runExecutiveAgent(
         : undefined,
     });
 
+    await finalizeAiTraceRun(traceContext, {
+      status: agentResult.status === 'ok' ? 'OK' : 'FALLBACK',
+      outputPreview: deriveOutputPreview(agentResult.response),
+      errorMessage: agentResult.status === 'ok' ? null : agentResult.error ?? 'Executive Agent fallback',
+      metadata: {
+        memoryStored: agentResult.memoryStored,
+        agentStatus: agentResult.status,
+      },
+    });
+
     return {
       success: agentResult.status === 'ok',
       response: agentResult.response,
@@ -579,6 +730,13 @@ async function runExecutiveAgent(
       metadata: agentResult.metadata,
     };
   } catch (error) {
+    if (traceContext) {
+      await finalizeAiTraceRun(traceContext, {
+        status: deriveRunStatusFromError(error),
+        outputPreview: null,
+        errorMessage: error instanceof Error ? error.message : String(error),
+      });
+    }
     if (isAbortError(error)) {
       throw error;
     }

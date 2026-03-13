@@ -26,6 +26,12 @@ import { getExecutiveAgent, type ExecutiveAgentOutput } from '@/lib/ai/agents/ex
 import type { ProgressUpdateContext } from '@/lib/ai/tools/sendProgressUpdate';
 import type { ProgressUpdateEvent } from '@/lib/ai/progressTypes';
 import {
+  createAiTraceRoot,
+  deriveOutputPreview,
+  deriveRunStatusFromError,
+  finalizeAiTraceRun,
+} from '@/lib/ai/tracing';
+import {
   buildOrchestrationMessageMetadata,
   emitOrchestratorEvent,
   getMessagingOrchestrator,
@@ -529,10 +535,36 @@ async function runExecutiveAgent(
 ): Promise<ProcessMessageResult> {
   const conversationManager = getConversationManager();
   const agent = getExecutiveAgent();
+  let traceContext = options?.runContext?.runId
+    ? await createAiTraceRoot({
+        runId: options.runContext.runId,
+        pipeline: 'executive-agent',
+        userId,
+        channel: options?.channel ?? 'twilio',
+        conversationId,
+        inputPreview: userRequest,
+        metadata: {
+          source: 'twilio.messageProcessor',
+          bootstrapped: true,
+        },
+      })
+    : undefined;
 
   try {
     // Get conversation history for context
     const recentMessages = await conversationManager.getRecentMessages(conversationId, 15);
+    traceContext = traceContext ?? await createAiTraceRoot({
+      runId: options?.runContext?.runId,
+      pipeline: 'executive-agent',
+      userId,
+      channel: options?.channel ?? 'twilio',
+      conversationId,
+      inputPreview: userRequest,
+      metadata: {
+        source: 'twilio.messageProcessor',
+        historyLength: recentMessages.length,
+      },
+    });
 
     // Format conversation history for the agent
     // Include metadata to provide tool call context (especially send_email actions)
@@ -556,6 +588,7 @@ async function runExecutiveAgent(
       channel: options?.channel ?? 'twilio',
       conversationHistory,
       progressContext: options?.progressContext,
+      traceContext,
       abortSignal: options?.abortSignal,
       runContext: options?.runContext
         ? {
@@ -575,6 +608,16 @@ async function runExecutiveAgent(
         : undefined,
     });
 
+    await finalizeAiTraceRun(traceContext, {
+      status: agentResult.status === 'ok' ? 'OK' : 'FALLBACK',
+      outputPreview: deriveOutputPreview(agentResult.response),
+      errorMessage: agentResult.status === 'ok' ? null : agentResult.error ?? 'Executive Agent fallback',
+      metadata: {
+        memoryStored: agentResult.memoryStored,
+        agentStatus: agentResult.status,
+      },
+    });
+
     return {
       success: agentResult.status === 'ok',
       response: agentResult.response,
@@ -582,6 +625,13 @@ async function runExecutiveAgent(
       metadata: agentResult.metadata,
     };
   } catch (error) {
+    if (traceContext) {
+      await finalizeAiTraceRun(traceContext, {
+        status: deriveRunStatusFromError(error),
+        outputPreview: null,
+        errorMessage: error instanceof Error ? error.message : String(error),
+      });
+    }
     if (isAbortError(error)) {
       throw error;
     }

@@ -97,10 +97,11 @@ export const searchInboxContextProviderSchema = {
     },
     queryText: {
       type: 'string',
-      description: 'Optional free-text search term. Use only for actual text to search, not date or mailbox instructions.',
+      description: 'Optional free-text search term. Put the main search phrase here, not inside filters.',
     },
     filters: {
       type: 'object',
+      description: 'Structured narrowing only: sender, date range, attachments, thread, message, mailbox scope. Do not put the main search phrase here.',
       additionalProperties: false,
       properties: {
         sender: { type: 'string' },
@@ -201,11 +202,72 @@ export function getSearchInboxContextLimitCap(action: InboxSearchAction): number
   return MAX_LIMIT_BY_ACTION[action];
 }
 
+const QUERY_TEXT_ALIAS_KEYS = ['queryText', 'query', 'searchText', 'text'] as const;
+
+function readFirstNonEmptyString(
+  record: Record<string, unknown> | undefined,
+  keys: readonly string[],
+): string | undefined {
+  if (!record) {
+    return undefined;
+  }
+
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === 'string' && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+
+  return undefined;
+}
+
+function omitKeys<T extends Record<string, unknown>>(
+  record: T | undefined,
+  keys: readonly string[],
+): T | undefined {
+  if (!record) {
+    return record;
+  }
+
+  const clone = { ...record };
+  for (const key of keys) {
+    delete clone[key];
+  }
+  return clone as T;
+}
+
+function hoistLegacyQueryTextAlias(rawArgs: unknown): unknown {
+  if (!rawArgs || typeof rawArgs !== 'object') {
+    return rawArgs;
+  }
+
+  const record = rawArgs as Record<string, unknown>;
+  const rawFilters =
+    record.filters && typeof record.filters === 'object'
+      ? { ...(record.filters as Record<string, unknown>) }
+      : undefined;
+
+  const rootQueryText = readFirstNonEmptyString(record, QUERY_TEXT_ALIAS_KEYS);
+  const filtersQueryText = readFirstNonEmptyString(rawFilters, QUERY_TEXT_ALIAS_KEYS);
+  const normalizedFilters = omitKeys(rawFilters, QUERY_TEXT_ALIAS_KEYS);
+
+  if (!filtersQueryText && rootQueryText === record.queryText) {
+    return rawArgs;
+  }
+
+  return {
+    ...record,
+    queryText: rootQueryText ?? filtersQueryText,
+    filters: normalizedFilters,
+  };
+}
+
 export function normalizeSearchInboxContextArgs(
   rawArgs: unknown,
   options?: { defaultTimezone?: string },
 ): NormalizedSearchInboxContextArgs {
-  const parsed = searchInboxContextArgsSchema.parse(rawArgs);
+  const parsed = searchInboxContextArgsSchema.parse(hoistLegacyQueryTextAlias(rawArgs));
   const action = parsed.action;
   const filters: InboxSearchFilters = {
     ...parsed.filters,

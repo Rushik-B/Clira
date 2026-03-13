@@ -13,6 +13,19 @@ import type {
   ToolPackId,
 } from './types';
 
+const TOOL_PACK_IDS = [
+  'core_recall_pack',
+  'inbox_context_pack',
+  'calendar_query_pack',
+  'calendar_mutation_pack',
+  'reminder_alert_pack',
+  'email_send_pack',
+] as const satisfies readonly ToolPackId[];
+
+function buildAllPackSelection(reasons: string[], reminders: string[] = []): PackSelection {
+  return buildSelection([...TOOL_PACK_IDS], reasons, reminders);
+}
+
 function normalizeText(value: string): string {
   return value.trim().toLowerCase().replace(/[.!?]+$/g, '');
 }
@@ -263,9 +276,24 @@ export function extractExecutiveTurnFeatures(params: {
       latestMessage,
     );
 
+  const hasCalendarPlacementPhrase =
+    hasAnyPhrase(latestMessage, [
+      'put it on my calendar',
+      'put it in my calendar',
+      'put that on my calendar',
+      'put that in my calendar',
+      'add it to my calendar',
+      'add that to my calendar',
+      'book it on my calendar',
+      'book that on my calendar',
+    ]) ||
+    (/\b(?:put|add|book|block|hold|reserve)\b/.test(latestMessage) &&
+      /\b(?:calendar|cal)\b/.test(latestMessage));
+
   const calendarMutationIntent =
-    hasCalendarMutationVerb &&
-    (hasCalendarTargetOrContainer || hasDirectTimeWindow);
+    (hasCalendarMutationVerb &&
+      (hasCalendarTargetOrContainer || hasDirectTimeWindow)) ||
+    hasCalendarPlacementPhrase;
 
   const mentionsCommunicationContent =
     /\b(?:said|say|told me|mentioned|wrote|emailed|reply|message)\b/.test(
@@ -384,20 +412,62 @@ export function extractExecutiveTurnFeatures(params: {
   };
 }
 
-function buildSelection(packId: ToolPackId, reasons: string[], reminders: string[] = []): PackSelection {
-  return { packId, reasons, reminders };
+function uniquePackIds(packIds: readonly ToolPackId[]): ToolPackId[] {
+  const seen = new Set<ToolPackId>();
+  const ordered: ToolPackId[] = [];
+
+  for (const packId of packIds) {
+    if (seen.has(packId)) continue;
+    seen.add(packId);
+    ordered.push(packId);
+  }
+
+  return ordered;
 }
 
-const selectorOutputSchema = z.object({
-  packId: z.enum([
-    'core_recall_pack',
-    'inbox_context_pack',
-    'calendar_query_pack',
-    'calendar_mutation_pack',
-    'reminder_alert_pack',
-    'email_send_pack',
-  ]),
-});
+function buildSelection(
+  packIdOrPackIds: ToolPackId | readonly ToolPackId[],
+  reasons: string[],
+  reminders: string[] = [],
+): PackSelection {
+  const packIds = uniquePackIds(
+    Array.isArray(packIdOrPackIds) ? packIdOrPackIds : [packIdOrPackIds],
+  );
+  const normalizedPackIds: ToolPackId[] =
+    packIds.length > 0 ? packIds : ['core_recall_pack'];
+
+  return {
+    packId: normalizedPackIds[0],
+    packIds: normalizedPackIds,
+    reasons,
+    reminders,
+  };
+}
+
+const toolPackIdSchema = z.enum(TOOL_PACK_IDS);
+
+const selectorOutputSchema = z
+  .object({
+    packId: toolPackIdSchema.optional(),
+    packIds: z.array(toolPackIdSchema).min(1).max(TOOL_PACK_IDS.length).optional(),
+  })
+  .superRefine((value, ctx) => {
+    const packCount =
+      (value.packIds?.length ?? 0) + (value.packId ? 1 : 0);
+    if (packCount === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Provide packIds or packId.',
+        path: ['packIds'],
+      });
+    }
+  });
+
+function resolveSelectorPackIds(
+  selection: z.infer<typeof selectorOutputSchema>,
+): ToolPackId[] {
+  return uniquePackIds(selection.packIds ?? (selection.packId ? [selection.packId] : []));
+}
 
 const CEREBRAS_SELECTOR_RESPONSE_FORMAT = {
   type: 'json_schema',
@@ -407,19 +477,15 @@ const CEREBRAS_SELECTOR_RESPONSE_FORMAT = {
     schema: {
       type: 'object',
       properties: {
-        packId: {
-          type: 'string',
-          enum: [
-            'core_recall_pack',
-            'inbox_context_pack',
-            'calendar_query_pack',
-            'calendar_mutation_pack',
-            'reminder_alert_pack',
-            'email_send_pack',
-          ],
+        packIds: {
+          type: 'array',
+          items: {
+            type: 'string',
+            enum: [...TOOL_PACK_IDS],
+          },
         },
       },
-      required: ['packId'],
+      required: ['packIds'],
       additionalProperties: false,
     },
   },
@@ -466,14 +532,48 @@ function getDefaultPackReminders(packId: ToolPackId): string[] {
   return [];
 }
 
+function getDefaultPackRemindersForSelection(packIds: readonly ToolPackId[]): string[] {
+  return packIds.every((packId) =>
+    packId === 'core_recall_pack' ||
+    packId === 'inbox_context_pack' ||
+    packId === 'calendar_query_pack',
+  )
+    ? ['Only context tools are available this turn.']
+    : [];
+}
+
+function maybeInheritPriorPackSelection(params: {
+  input: ExecutiveAgentInput;
+  features: ExecutiveTurnFeatures;
+  selection: PackSelection;
+}): PackSelection {
+  if (params.selection.packId !== 'core_recall_pack') {
+    return params.selection;
+  }
+
+  if (params.features.classifierDecision !== 'followup') {
+    return params.selection;
+  }
+
+  const priorPack = params.input.runContext?.priorPack;
+  if (!priorPack) {
+    return params.selection;
+  }
+
+  return buildSelection(
+    priorPack,
+    ['inherited prior pack for follow-up turn'],
+    getDefaultPackReminders(priorPack),
+  );
+}
+
 /**
  * Bypass LLM routing for flows that are safety-critical or already explicit.
  * These branches are handled deterministically to avoid accidental escalation.
  *
- * Note: calendarMutationIntent is intentionally NOT a bypass condition.
- * When the regex detects mutation intent it routes correctly, but when it
- * misses (e.g. anaphoric "put it in my calendar too"), we need the LLM to
- * reason from conversation context. The LLM path handles both cases.
+ * Keep this list narrow. Reminder and alert turns should still be eligible for
+ * LLM routing because they can overlap with calendar or inbox work in the same
+ * user message.
  */
 function shouldBypassLlmSelector(features: ExecutiveTurnFeatures): boolean {
   return (
@@ -481,14 +581,12 @@ function shouldBypassLlmSelector(features: ExecutiveTurnFeatures): boolean {
     (features.pendingCalendarChangePresent &&
       (features.pendingCalendarConfirmIntent ||
         features.pendingCalendarCancelIntent ||
-        features.pendingCalendarModifyIntent)) ||
-    features.reminderIntent ||
-    features.alertIntent
+        features.pendingCalendarModifyIntent))
   );
 }
 
 const SELECTOR_BURST_CACHE_MAX = 256;
-const selectorBurstPackCache = new Map<string, ToolPackId>();
+const selectorBurstPackCache = new Map<string, ToolPackId[]>();
 
 function getSelectorBurstCacheKey(
   channel: ExecutiveTurnFeatures['channel'],
@@ -498,8 +596,8 @@ function getSelectorBurstCacheKey(
   return `${channel}:${burstId}`;
 }
 
-function setCachedBurstPack(cacheKey: string, packId: ToolPackId): void {
-  selectorBurstPackCache.set(cacheKey, packId);
+function setCachedBurstPack(cacheKey: string, packIds: readonly ToolPackId[]): void {
+  selectorBurstPackCache.set(cacheKey, uniquePackIds(packIds));
   if (selectorBurstPackCache.size > SELECTOR_BURST_CACHE_MAX) {
     const firstKey = selectorBurstPackCache.keys().next().value as string | undefined;
     if (firstKey) {
@@ -567,7 +665,9 @@ function buildSelectorPrompt(params: {
   const { userRequest, features, conversationHistory } = params;
 
   return [
-    'Pick exactly one packId for the user message.',
+    'Pick one or more packIds for the user message.',
+    'Return multiple packs only when the same turn genuinely needs multiple tool families.',
+    'Order matters: put the primary pack first.',
     '',
     'core_recall_pack — personal facts, memory, preferences',
     'inbox_context_pack — email lookup, what someone said/wrote, drafting',
@@ -586,6 +686,7 @@ function buildSelectorPrompt(params: {
     '"who is my manager?" → core_recall_pack',
     '"when was my whistler trip?" → core_recall_pack',
     '"remind me in an hour" → reminder_alert_pack',
+    '"remind me on march 9 at 9pm and put it on my calendar" → ["calendar_mutation_pack", "reminder_alert_pack"]',
     '"yes send it" [draftCandidatePresent=true] → email_send_pack',
     '',
     `State: draftCandidatePresent=${features.draftCandidatePresent}, explicitSendApproval=${features.explicitSendApproval}, pendingCalendarChangePresent=${features.pendingCalendarChangePresent}`,
@@ -595,7 +696,7 @@ function buildSelectorPrompt(params: {
     '',
     `User: ${userRequest}`,
     '',
-    'Return JSON: { "packId": "..." }',
+    'Return JSON: { "packIds": ["...", "..."] }',
   ].join('\n');
 }
 
@@ -713,8 +814,18 @@ export function selectExecutiveToolPack(
   features: ExecutiveTurnFeatures,
 ): PackSelection {
   if (features.explicitSendApproval && features.draftCandidatePresent) {
+    const packIds: ToolPackId[] = ['email_send_pack'];
+    if (features.calendarMutationIntent) {
+      packIds.push('calendar_mutation_pack');
+    } else if (features.calendarQueryIntent || features.workloadOverviewIntent) {
+      packIds.push('calendar_query_pack');
+    }
+    if (features.reminderIntent || features.alertIntent) {
+      packIds.push('reminder_alert_pack');
+    }
+
     return buildSelection(
-      'email_send_pack',
+      packIds,
       ['explicit send approval with recent unsent draft candidate'],
       ['User approval is present; only send the already-shown draft.'],
     );
@@ -726,8 +837,13 @@ export function selectExecutiveToolPack(
       features.pendingCalendarCancelIntent ||
       features.pendingCalendarModifyIntent)
   ) {
+    const packIds: ToolPackId[] = ['calendar_mutation_pack'];
+    if (features.reminderIntent || features.alertIntent) {
+      packIds.push('reminder_alert_pack');
+    }
+
     return buildSelection(
-      'calendar_mutation_pack',
+      packIds,
       [
         features.pendingCalendarModifyIntent
           ? 'pending calendar change exists and latest turn explicitly modifies the plan'
@@ -737,53 +853,47 @@ export function selectExecutiveToolPack(
     );
   }
 
+  const requestedPacks: ToolPackId[] = [];
+  const requestedReasons: string[] = [];
+
   if (features.calendarMutationIntent) {
-    return buildSelection(
-      'calendar_mutation_pack',
-      ['latest turn clearly requests calendar mutation behavior'],
-    );
+    requestedPacks.push('calendar_mutation_pack');
+    requestedReasons.push('latest turn clearly requests calendar mutation behavior');
   }
 
   if (features.reminderIntent || features.alertIntent) {
-    return buildSelection(
-      'reminder_alert_pack',
-      [
-        features.reminderIntent
-          ? 'latest turn is reminder-oriented'
-          : 'latest turn is alert-oriented',
-      ],
+    requestedPacks.push('reminder_alert_pack');
+    requestedReasons.push(
+      features.reminderIntent
+        ? 'latest turn is reminder-oriented'
+        : 'latest turn is alert-oriented',
     );
   }
 
   if (features.workloadOverviewIntent) {
-    return buildSelection(
-      'calendar_query_pack',
-      ['latest turn asks for workload/deadline overview'],
-      ['Only context tools are available this turn.'],
-    );
-  }
-
-  if (features.calendarQueryIntent) {
-    return buildSelection(
-      'calendar_query_pack',
-      ['latest turn is calendar-oriented but read-only'],
-      ['Only context tools are available this turn.'],
-    );
+    requestedPacks.push('calendar_query_pack');
+    requestedReasons.push('latest turn asks for workload/deadline overview');
+  } else if (features.calendarQueryIntent) {
+    requestedPacks.push('calendar_query_pack');
+    requestedReasons.push('latest turn is calendar-oriented but read-only');
   }
 
   if (features.emailIntent) {
-    return buildSelection(
-      'inbox_context_pack',
-      ['latest turn is email/comms-oriented without send approval'],
-      ['Only context tools are available this turn.'],
-    );
+    requestedPacks.push('inbox_context_pack');
+    requestedReasons.push('latest turn is email/comms-oriented without send approval');
   }
 
   if (features.recallIntent) {
+    requestedPacks.push('core_recall_pack');
+    requestedReasons.push('latest turn is recall-oriented');
+  }
+
+  const uniqueRequestedPacks = uniquePackIds(requestedPacks);
+  if (uniqueRequestedPacks.length > 0) {
     return buildSelection(
-      'core_recall_pack',
-      ['latest turn is recall-oriented'],
-      ['Only context tools are available this turn.'],
+      uniqueRequestedPacks,
+      requestedReasons,
+      getDefaultPackRemindersForSelection(uniqueRequestedPacks),
     );
   }
 
@@ -820,15 +930,21 @@ export async function selectExecutiveToolPackForTurn(params: {
   input: ExecutiveAgentInput;
   features: ExecutiveTurnFeatures;
 }): Promise<PackSelection> {
-  // Deterministic selector is always computed as fallback for disabled or failed LLM runs.
-  const deterministic = selectExecutiveToolPack(params.features);
+  // Deterministic selection is retained only for explicit safety-critical bypass
+  // flows. When the LLM selector is unavailable or errors, expose every pack and
+  // rely on per-tool safety gates further down the stack.
+  const deterministic = maybeInheritPriorPackSelection({
+    input: params.input,
+    features: params.features,
+    selection: selectExecutiveToolPack(params.features),
+  });
   const cacheKey = getSelectorBurstCacheKey(
     params.features.channel,
     params.input.runContext?.burstId,
   );
 
   if (!isSelectorLlmEnabled(params.features.channel)) {
-    return deterministic;
+    return buildAllPackSelection(['selector unavailable; exposed all packs']);
   }
 
   if (shouldBypassLlmSelector(params.features)) {
@@ -844,50 +960,31 @@ export async function selectExecutiveToolPackForTurn(params: {
     });
 
     // Route through hard safety constraints.
-    const safePack = enforcePackSafety(object.packId, params.features);
-    if (safePack !== object.packId) {
+    const llmPackIds = resolveSelectorPackIds(object);
+    const safePackIds = uniquePackIds(
+      llmPackIds.map((packId) => enforcePackSafety(packId, params.features)),
+    );
+
+    if (safePackIds.join(',') !== llmPackIds.join(',')) {
       logger.warn('[executiveAgent] selector.llm_safety_override', {
-        llmPack: object.packId,
-        safePack,
+        llmPacks: llmPackIds,
+        safePacks: safePackIds,
       });
     }
     if (cacheKey) {
-      setCachedBurstPack(cacheKey, safePack);
+      setCachedBurstPack(cacheKey, safePackIds);
     }
 
     return buildSelection(
-      safePack,
+      safePackIds,
       ['llm selector'],
-      getDefaultPackReminders(safePack),
+      getDefaultPackRemindersForSelection(safePackIds),
     );
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    const isRateLimited =
-      (error instanceof LlmError && error.status === 429) ||
-      /(?:\b429\b|rate[\s_-]?limit|too_many_requests|queue_exceeded)/i.test(errorMessage);
-    const cachedPack = cacheKey ? selectorBurstPackCache.get(cacheKey) : undefined;
-    if (isRateLimited && cachedPack) {
-      return buildSelection(
-        cachedPack,
-        ['selector rate-limited; reused cached pack for current burst'],
-        getDefaultPackReminders(cachedPack),
-      );
-    }
-
-    if (
-      deterministic.packId === 'core_recall_pack' &&
-      params.input.runContext?.priorPack
-    ) {
-      return buildSelection(
-        params.input.runContext.priorPack,
-        ['inherited prior pack from superseded run'],
-        getDefaultPackReminders(params.input.runContext.priorPack),
-      );
-    }
-
-    logger.warn('[executiveAgent] selector.llm_failed_fallback', {
+    logger.warn('[executiveAgent] selector.llm_failed_expose_all_packs', {
       error: errorMessage,
     });
-    return deterministic;
+    return buildAllPackSelection(['selector failed; exposed all packs']);
   }
 }

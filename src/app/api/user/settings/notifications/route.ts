@@ -1,24 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getServerSession } from 'next-auth';
 import { z } from 'zod';
-import { authOptions } from '@/lib/auth/auth';
 import { prisma } from '@/lib/prisma';
+import { isUnauthorizedError, requireUserId, unauthorizedResponse } from '../shared';
 
 const bodySchema = z.object({
   enable: z.boolean(),
 });
 
-async function resolveSession() {
-  const session = await getServerSession(authOptions);
-  if (!session?.userId) {
-    throw new Error('UNAUTHORIZED');
-  }
-  return session.userId as string;
-}
-
 export async function GET() {
   try {
-    const userId = await resolveSession();
+    const userId = await requireUserId();
     const settings = await prisma.userSettings.findUnique({
       where: { userId },
       select: { enablePushNotifications: true },
@@ -29,8 +20,8 @@ export async function GET() {
       enablePushNotifications: settings?.enablePushNotifications ?? true,
     });
   } catch (error) {
-    if (error instanceof Error && error.message === 'UNAUTHORIZED') {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    if (isUnauthorizedError(error)) {
+      return unauthorizedResponse();
     }
     console.error('[NOTIFICATION_SETTINGS_GET] Failed:', error);
     return NextResponse.json({ success: false, error: 'Failed to load notification settings' }, { status: 500 });
@@ -39,7 +30,7 @@ export async function GET() {
 
 export async function PATCH(request: NextRequest) {
   try {
-    const userId = await resolveSession();
+    const userId = await requireUserId();
     const { enable } = bodySchema.parse(await request.json());
 
     await prisma.userSettings.upsert({
@@ -58,8 +49,8 @@ export async function PATCH(request: NextRequest) {
 
     return NextResponse.json({ success: true, enablePushNotifications: enable });
   } catch (error) {
-    if (error instanceof Error && error.message === 'UNAUTHORIZED') {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    if (isUnauthorizedError(error)) {
+      return unauthorizedResponse();
     }
     console.error('[NOTIFICATION_SETTINGS_PATCH] Failed:', error);
     return NextResponse.json({ success: false, error: 'Failed to update notification settings' }, { status: 500 });
