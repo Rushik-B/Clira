@@ -13,7 +13,7 @@ psql \
   --set=db_name="$DB_NAME" \
   --username "$POSTGRES_USER_NAME" \
   --dbname "$DB_NAME" <<'SQL'
-DO \$\$
+DO $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'app_user') THEN
     EXECUTE format('CREATE ROLE %I LOGIN PASSWORD %L', :'app_user', :'app_password');
@@ -21,7 +21,7 @@ BEGIN
     EXECUTE format('ALTER ROLE %I WITH LOGIN PASSWORD %L', :'app_user', :'app_password');
   END IF;
 END
-\$\$;
+$$;
 
 GRANT CONNECT ON DATABASE :"db_name" TO :"app_user";
 GRANT USAGE, CREATE ON SCHEMA public TO :"app_user";
@@ -34,7 +34,6 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public
 ALTER DEFAULT PRIVILEGES IN SCHEMA public
   GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO :"app_user";
 SQL
-
 
 
 

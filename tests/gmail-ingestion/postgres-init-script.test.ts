@@ -57,6 +57,9 @@ describe('docker postgres init script', () => {
     expect(args).toContain(`--set=app_password=pa'ss"word`);
     expect(args).toContain(`--set=db_name=clira"prod`);
 
+    expect(sql).toContain('DO $$');
+    expect(sql).toContain('$$;');
+    expect(sql).not.toContain(String.raw`\$\$`);
     expect(sql).toContain(`rolname = :'app_user'`);
     expect(sql).toContain(`format('CREATE ROLE %I LOGIN PASSWORD %L', :'app_user', :'app_password')`);
     expect(sql).toContain('GRANT CONNECT ON DATABASE :"db_name" TO :"app_user";');
