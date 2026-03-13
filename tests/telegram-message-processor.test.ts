@@ -208,7 +208,13 @@ describe('processTelegramMessage', () => {
       data: Buffer.from('pdf-bytes'),
       mimeType: 'application/pdf',
     });
-    vi.mocked(extractIncomingPdfText).mockResolvedValue('SUMMARY: Invoice for March.\n- KEY DETAILS:\n  - Total due: $400');
+    vi.mocked(extractIncomingPdfText).mockResolvedValue(
+      [
+        'Invoice for March',
+        'Account: ACME Co.',
+        'Total due: $400',
+      ].join('\n'),
+    );
 
     await processTelegramMessage({
       updateId: 3,
@@ -250,7 +256,9 @@ describe('processTelegramMessage', () => {
     );
     expect(mockPrepareRunWithAdapter).toHaveBeenCalledWith(
       expect.objectContaining({
-        userRequest: expect.stringContaining('Detailed PDF extraction:\n\nSUMMARY: Invoice for March.'),
+        userRequest: expect.stringContaining(
+          'Detailed PDF extraction:\n\nInvoice for March\nAccount: ACME Co.\nTotal due: $400',
+        ),
       }),
     );
   });

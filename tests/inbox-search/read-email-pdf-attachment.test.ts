@@ -116,7 +116,13 @@ describe('readEmailPdfAttachment', () => {
         emailAddress: 'user@example.com',
       },
     ]);
-    pdfMocks.extractIncomingPdfText.mockResolvedValue('SUMMARY: Invoice for March.\n- KEY DETAILS:\n  - Total due: $400');
+    pdfMocks.extractIncomingPdfText.mockResolvedValue(
+      [
+        'Invoice for March',
+        'Account: ACME Co.',
+        'Total due: $400',
+      ].join('\n'),
+    );
   });
 
   test('resolves the mailbox from the stored email and extracts a single PDF attachment', async () => {
@@ -170,7 +176,7 @@ describe('readEmailPdfAttachment', () => {
           sizeBytes: 2048,
         },
       ],
-      extractedText: 'SUMMARY: Invoice for March.\n- KEY DETAILS:\n  - Total due: $400',
+      extractedText: 'Invoice for March\nAccount: ACME Co.\nTotal due: $400',
     });
   });
 

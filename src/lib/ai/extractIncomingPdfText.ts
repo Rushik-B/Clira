@@ -1,5 +1,5 @@
 /**
- * Extracts reliable plain-text context from an incoming PDF for assistant workflows.
+ * Extracts faithful plain-text content from an incoming PDF for assistant workflows.
  * The PDF bytes are used only for this single request and are not persisted.
  */
 
@@ -15,37 +15,21 @@ function buildPdfExtractionPrompt(options?: {
 }): string {
   const channelLabel = options?.channelLabel?.trim() || 'a messaging chat';
   const filename = options?.filename?.trim();
-  const caption = options?.userCaption?.trim();
 
   return [
     `The user sent a PDF in ${channelLabel}.`,
     filename ? `Filename: ${filename}` : null,
-    caption
-      ? [
-          'The user also included this caption with the PDF.',
-          'Treat the caption as part of the request context, but do not invent facts that are not supported by the PDF.',
-          '',
-          `Caption: ${caption}`,
-        ].join('\n')
-      : null,
-    'Extract the PDF into a reliable plain-text summary for an executive assistant workflow.',
+    'Transcribe the PDF into faithful plain text for downstream processing.',
     '',
     'Requirements:',
-    '1) Preserve factual accuracy. If a detail is missing or ambiguous, say so explicitly.',
-    '2) Capture the document type and its main purpose.',
-    '3) Extract important structured details such as names, dates, times, totals, line items, addresses, contact details, action items, and deadlines when present.',
-    '4) Transcribe important wording directly when it matters, especially for headings, requests, instructions, or numeric values.',
-    '5) If the PDF appears to be scanned or partially unreadable, clearly note uncertainty.',
-    '6) Output plain text only.',
+    '1) Preserve the original wording and document order as closely as possible.',
+    '2) Include all readable text from the PDF, including headings, paragraphs, labels, tables, line items, totals, footers, and repeated boilerplate when present.',
+    '3) Use plain text only. You may use line breaks, indentation, and simple bullet markers only when needed to mirror the document structure.',
+    '4) Do not summarize, interpret, rewrite, or omit details just because they seem unimportant.',
+    '5) Do not add sections such as summary, key details, extracted text, uncertainties, or commentary.',
+    '6) If any portion is unreadable or uncertain, insert a short inline marker such as [unreadable] or [unclear] at that spot and continue.',
     '',
-    'Format your output as:',
-    '- SUMMARY: <2-4 concise sentences>',
-    '- KEY DETAILS:',
-    '  - ...',
-    '- EXTRACTED TEXT:',
-    '  - ... (or "None confidently extracted")',
-    '- UNCERTAINTIES:',
-    '  - ... (or "None")',
+    'Return only the transcription.',
   ]
     .filter(Boolean)
     .join('\n');
