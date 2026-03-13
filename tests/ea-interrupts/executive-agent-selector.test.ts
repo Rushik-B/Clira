@@ -228,6 +228,18 @@ describe('Executive agent selector', () => {
     expect(selection.packIds).toEqual(['calendar_mutation_pack']);
   });
 
+  test('does not treat plain "sure" as a calendar commit confirmation', () => {
+    const input = buildInput({
+      userRequest: 'sure',
+    });
+    const features = extractExecutiveTurnFeatures({
+      input,
+      pendingCalendarChangePresent: true,
+    });
+
+    expect(features.pendingCalendarConfirmIntent).toBe(false);
+  });
+
   test('calendar_mutation_pack is not downgraded by safety (LLM selector may detect intent from context)', () => {
     const input = buildInput({
       userRequest: 'what meetings do i have tomorrow?',

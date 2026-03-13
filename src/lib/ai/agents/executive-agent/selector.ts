@@ -212,11 +212,38 @@ export function extractExecutiveTurnFeatures(params: {
       'cancel that',
     ]);
 
+  const explicitCalendarApproval =
+    isExactShortReply(latestMessage, [
+      'yes',
+      'y',
+      'yeah',
+      'yep',
+      'yup',
+      'confirm',
+      'approved',
+      'approve',
+      'ship it',
+      'send it',
+      'go ahead',
+      'go for it',
+      'do it',
+      'lock it in',
+      'yea',
+    ]) ||
+    hasAnyPhrase(latestMessage, [
+      'confirm',
+      'approve it',
+      'approved',
+      'go ahead',
+      'go for it',
+      'lock it in',
+      'yes do it',
+      'please do it',
+    ]);
+
   const pendingCalendarConfirmIntent =
     params.pendingCalendarChangePresent &&
-    (explicitSendApproval ||
-      hasAnyPhrase(latestMessage, ['confirm', 'approved', 'approve']) ||
-      isExactShortReply(latestMessage, ['sure', 'do it']));
+    explicitCalendarApproval;
 
   const pendingCalendarCancelIntent =
     params.pendingCalendarChangePresent &&
