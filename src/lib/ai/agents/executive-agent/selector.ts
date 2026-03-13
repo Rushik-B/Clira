@@ -22,6 +22,10 @@ const TOOL_PACK_IDS = [
   'email_send_pack',
 ] as const satisfies readonly ToolPackId[];
 
+function buildAllPackSelection(reasons: string[], reminders: string[] = []): PackSelection {
+  return buildSelection([...TOOL_PACK_IDS], reasons, reminders);
+}
+
 function normalizeText(value: string): string {
   return value.trim().toLowerCase().replace(/[.!?]+$/g, '');
 }
@@ -926,7 +930,9 @@ export async function selectExecutiveToolPackForTurn(params: {
   input: ExecutiveAgentInput;
   features: ExecutiveTurnFeatures;
 }): Promise<PackSelection> {
-  // Deterministic selector is always computed as fallback for disabled or failed LLM runs.
+  // Deterministic selection is retained only for explicit safety-critical bypass
+  // flows. When the LLM selector is unavailable or errors, expose every pack and
+  // rely on per-tool safety gates further down the stack.
   const deterministic = maybeInheritPriorPackSelection({
     input: params.input,
     features: params.features,
@@ -938,7 +944,7 @@ export async function selectExecutiveToolPackForTurn(params: {
   );
 
   if (!isSelectorLlmEnabled(params.features.channel)) {
-    return deterministic;
+    return buildAllPackSelection(['selector unavailable; exposed all packs']);
   }
 
   if (shouldBypassLlmSelector(params.features)) {
@@ -976,32 +982,9 @@ export async function selectExecutiveToolPackForTurn(params: {
     );
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    const isRateLimited =
-      (error instanceof LlmError && error.status === 429) ||
-      /(?:\b429\b|rate[\s_-]?limit|too_many_requests|queue_exceeded)/i.test(errorMessage);
-    const cachedPackIds = cacheKey ? selectorBurstPackCache.get(cacheKey) : undefined;
-    if (isRateLimited && cachedPackIds) {
-      return buildSelection(
-        cachedPackIds,
-        ['selector rate-limited; reused cached pack selection for current burst'],
-        getDefaultPackRemindersForSelection(cachedPackIds),
-      );
-    }
-
-    if (
-      deterministic.packId === 'core_recall_pack' &&
-      params.input.runContext?.priorPack
-    ) {
-      return buildSelection(
-        params.input.runContext.priorPack,
-        ['inherited prior pack from superseded run'],
-        getDefaultPackReminders(params.input.runContext.priorPack),
-      );
-    }
-
-    logger.warn('[executiveAgent] selector.llm_failed_fallback', {
+    logger.warn('[executiveAgent] selector.llm_failed_expose_all_packs', {
       error: errorMessage,
     });
-    return deterministic;
+    return buildAllPackSelection(['selector failed; exposed all packs']);
   }
 }

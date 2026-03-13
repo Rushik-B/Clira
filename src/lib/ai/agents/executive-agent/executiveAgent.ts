@@ -167,9 +167,9 @@ export class ExecutiveAgent {
         pendingCalendarChangePresent: Boolean(pendingRecord),
       });
       turnFeatures = activeTurnFeatures;
-      // Pack selection is deterministic by default and can optionally run an
-      // LLM classifier behind a feature flag. The selector itself enforces
-      // confidence thresholds and safety downgrades before returning.
+      // Pack selection uses the LLM selector when available. Safety-critical
+      // flows can still bypass it deterministically, but selector outages now
+      // expose every pack and rely on downstream tool gating.
       const selection = await selectExecutiveToolPackForTurn({
         input,
         features: activeTurnFeatures,

@@ -10,6 +10,15 @@ import {
 } from '@/lib/ai/agents/executive-agent/selector';
 import type { ExecutiveAgentInput } from '@/lib/ai/agents/executive-agent/types';
 
+const ALL_PACKS = [
+  'core_recall_pack',
+  'inbox_context_pack',
+  'calendar_query_pack',
+  'calendar_mutation_pack',
+  'reminder_alert_pack',
+  'email_send_pack',
+] as const;
+
 function buildAssistantMessage(params: {
   content: string;
   createdAt: string;
@@ -387,7 +396,7 @@ describe('Executive agent selector', () => {
     expect(body.response_format.json_schema.schema.$schema).toBeUndefined();
   });
 
-  test('falls back to deterministic selector when Cerebras returns 422', async () => {
+  test('exposes all packs when Cerebras returns 422', async () => {
     vi.stubEnv('EA_SELECTOR_CEREBRAS_ENABLED', 'true');
     vi.stubEnv('EA_SELECTOR_CEREBRAS_TWILIO', 'true');
     vi.stubEnv('EA_SELECTOR_CEREBRAS_MODEL', 'llama3.1-8b');
@@ -412,11 +421,12 @@ describe('Executive agent selector', () => {
       features,
     });
 
-    expect(selection.packId).toBe('calendar_query_pack');
-    expect(selection.reasons).toContain('latest turn is calendar-oriented but read-only');
+    expect(selection.packId).toBe('core_recall_pack');
+    expect(selection.packIds).toEqual([...ALL_PACKS]);
+    expect(selection.reasons).toContain('selector failed; exposed all packs');
   });
 
-  test('reuses cached burst pack when Cerebras is rate-limited', async () => {
+  test('exposes all packs when Cerebras is rate-limited', async () => {
     vi.stubEnv('EA_SELECTOR_CEREBRAS_ENABLED', 'true');
     vi.stubEnv('EA_SELECTOR_CEREBRAS_TWILIO', 'true');
     vi.stubEnv('EA_SELECTOR_CEREBRAS_MODEL', 'llama3.1-8b');
@@ -475,13 +485,12 @@ describe('Executive agent selector', () => {
       features: features2,
     });
 
-    expect(selection2.packId).toBe('inbox_context_pack');
-    expect(selection2.reasons).toContain(
-      'selector rate-limited; reused cached pack selection for current burst',
-    );
+    expect(selection2.packId).toBe('core_recall_pack');
+    expect(selection2.packIds).toEqual([...ALL_PACKS]);
+    expect(selection2.reasons).toContain('selector failed; exposed all packs');
   });
 
-  test('inherits prior pack when fallback would default to core_recall_pack', async () => {
+  test('does not inherit prior pack on selector failure and exposes all packs instead', async () => {
     vi.stubEnv('EA_SELECTOR_CEREBRAS_ENABLED', 'true');
     vi.stubEnv('EA_SELECTOR_CEREBRAS_TWILIO', 'true');
     vi.stubEnv('EA_SELECTOR_CEREBRAS_MODEL', 'llama3.1-8b');
@@ -507,11 +516,12 @@ describe('Executive agent selector', () => {
       features,
     });
 
-    expect(selection.packId).toBe('inbox_context_pack');
-    expect(selection.reasons).toContain('inherited prior pack from superseded run');
+    expect(selection.packId).toBe('core_recall_pack');
+    expect(selection.packIds).toEqual([...ALL_PACKS]);
+    expect(selection.reasons).toContain('selector failed; exposed all packs');
   });
 
-  test('inherits prior pack for classifier-marked follow-up turns even when selector is disabled', async () => {
+  test('exposes all packs when selector is disabled', async () => {
     const input = buildInput({
       userRequest: 'dude',
       classifierDecision: 'followup',
@@ -540,7 +550,8 @@ describe('Executive agent selector', () => {
       features,
     });
 
-    expect(selection.packId).toBe('inbox_context_pack');
-    expect(selection.reasons).toContain('inherited prior pack for follow-up turn');
+    expect(selection.packId).toBe('core_recall_pack');
+    expect(selection.packIds).toEqual([...ALL_PACKS]);
+    expect(selection.reasons).toContain('selector unavailable; exposed all packs');
   });
 });
