@@ -11,6 +11,9 @@ import type {
 } from '@/lib/ai/schemas/calendarCreatorSchemas';
 import type {
   ExecutivePromptMessage,
+  ExecutiveTurnFeatures,
+  ExecutiveWorkingState,
+  ToolPackId,
 } from './types';
 import {
   MESSAGING_FIRST_TOOL_MAX_BUDGET_MS,
@@ -69,6 +72,63 @@ export function extractLatestToolResult(
   return null;
 }
 
+export function unwrapToolExecutionResult(
+  result: unknown,
+): Record<string, unknown> | null {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) {
+    return null;
+  }
+
+  const record = result as Record<string, unknown>;
+  if (record.result && typeof record.result === 'object' && !Array.isArray(record.result)) {
+    return record.result as Record<string, unknown>;
+  }
+  if (record.output && typeof record.output === 'object' && !Array.isArray(record.output)) {
+    return record.output as Record<string, unknown>;
+  }
+
+  return record;
+}
+
+export function extractUserFacingToolText(
+  toolName: string,
+  result: unknown,
+): string | null {
+  const resolved = unwrapToolExecutionResult(result);
+  if (!resolved) return null;
+
+  if (toolName === 'send_email') {
+    if (resolved.success === true) return 'Sent!';
+    const message = resolved.message;
+    return typeof message === 'string' && message.trim() ? message : null;
+  }
+
+  if (toolName === 'commit_calendar_change') {
+    const message = resolved.message;
+    if (typeof message === 'string' && message.trim()) return message;
+    if (resolved.ok === true) return 'Calendar change completed.';
+    return null;
+  }
+
+  if (toolName === 'plan_calendar_change') {
+    const previewText =
+      (typeof resolved.previewText === 'string' ? resolved.previewText : null) ??
+      (typeof resolved.plan === 'object' &&
+      resolved.plan !== null &&
+      typeof (resolved.plan as Record<string, unknown>).userPreviewText === 'string'
+        ? ((resolved.plan as Record<string, unknown>).userPreviewText as string)
+        : null);
+    if (typeof previewText === 'string' && previewText.trim()) return previewText;
+
+    const message = resolved.message;
+    if (typeof message === 'string' && message.trim()) return message;
+    if (resolved.ok === true) return 'I planned that calendar change.';
+    return null;
+  }
+
+  return null;
+}
+
 function extractLatestToolResultFromExecution(params: {
   toolResults: unknown;
   steps?: unknown;
@@ -93,6 +153,11 @@ function extractLatestToolResultFromExecution(params: {
 export function buildTerminalFallbackResponse(
   toolResults: unknown,
   steps?: unknown,
+  context?: {
+    selectedPack?: ToolPackId | null;
+    workingState?: ExecutiveWorkingState | null;
+    turnFeatures?: ExecutiveTurnFeatures | null;
+  },
 ): string {
   const sendResult = extractLatestToolResultFromExecution({
     toolResults,
@@ -100,9 +165,8 @@ export function buildTerminalFallbackResponse(
     toolName: 'send_email',
   });
   if (sendResult) {
-    if (sendResult.success === true) return 'Sent!';
-    const message = sendResult.message;
-    if (typeof message === 'string' && message.trim()) return message;
+    const response = extractUserFacingToolText('send_email', sendResult);
+    if (response) return response;
     return 'I could not send that email. Please try again.';
   }
 
@@ -112,9 +176,8 @@ export function buildTerminalFallbackResponse(
     toolName: 'commit_calendar_change',
   });
   if (commitResult) {
-    const message = commitResult.message;
-    if (typeof message === 'string' && message.trim()) return message;
-    if (commitResult.ok === true) return 'Calendar change completed.';
+    const response = extractUserFacingToolText('commit_calendar_change', commitResult);
+    if (response) return response;
     return 'I could not complete that calendar change.';
   }
 
@@ -124,31 +187,63 @@ export function buildTerminalFallbackResponse(
     toolName: 'plan_calendar_change',
   });
   if (planResult) {
-    // Unwrap when tool result is wrapped by AI tracer ({ result, output })
-    const resolved =
-      (typeof planResult.result === 'object' && planResult.result !== null
-        ? (planResult.result as Record<string, unknown>)
-        : null) ??
-      (typeof planResult.output === 'object' && planResult.output !== null
-        ? (planResult.output as Record<string, unknown>)
-        : null) ??
-      planResult;
-
-    const previewText =
-      (typeof resolved.previewText === 'string' ? resolved.previewText : null) ??
-      (typeof resolved.plan === 'object' &&
-      resolved.plan !== null &&
-      typeof (resolved.plan as Record<string, unknown>).userPreviewText === 'string'
-        ? ((resolved.plan as Record<string, unknown>).userPreviewText as string)
-        : null);
-    if (typeof previewText === 'string' && previewText.trim()) return previewText;
-    const message = resolved.message;
-    if (typeof message === 'string' && message.trim()) return message;
-    if (resolved.ok === true) return 'I planned that calendar change.';
+    const response = extractUserFacingToolText('plan_calendar_change', planResult);
+    if (response) return response;
     return 'I could not plan that calendar change. Please try again.';
   }
 
-  return "I couldn't generate a response. Please try again.";
+  const pendingChangeId = context?.workingState?.artifacts.pendingCalendarChangeId;
+  const phase = context?.workingState?.phase;
+  const workingStateUserFacingText = context?.workingState?.artifacts.lastUserFacingText?.trim();
+  if (workingStateUserFacingText) {
+    return workingStateUserFacingText;
+  }
+
+  const isCalendarMutationFallbackTurn =
+    context?.selectedPack === 'calendar_mutation_pack' ||
+    Boolean(pendingChangeId) ||
+    phase === 'await_approval' ||
+    context?.turnFeatures?.calendarMutationIntent === true ||
+    context?.turnFeatures?.pendingCalendarConfirmIntent === true ||
+    context?.turnFeatures?.pendingCalendarCancelIntent === true ||
+    context?.turnFeatures?.pendingCalendarModifyIntent === true;
+
+  if (isCalendarMutationFallbackTurn) {
+
+    if (phase === 'await_approval' || pendingChangeId) {
+      return 'I have that calendar change staged. Reply "confirm" to apply it, or tell me what to change.';
+    }
+
+    if (
+      context?.turnFeatures?.pendingCalendarConfirmIntent ||
+      context?.turnFeatures?.pendingCalendarCancelIntent
+    ) {
+      return 'I still have that calendar change in flight, but the final step did not finish cleanly. Reply "confirm" to retry it or "cancel" to drop it.';
+    }
+
+    if (phase === 'clarify') {
+      return 'I need one more detail to finish that calendar change. Tell me which event or time you want.';
+    }
+
+    return 'Tell me the calendar change you want, and I\'ll preview it before I do anything.';
+  }
+
+  if (context?.selectedPack === 'email_send_pack') {
+    if (context.turnFeatures?.explicitSendApproval) {
+      return 'I still have the draft. Reply "send it" and I\'ll retry the final send.';
+    }
+    return 'I still have the draft ready. Say "send it" when you want me to send it.';
+  }
+
+  if (context?.selectedPack === 'calendar_query_pack') {
+    return 'I did not finish that calendar lookup cleanly. Ask again and I\'ll re-check it.';
+  }
+
+  if (context?.selectedPack === 'inbox_context_pack') {
+    return 'I did not finish that inbox lookup cleanly. Ask again and I\'ll re-check your email.';
+  }
+
+  return 'I did not finish that cleanly. Ask again and I\'ll retry it.';
 }
 
 const TIMESTAMP_METADATA_LINE_PATTERN = /^\[Timestamp\]\s+\d{4}-\d{2}-\d{2}T/i;

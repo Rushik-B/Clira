@@ -98,6 +98,7 @@ export interface ExecutiveWorkingState {
     pendingCalendarChangeId?: string;
     lastTool?: string;
     lastToolSummary?: string;
+    lastUserFacingText?: string;
     draftCandidatePresent?: boolean;
   };
 }

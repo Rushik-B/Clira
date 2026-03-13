@@ -97,13 +97,13 @@ describe('buildTerminalFallbackResponse', () => {
         toolName: 'plan_calendar_change',
         result: {
           ok: true,
-          previewText: 'Proposed deletion: deadline on March 8. Reply to confirm and I will delete it.',
+          previewText: '**Ready to delete**\n\n"deadline" on Sat, Mar 8 (all day)\n\nReply **confirm** and I\'ll delete it.',
         },
       },
     ]);
 
     expect(response).toBe(
-      'Proposed deletion: deadline on March 8. Reply to confirm and I will delete it.',
+      '**Ready to delete**\n\n"deadline" on Sat, Mar 8 (all day)\n\nReply **confirm** and I\'ll delete it.',
     );
   });
 
@@ -143,5 +143,139 @@ describe('buildTerminalFallbackResponse', () => {
     ]);
 
     expect(response).toBe('Proposed: Work shift on Saturday, Mar 14. Reply to confirm.');
+  });
+
+  test('uses working state to avoid generic fallback on calendar mutation turns', () => {
+    const response = buildTerminalFallbackResponse([], [], {
+      selectedPack: 'calendar_mutation_pack',
+      workingState: {
+        goal: 'Rename those shifts to Work',
+        selectedPack: 'calendar_mutation_pack',
+        phase: 'await_approval',
+        primaryDomain: 'calendar',
+        completedSteps: [],
+        nextStep: 'Wait for confirm.',
+        factsLearned: [],
+        artifacts: {
+          pendingCalendarChangeId: 'pending-1',
+        },
+      },
+      turnFeatures: {
+        explicitSendApproval: false,
+        draftCandidatePresent: false,
+        pendingCalendarChangePresent: true,
+        calendarMutationIntent: true,
+        calendarQueryIntent: false,
+        workloadOverviewIntent: false,
+        reminderIntent: false,
+        alertIntent: false,
+        channel: 'telegram',
+        hasRecentPendingCalendarPreview: true,
+        pendingCalendarConfirmIntent: true,
+        pendingCalendarCancelIntent: false,
+        pendingCalendarModifyIntent: false,
+        draftCandidateReason: null,
+      },
+    });
+
+    expect(response).toBe(
+      'I have that calendar change staged. Reply "confirm" to apply it, or tell me what to change.',
+    );
+  });
+
+  test('uses working-state preview text when trace tool results are empty', () => {
+    const controller = createWorkingStateController(
+      createInitialWorkingState({
+        goal: 'Delete all work shifts next week',
+        selectedPack: 'core_recall_pack',
+        features: {
+          explicitSendApproval: false,
+          draftCandidatePresent: false,
+          pendingCalendarChangePresent: false,
+          calendarMutationIntent: true,
+          calendarQueryIntent: false,
+          workloadOverviewIntent: false,
+          reminderIntent: false,
+          alertIntent: false,
+          channel: 'telegram',
+          hasRecentPendingCalendarPreview: false,
+          pendingCalendarConfirmIntent: false,
+          pendingCalendarCancelIntent: false,
+          pendingCalendarModifyIntent: false,
+          draftCandidateReason: null,
+        },
+      }),
+    );
+
+    controller.updateFromToolResult('plan_calendar_change', {
+      ok: true,
+      previewText: '**Ready to delete 3 events**\n\n1) "Work" on Mon, Mar 16 from 9 AM to 5 PM\n2) "Work" on Tue, Mar 17 from 9 AM to 5 PM\n3) "Work" on Wed, Mar 18 from 9 AM to 5 PM\n\nReply **confirm** and I\'ll delete them.',
+      pendingChange: {
+        pendingId: 'pending-1',
+      },
+    });
+
+    const response = buildTerminalFallbackResponse([], [], {
+      selectedPack: 'core_recall_pack',
+      workingState: controller.getState(),
+      turnFeatures: {
+        explicitSendApproval: false,
+        draftCandidatePresent: false,
+        pendingCalendarChangePresent: true,
+        calendarMutationIntent: true,
+        calendarQueryIntent: false,
+        workloadOverviewIntent: false,
+        reminderIntent: false,
+        alertIntent: false,
+        channel: 'telegram',
+        hasRecentPendingCalendarPreview: false,
+        pendingCalendarConfirmIntent: false,
+        pendingCalendarCancelIntent: false,
+        pendingCalendarModifyIntent: false,
+        draftCandidateReason: null,
+      },
+    });
+
+    expect(response).toBe(
+      '**Ready to delete 3 events**\n\n1) "Work" on Mon, Mar 16 from 9 AM to 5 PM\n2) "Work" on Tue, Mar 17 from 9 AM to 5 PM\n3) "Work" on Wed, Mar 18 from 9 AM to 5 PM\n\nReply **confirm** and I\'ll delete them.',
+    );
+  });
+
+  test('uses calendar mutation fallback even when the selected pack stayed read-only', () => {
+    const response = buildTerminalFallbackResponse([], [], {
+      selectedPack: 'core_recall_pack',
+      workingState: {
+        goal: 'Delete all work shifts next week',
+        selectedPack: 'core_recall_pack',
+        phase: 'await_approval',
+        primaryDomain: 'calendar',
+        completedSteps: ['search_calendar', 'plan_calendar_change'],
+        nextStep: 'Wait for confirm, cancel, or explicit modification.',
+        factsLearned: [],
+        artifacts: {
+          pendingCalendarChangeId: 'pending-1',
+        },
+      },
+      turnFeatures: {
+        explicitSendApproval: false,
+        draftCandidatePresent: false,
+        pendingCalendarChangePresent: true,
+        calendarMutationIntent: true,
+        calendarQueryIntent: false,
+        workloadOverviewIntent: false,
+        reminderIntent: false,
+        alertIntent: false,
+        channel: 'telegram',
+        hasRecentPendingCalendarPreview: false,
+        pendingCalendarConfirmIntent: false,
+        pendingCalendarCancelIntent: false,
+        pendingCalendarModifyIntent: false,
+        draftCandidateReason: null,
+      },
+    });
+
+    expect(response).toBe(
+      'I have that calendar change staged. Reply "confirm" to apply it, or tell me what to change.',
+    );
   });
 });
