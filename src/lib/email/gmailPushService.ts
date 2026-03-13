@@ -11,6 +11,7 @@ import { encryptEmailContent, encryptThreadContent, decryptEmailContent, decrypt
 import { triggerAlertNotification } from '@/lib/services/alertNotificationService';
 import { enqueueInboxIndexJob } from '@/lib/services/inbox-search';
 // AI queue label removed: no longer creating/applying a dedicated Gmail label
+import type { AiTraceContext } from '@/lib/ai/tracing';
 import {
   createAiTraceRoot,
   deriveOutputPreview,
@@ -855,6 +856,8 @@ export class GmailPushService {
 
               console.log(`🤖 Generating reply for filtered email: ${savedEmail.id}`);
               
+              let traceContext: AiTraceContext | undefined;
+
               try {
                 // Emit SSE start event ONLY AFTER filters pass
                 try {
@@ -876,7 +879,7 @@ export class GmailPushService {
                   console.warn(`⚠️ Failed to emit queue:start for email ${savedEmail.id}:`, e);
                 }
 
-                const traceContext = await createAiTraceRoot({
+                traceContext = await createAiTraceRoot({
                   runId: `gmail-push:${savedEmail.id}`,
                   pipeline: 'reply-generation',
                   userId: user.id,
@@ -1061,24 +1064,13 @@ export class GmailPushService {
                 }
               } catch (replyError) {
                 console.error(`❌ Error generating reply for email ${savedEmail.id}:`, replyError);
-                await finalizeAiTraceRun(
-                  await createAiTraceRoot({
-                    runId: `gmail-push:${savedEmail.id}`,
-                    pipeline: 'reply-generation',
-                    userId: user.id,
-                    channel: 'email',
-                    emailId: savedEmail.id,
-                    mailboxId: mailbox.id,
-                    externalMessageId: emailData.gmailMessageId,
-                    label: 'gmail-push',
-                    inputPreview: `${emailData.subject} <- ${emailData.from}`,
-                  }),
-                  {
+                if (traceContext) {
+                  await finalizeAiTraceRun(traceContext, {
                     status: deriveRunStatusFromError(replyError),
                     outputPreview: null,
                     errorMessage: replyError instanceof Error ? replyError.message : String(replyError),
-                  },
-                );
+                  });
+                }
                 try {
                   emitQueueEvent({
                     type: 'fail',

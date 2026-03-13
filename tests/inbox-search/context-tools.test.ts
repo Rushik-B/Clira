@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { EmailEvidencePackSchema } from '@/lib/ai/schemas/emailRetrievalSchemas';
+import { MESSAGING_INBOX_CALL_LIMITS } from '@/lib/ai/agents/executive-agent/constants';
 
 const retrievalMocks = vi.hoisted(() => ({
   runEmailRetrieval: vi.fn(),
@@ -372,6 +373,7 @@ describe('buildContextTools search_inbox_context', () => {
       context: createContext(),
       nextSubagentCallIndex: () => 0,
     }) as Record<string, { execute: (args: Record<string, unknown>) => Promise<unknown> }>;
+    const quickLimit = MESSAGING_INBOX_CALL_LIMITS.quick;
 
     const first = await tools.search_inbox_context.execute({
       action: 'find',
@@ -383,27 +385,30 @@ describe('buildContextTools search_inbox_context', () => {
       mode: 'quick',
       queryText: 'find invoice a',
     });
-    const secondDistinct = await tools.search_inbox_context.execute({
-      action: 'find',
-      mode: 'quick',
-      queryText: 'Find invoice B',
-    });
+    const distinctResults: unknown[] = [];
+    for (let index = 1; index < quickLimit; index += 1) {
+      distinctResults.push(await tools.search_inbox_context.execute({
+        action: 'find',
+        mode: 'quick',
+        queryText: `Find invoice ${String.fromCharCode(65 + index)}`,
+      }));
+    }
     const overBudget = await tools.search_inbox_context.execute({
       action: 'find',
       mode: 'quick',
-      queryText: 'Find invoice C',
+      queryText: `Find invoice ${String.fromCharCode(65 + quickLimit)}`,
     });
 
     expect(EmailEvidencePackSchema.parse(first)).toBeTruthy();
     expect(EmailEvidencePackSchema.parse(duplicate)).toBeTruthy();
-    expect(EmailEvidencePackSchema.parse(secondDistinct)).toBeTruthy();
+    expect(EmailEvidencePackSchema.parse(distinctResults.at(-1))).toBeTruthy();
     expect((duplicate as any).metadata?.cached).toBe(true);
-    expect(retrievalMocks.runEmailRetrieval).toHaveBeenCalledTimes(2);
+    expect(retrievalMocks.runEmailRetrieval).toHaveBeenCalledTimes(quickLimit);
     expect(helperMocks.buildToolBudgetExceededResult).toHaveBeenCalledTimes(1);
     expect(overBudget).toEqual({
       toolName: 'search_inbox_context',
       message: 'Max quick inbox searches reached.',
-      counts: { total: 2, tool: 2 },
+      counts: { total: quickLimit, tool: quickLimit },
       budgetExceeded: true,
     });
   });

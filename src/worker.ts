@@ -59,6 +59,7 @@ import {
 } from '@/lib/services/telegram';
 import { processInboxIndexJob } from '@/lib/services/inbox-search/worker-handlers';
 import {
+  type AiTraceContext,
   createAiTraceRoot,
   deriveOutputPreview,
   deriveRunStatusFromError,
@@ -332,6 +333,7 @@ const masterPromptWorker = new Worker<MasterPromptJobData>('master-prompt-genera
 const replyWorker = new Worker<ReplyGenerationJobData>('reply-generation', async (job: any) => {
   const { emailId, userId } = job.data;
   console.log(`[REPLY START] Generating reply for email: ${emailId} (Job ID: ${job.id})`);
+  let traceContext: AiTraceContext | undefined;
 
   try {
     job.updateProgress(10);
@@ -355,7 +357,7 @@ const replyWorker = new Worker<ReplyGenerationJobData>('reply-generation', async
 
     job.updateProgress(30);
 
-    const traceContext = await createAiTraceRoot({
+    traceContext = await createAiTraceRoot({
       runId: `reply-job:${job.id}`,
       pipeline: 'reply-generation',
       userId,
@@ -516,22 +518,11 @@ const replyWorker = new Worker<ReplyGenerationJobData>('reply-generation', async
     };
   } catch (error) {
     console.error(`[REPLY FAILED] Reply generation failed for email ${emailId}:`, error);
-    await finalizeAiTraceRun(
-      await createAiTraceRoot({
-        runId: `reply-job:${job.id}`,
-        pipeline: 'reply-generation',
-        userId,
-        channel: 'email',
-        emailId,
-        label: 'worker.replyGeneration',
-        inputPreview: `reply job ${emailId}`,
-      }),
-      {
-        status: deriveRunStatusFromError(error),
-        outputPreview: null,
-        errorMessage: error instanceof Error ? error.message : String(error),
-      },
-    );
+    await finalizeAiTraceRun(traceContext, {
+      status: deriveRunStatusFromError(error),
+      outputPreview: null,
+      errorMessage: error instanceof Error ? error.message : String(error),
+    });
     throw error;
   }
 }, { 
