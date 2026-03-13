@@ -125,7 +125,10 @@ export function buildPackToolAllowlist(
     allowlist.delete('send_email');
   }
 
-  if (!features.pendingCalendarChangePresent || !resolutionIntent) {
+  // commit_calendar_change is available whenever a pending change exists and the user
+  // is not explicitly trying to modify the plan. The tool's own decision parameter
+  // ("confirm" | "cancel") is the real safety gate — the model must choose explicitly.
+  if (!features.pendingCalendarChangePresent || features.pendingCalendarModifyIntent) {
     allowlist.delete('commit_calendar_change');
   }
 
@@ -141,18 +144,9 @@ export function buildPackToolAllowlist(
     allowlist.delete('plan_calendar_change');
   }
 
-  if (
-    features.pendingCalendarChangePresent &&
-    resolutionIntent
-  ) {
+  // Don't re-plan when user is confirming or cancelling an existing pending change.
+  if (features.pendingCalendarChangePresent && resolutionIntent) {
     allowlist.delete('plan_calendar_change');
-  }
-
-  if (
-    features.pendingCalendarChangePresent &&
-    (features.pendingCalendarModifyIntent || !resolutionIntent)
-  ) {
-    allowlist.delete('commit_calendar_change');
   }
 
   return [...allowlist].sort();

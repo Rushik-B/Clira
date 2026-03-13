@@ -7,6 +7,7 @@ import {
   extractExecutiveTurnFeatures,
   selectExecutiveToolPackForTurn,
 } from '@/lib/ai/agents/executive-agent/selector';
+import { buildPackToolAllowlist } from '@/lib/ai/agents/executive-agent/toolPacks';
 import type { ExecutiveAgentInput } from '@/lib/ai/agents/executive-agent/types';
 
 const ALL_PACKS = [
@@ -228,7 +229,7 @@ describe('Executive agent selector', () => {
     expect(selection.packIds).toEqual(['calendar_mutation_pack']);
   });
 
-  test('does not treat plain "sure" as a calendar commit confirmation', () => {
+  test('treats plain "sure" as a calendar commit confirmation', () => {
     const input = buildInput({
       userRequest: 'sure',
     });
@@ -237,7 +238,45 @@ describe('Executive agent selector', () => {
       pendingCalendarChangePresent: true,
     });
 
+    expect(features.pendingCalendarConfirmIntent).toBe(true);
+  });
+
+  test('treats "ok" and "alright" as calendar commit confirmations', () => {
+    for (const phrase of ['ok', 'okay', 'alright', 'sounds good', 'perfect']) {
+      const input = buildInput({ userRequest: phrase });
+      const features = extractExecutiveTurnFeatures({ input, pendingCalendarChangePresent: true });
+      expect(features.pendingCalendarConfirmIntent).toBe(true);
+    }
+  });
+
+  test('commit_calendar_change stays available in calendar_mutation_pack when pending change exists even without detected confirmation intent', () => {
+    // User says something ambiguous while a pending change exists.
+    // The tool must still be available so the model can decide — its own
+    // decision param ("confirm" | "cancel") is the real safety gate.
+    const input = buildInput({ userRequest: 'what does the plan look like again?' });
+    const features = extractExecutiveTurnFeatures({
+      input,
+      pendingCalendarChangePresent: true,
+    });
+
     expect(features.pendingCalendarConfirmIntent).toBe(false);
+    expect(features.pendingCalendarModifyIntent).toBe(false);
+
+    const allowlist = buildPackToolAllowlist('calendar_mutation_pack', features);
+    expect(allowlist).toContain('commit_calendar_change');
+  });
+
+  test('commit_calendar_change is removed from calendar_mutation_pack when user wants to modify the plan', () => {
+    const input = buildInput({ userRequest: 'actually change it to 3pm instead' });
+    const features = extractExecutiveTurnFeatures({
+      input,
+      pendingCalendarChangePresent: true,
+    });
+
+    expect(features.pendingCalendarModifyIntent).toBe(true);
+
+    const allowlist = buildPackToolAllowlist('calendar_mutation_pack', features);
+    expect(allowlist).not.toContain('commit_calendar_change');
   });
 
   test('calendar_mutation_pack is not downgraded by safety (LLM selector may detect intent from context)', () => {
