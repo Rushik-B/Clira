@@ -1,5 +1,5 @@
 /**
- * Extracts reliable plain-text context from an incoming PDF for messaging flows.
+ * Extracts reliable plain-text context from an incoming PDF for assistant workflows.
  * The PDF bytes are used only for this single request and are not persisted.
  */
 
@@ -83,8 +83,8 @@ export async function extractIncomingPdfText(
       ],
       abortSignal: options?.abortSignal,
       traceContext: options?.traceContext,
-      op: 'messaging.extract-pdf',
-      concurrency: { key: 'messaging.extract-pdf', maxConcurrency: 2 },
+      op: 'document.extract-pdf',
+      concurrency: { key: 'document.extract-pdf', maxConcurrency: 2 },
       retry: { maxAttempts: 2, baseDelayMs: 400 },
     });
 
