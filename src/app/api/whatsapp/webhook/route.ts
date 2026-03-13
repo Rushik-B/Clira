@@ -257,6 +257,13 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       ? { voiceMemo: true, messageId: message.messageId }
       : message.imageMediaId
         ? { image: true, messageId: message.messageId, hasCaption: Boolean(message.imageCaption) }
+        : message.pdfMediaId
+          ? {
+              pdf: true,
+              messageId: message.messageId,
+              filename: message.pdfFilename ?? null,
+              hasCaption: Boolean(message.pdfCaption),
+            }
         : { textLength: message.text.length, messageId: message.messageId }),
   });
 

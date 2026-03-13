@@ -46,6 +46,11 @@ export interface WhatsAppWebhookMessage {
   imageMediaId?: string;
   imageMimeType?: string;
   imageCaption?: string;
+  /** When present, message is a PDF document; media must be downloaded and extracted */
+  pdfMediaId?: string;
+  pdfMimeType?: string;
+  pdfFilename?: string;
+  pdfCaption?: string;
 }
 
 export interface WhatsAppWebhookPayload {
@@ -71,6 +76,7 @@ export interface WhatsAppWebhookPayload {
           text?: { body: string };
           audio?: { id: string; mime_type?: string };
           image?: { id: string; mime_type?: string; caption?: string };
+          document?: { id: string; mime_type?: string; filename?: string; caption?: string };
         }>;
         statuses?: Array<{
           id: string;
@@ -522,6 +528,28 @@ export class WhatsAppClient {
       };
     }
 
+    // Handle PDF documents
+    if (
+      message.type === 'document' &&
+      message.document?.id &&
+      (
+        message.document.mime_type?.toLowerCase() === 'application/pdf' ||
+        message.document.filename?.toLowerCase().endsWith('.pdf')
+      )
+    ) {
+      return {
+        waId,
+        senderName,
+        messageId: message.id,
+        text: '',
+        timestamp: parseInt(message.timestamp, 10),
+        pdfMediaId: message.document.id,
+        pdfMimeType: message.document.mime_type ?? 'application/pdf',
+        pdfFilename: message.document.filename,
+        pdfCaption: message.document.caption,
+      };
+    }
+
     logger.debug(`[WhatsApp] Ignoring unsupported message type: ${message.type}`);
     return null;
   }
@@ -581,7 +609,7 @@ export class WhatsAppClient {
   }
 
   /**
-   * Fetches media (e.g. voice memo) by ID. Does not persist; returns in-memory buffer only.
+   * Fetches media (e.g. voice memo, image, or PDF) by ID. Does not persist; returns in-memory buffer only.
    * @param mediaId - WhatsApp media ID from webhook
    * @returns Buffer and MIME type; throws on failure
    */
@@ -611,7 +639,7 @@ export class WhatsAppClient {
       const arrayBuffer = await response.arrayBuffer();
       return {
         data: Buffer.from(arrayBuffer),
-        mimeType: meta.mime_type ?? 'audio/ogg',
+        mimeType: meta.mime_type ?? 'application/octet-stream',
       };
     } finally {
       clearTimeout(timeoutId);

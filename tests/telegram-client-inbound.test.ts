@@ -48,4 +48,38 @@ describe('extractTelegramInboundMessage', () => {
       },
     });
   });
+
+  test('captures pdf documents and caption metadata', () => {
+    const inbound = extractTelegramInboundMessage({
+      update: { update_id: 43 },
+      from: { id: 1001, first_name: 'Rushik' },
+      chat: { id: 54321, type: 'private' },
+      message: {
+        message_id: 101,
+        date: 1_710_000_123,
+        document: {
+          file_id: 'pdf-file-1',
+          mime_type: 'application/pdf',
+          file_name: 'statement.pdf',
+        },
+        caption: 'Summarize the totals',
+      },
+    } as never);
+
+    expect(inbound).toEqual({
+      updateId: 43,
+      messageId: '101',
+      chatId: '54321',
+      telegramUserId: '1001',
+      telegramUsername: undefined,
+      senderName: 'Rushik',
+      text: '',
+      timestamp: 1_710_000_123,
+      pdfFileId: 'pdf-file-1',
+      pdfMimeType: 'application/pdf',
+      pdfFilename: 'statement.pdf',
+      pdfCaption: 'Summarize the totals',
+      replyContext: undefined,
+    });
+  });
 });

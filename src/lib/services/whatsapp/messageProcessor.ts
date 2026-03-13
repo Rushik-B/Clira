@@ -25,6 +25,7 @@ import {
 import { getExecutiveAgent, type ExecutiveAgentOutput } from '@/lib/ai/agents/executiveAgent';
 import { transcribeVoiceMemo } from '@/lib/ai/transcribeVoiceMemo';
 import { describeIncomingImage } from '@/lib/ai/describeIncomingImage';
+import { extractIncomingPdfText } from '@/lib/ai/extractIncomingPdfText';
 import type { ProgressUpdateContext } from '@/lib/ai/tools/sendProgressUpdate';
 import type { ProgressUpdateEvent } from '@/lib/ai/progressTypes';
 import {
@@ -327,7 +328,15 @@ export async function processWhatsAppMessage(
   };
 
   logger.info(
-    `[messageProcessor] Processing message: waId=${waId.slice(0, 4)}**** ${message.audioMediaId ? 'voice memo' : message.imageMediaId ? 'image' : `text=\"${message.text.slice(0, 50)}...\"`}`,
+    `[messageProcessor] Processing message: waId=${waId.slice(0, 4)}**** ${
+      message.audioMediaId
+        ? 'voice memo'
+        : message.imageMediaId
+          ? 'image'
+          : message.pdfMediaId
+            ? 'pdf'
+            : `text=\"${message.text.slice(0, 50)}...\"`
+    }`,
   );
 
   const dedupe = await isDuplicateInboundFromAdapter(
@@ -411,8 +420,9 @@ export async function processWhatsAppMessage(
   const conversation = await conversationManager.getOrCreateConversation(userId, waId);
   activeConversationId = conversation.id;
 
-  // Resolve effective text: for voice memos transcribe, for images describe, and for text use as-is (no media storage).
-  if (message.audioMediaId || message.imageMediaId) {
+  // Resolve effective text: for voice memos transcribe, for images describe,
+  // for PDFs extract document context, and for text use as-is.
+  if (message.audioMediaId || message.imageMediaId || message.pdfMediaId) {
     try {
       if (message.audioMediaId) {
         const media = await whatsappClient.getMediaBuffer(message.audioMediaId);
@@ -444,7 +454,7 @@ export async function processWhatsAppMessage(
           waId: `${waId.slice(0, 4)}****`,
           transcriptLength: effectiveText.length,
         });
-      } else {
+      } else if (message.imageMediaId) {
         const media = await whatsappClient.getMediaBuffer(message.imageMediaId!);
         const description = await describeIncomingImage(media.data, media.mimeType);
         const caption = message.imageCaption?.trim();
@@ -463,13 +473,49 @@ export async function processWhatsAppMessage(
           descriptionLength: description.length,
           hasCaption: Boolean(caption),
         });
+      } else {
+        const media = await whatsappClient.getMediaBuffer(message.pdfMediaId!);
+        const caption = message.pdfCaption?.trim();
+        const extractedText = await extractIncomingPdfText(
+          media.data,
+          message.pdfMimeType ?? media.mimeType,
+          {
+            channelLabel: 'WhatsApp',
+            filename: message.pdfFilename ?? null,
+            userCaption: caption,
+          },
+        );
+        effectiveText = [
+          'User sent a PDF on WhatsApp.',
+          message.pdfFilename ? `Filename: ${message.pdfFilename}` : null,
+          caption ? `User caption: ${caption}` : null,
+          'Detailed PDF extraction:',
+          extractedText,
+        ]
+          .filter(Boolean)
+          .join('\n\n');
+        inboundMetadata = {
+          senderName,
+          fromPdf: true,
+          pdfFilename: message.pdfFilename ?? null,
+          pdfCaption: message.pdfCaption ?? null,
+        };
+
+        logger.info('[messageProcessor] PDF extracted', {
+          waId: `${waId.slice(0, 4)}****`,
+          filename: message.pdfFilename ?? null,
+          extractionLength: extractedText.length,
+          hasCaption: Boolean(caption),
+        });
       }
     } catch (e) {
       if (isAbortError(e)) {
         logger.debug(
           message.audioMediaId
             ? '[messageProcessor] Voice memo superseded by new message'
-            : '[messageProcessor] Image processing superseded by new message',
+            : message.imageMediaId
+              ? '[messageProcessor] Image processing superseded by new message'
+              : '[messageProcessor] PDF processing superseded by new message',
         );
         return { success: true, response: '' };
       }
@@ -477,7 +523,9 @@ export async function processWhatsAppMessage(
       logger.error(
         message.audioMediaId
           ? '[messageProcessor] Voice memo download or transcription failed'
-          : '[messageProcessor] Image download or description failed',
+          : message.imageMediaId
+            ? '[messageProcessor] Image download or description failed'
+            : '[messageProcessor] PDF download or extraction failed',
         {
           waId: `${waId.slice(0, 4)}****`,
           error: e instanceof Error ? e.message : String(e),
@@ -489,13 +537,17 @@ export async function processWhatsAppMessage(
           waId,
           message.audioMediaId
             ? "I couldn't process that voice memo. Please try again or send a text message."
-            : "I couldn't process that image. Please try sending it again or send a text message.",
+            : message.imageMediaId
+              ? "I couldn't process that image. Please try sending it again or send a text message."
+              : "I couldn't process that PDF. Please try sending it again or send a text message.",
         );
       } catch (sendErr) {
         logger.error(
           message.audioMediaId
             ? '[messageProcessor] Failed to send voice-memo error message'
-            : '[messageProcessor] Failed to send image-processing error message',
+            : message.imageMediaId
+              ? '[messageProcessor] Failed to send image-processing error message'
+              : '[messageProcessor] Failed to send pdf-processing error message',
           { sendErr },
         );
       }
@@ -503,7 +555,11 @@ export async function processWhatsAppMessage(
       return {
         success: false,
         response: '',
-        error: message.audioMediaId ? 'Voice memo processing failed' : 'Image processing failed',
+        error: message.audioMediaId
+          ? 'Voice memo processing failed'
+          : message.imageMediaId
+            ? 'Image processing failed'
+            : 'PDF processing failed',
       };
     }
   } else {
