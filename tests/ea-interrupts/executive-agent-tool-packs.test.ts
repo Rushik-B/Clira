@@ -11,11 +11,11 @@ vi.mock('@/lib/prisma', () => ({
 import { buildExecutiveAgentTools } from '@/lib/ai/agents/executive-agent/tools';
 import {
   extractExecutiveTurnFeatures,
-  selectExecutiveToolPack,
 } from '@/lib/ai/agents/executive-agent/selector';
 import type {
   ExecutiveAgentInput,
   ExecutiveRuntimeContext,
+  ToolPackId,
 } from '@/lib/ai/agents/executive-agent/types';
 
 function buildInput(params: {
@@ -43,20 +43,21 @@ function buildInput(params: {
 function buildContext(params: {
   input: ExecutiveAgentInput;
   pendingCalendarChangePresent: boolean;
+  selectedPacks?: ToolPackId[];
 }): ExecutiveRuntimeContext {
   const turnFeatures = extractExecutiveTurnFeatures({
     input: params.input,
     pendingCalendarChangePresent: params.pendingCalendarChangePresent,
   });
-  const selection = selectExecutiveToolPack(turnFeatures);
+  const selectedPacks = params.selectedPacks ?? ['inbox_context_pack'];
 
   return {
     input: params.input,
     channel: 'twilio',
     retrievalProfile: 'messaging',
-    selectedPack: selection.packId,
-    selectedPacks: selection.packIds,
-    selectorReasons: selection.reasons,
+    selectedPack: selectedPacks[0],
+    selectedPacks,
+    selectorReasons: ['test'],
     turnFeatures,
     userTimezone: 'America/Vancouver',
     currentTimeUtc: '2026-03-02T18:00:00.000Z',
@@ -130,6 +131,7 @@ describe('Executive agent tool packs', () => {
     const context = buildContext({
       input: buildInput({ userRequest: 'find the email from my professor' }),
       pendingCalendarChangePresent: false,
+      selectedPacks: ['inbox_context_pack'],
     });
 
     const tools = buildExecutiveAgentTools(context);
@@ -145,6 +147,7 @@ describe('Executive agent tool packs', () => {
         classifierDecision: 'ambiguous',
       }),
       pendingCalendarChangePresent: false,
+      selectedPacks: ['inbox_context_pack'],
     });
 
     const toolNames = Object.keys(buildExecutiveAgentTools(context));
@@ -160,6 +163,7 @@ describe('Executive agent tool packs', () => {
     const context = buildContext({
       input: buildInput({ userRequest: 'move my 3 meetings tomorrow to Friday' }),
       pendingCalendarChangePresent: false,
+      selectedPacks: ['calendar_mutation_pack'],
     });
 
     const toolNames = Object.keys(buildExecutiveAgentTools(context));
@@ -174,6 +178,7 @@ describe('Executive agent tool packs', () => {
         userRequest: 'remind me tomorrow at 9pm to study and put it on my calendar too',
       }),
       pendingCalendarChangePresent: false,
+      selectedPacks: ['calendar_mutation_pack', 'reminder_alert_pack'],
     });
 
     const toolNames = Object.keys(buildExecutiveAgentTools(context));
@@ -191,6 +196,7 @@ describe('Executive agent tool packs', () => {
     const context = buildContext({
       input: buildInput({ userRequest: 'yes' }),
       pendingCalendarChangePresent: true,
+      selectedPacks: ['calendar_mutation_pack'],
     });
 
     const toolNames = Object.keys(buildExecutiveAgentTools(context));
@@ -203,6 +209,7 @@ describe('Executive agent tool packs', () => {
     const recallContext = buildContext({
       input: buildInput({ userRequest: 'show me all emails from Alice this week' }),
       pendingCalendarChangePresent: false,
+      selectedPacks: ['core_recall_pack'],
     });
     const recallTools = Object.keys(buildExecutiveAgentTools(recallContext));
 

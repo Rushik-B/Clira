@@ -189,7 +189,7 @@ export class ExecutiveAgent {
         draftCandidateReason: activeTurnFeatures.draftCandidateReason,
         pendingCalendarChangePresent: activeTurnFeatures.pendingCalendarChangePresent,
         hasRecentPendingCalendarPreview: activeTurnFeatures.hasRecentPendingCalendarPreview,
-        classifierDecision: activeTurnFeatures.classifierDecision,
+        classifierDecision: input.runContext?.classifierDecision ?? null,
         channel: activeTurnFeatures.channel,
       });
 

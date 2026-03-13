@@ -104,25 +104,18 @@ export interface ExecutiveWorkingState {
 
 export interface ExecutiveTurnFeatures {
   explicitSendApproval: boolean;
-  explicitSendDecline: boolean;
   draftCandidatePresent: boolean;
   pendingCalendarChangePresent: boolean;
   calendarMutationIntent: boolean;
   calendarQueryIntent: boolean;
   workloadOverviewIntent: boolean;
-  emailIntent: boolean;
   reminderIntent: boolean;
   alertIntent: boolean;
-  recallIntent: boolean;
-  classifierDecision: 'supersede' | 'followup' | 'ambiguous' | null;
   channel: ProgressUpdateChannel;
-  hasRecentSendSuccess: boolean;
   hasRecentPendingCalendarPreview: boolean;
   pendingCalendarConfirmIntent: boolean;
   pendingCalendarCancelIntent: boolean;
   pendingCalendarModifyIntent: boolean;
-  ambiguousCalendarLike: boolean;
-  ambiguousEmailLike: boolean;
   draftCandidateReason: string | null;
 }
 
