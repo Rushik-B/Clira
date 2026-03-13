@@ -637,7 +637,7 @@ async function applyAdaptiveExpansion(params: {
     };
   }
 
-  let decision: EmailExpansionDecisionDTO;
+  let decision: EmailExpansionDecisionDTO; 
   try {
     decision = await runExpansionDecision({
       request: params.request,
