@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { getQueuedFileWriter } from '@/lib/ai/tracing/fileWriter';
 import { appendAiTraceNote, createAiTraceRoot, finalizeAiTraceRun } from '@/lib/ai/tracing';
 
 const tempDirs: string[] = [];
@@ -46,8 +47,11 @@ describe('ai tracing service', () => {
       pipeline: 'test',
       userId: 'user-1',
     });
+    const firstWriter = getQueuedFileWriter(firstContext.artifactPath!);
     await appendAiTraceNote(firstContext, 'first-note', { ok: true });
     await finalizeAiTraceRun(firstContext, { status: 'OK' });
+    const reopenedWriter = getQueuedFileWriter(firstContext.artifactPath!);
+    expect(reopenedWriter).not.toBe(firstWriter);
 
     const secondContext = await createAiTraceRoot({
       runId,

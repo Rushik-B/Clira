@@ -5,6 +5,7 @@ import { logger } from '@/lib/logger';
 export type QueuedFileWriter = {
   filePath: string;
   write: (line: string) => Promise<void>;
+  flush: () => Promise<void>;
 };
 
 const writers = new Map<string, QueuedFileWriter>();
@@ -34,8 +35,24 @@ export function getQueuedFileWriter(filePath: string): QueuedFileWriter {
         });
       await queue;
     },
+    flush: async () => {
+      await queue;
+    },
   };
 
   writers.set(filePath, writer);
   return writer;
+}
+
+export async function releaseQueuedFileWriter(filePath: string): Promise<void> {
+  const writer = writers.get(filePath);
+  if (!writer) {
+    return;
+  }
+
+  await writer.flush();
+
+  if (writers.get(filePath) === writer) {
+    writers.delete(filePath);
+  }
 }

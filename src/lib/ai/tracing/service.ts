@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { logger } from '@/lib/logger';
-import { getQueuedFileWriter } from './fileWriter';
+import { getQueuedFileWriter, releaseQueuedFileWriter } from './fileWriter';
 import { previewText, sanitizeForTrace } from './sanitize';
 import type {
   AiTraceContext,
@@ -298,6 +298,10 @@ export async function finalizeAiTraceRun(
     await appendRawTraceLine(context, record);
   } finally {
     sequenceCounters.delete(context.runId);
+
+    if (context.artifactPath) {
+      await releaseQueuedFileWriter(context.artifactPath);
+    }
   }
 }
 
