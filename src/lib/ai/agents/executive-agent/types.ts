@@ -155,6 +155,13 @@ export interface PromptContext {
 
 export type SearchInboxContextArgs = InboxSearchToolArgs;
 export type ListInboxEmailsArgs = ListInboxEmailsToolArgs;
+export type ReadEmailPdfAttachmentArgs = {
+  messageId: string;
+  mailboxId?: string;
+  mailboxEmail?: string;
+  attachmentId?: string;
+  attachmentFilename?: string;
+};
 
 export type RetrievalProfile = 'default' | 'messaging';
 

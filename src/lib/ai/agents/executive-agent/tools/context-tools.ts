@@ -7,7 +7,10 @@ import {
   getCalendarSnapshot,
   gatherMemoryContextForReply,
 } from '@/lib/services/core/replyContextTools';
-import { listInboxEmails } from '@/lib/services/inbox-search';
+import {
+  listInboxEmails,
+  readEmailPdfAttachment,
+} from '@/lib/services/inbox-search';
 import {
   addDaysToDateOnly,
   endOfDayInTimezone,
@@ -29,6 +32,11 @@ import {
   searchInboxContextArgsSchema,
   searchInboxContextProviderSchema,
 } from '../search-inbox-context-contract';
+import {
+  normalizeReadEmailPdfAttachmentArgs,
+  readEmailPdfAttachmentArgsSchema,
+  readEmailPdfAttachmentProviderSchema,
+} from '../read-email-pdf-attachment-contract';
 import { isSupermemoryConfigured } from '@/lib/services/supermemory/client';
 import {
   CALENDAR_SEARCH_MIN_BUDGET_MS,
@@ -42,6 +50,7 @@ import {
 import type {
   ExecutiveRuntimeContext,
   ListInboxEmailsArgs,
+  ReadEmailPdfAttachmentArgs,
   SearchInboxContextArgs,
 } from '../types';
 
@@ -50,6 +59,9 @@ const searchInboxContextToolDescription = readPromptFile(
 );
 const listInboxEmailsToolDescription = readPromptFile(
   'executive-agent/listInboxEmailsTool.md',
+);
+const readEmailPdfAttachmentToolDescription = readPromptFile(
+  'executive-agent/readEmailPdfAttachmentTool.md',
 );
 
 function normalizeIntentText(value: string | undefined): string {
@@ -114,6 +126,21 @@ function buildInvalidListInboxEmailsResult(message: string) {
     returnedCount: 0,
     truncated: false,
     note: message,
+    metadata: {
+      validationError: true,
+    },
+  };
+}
+
+function buildInvalidReadEmailPdfAttachmentResult(messageId: string, message: string) {
+  return {
+    ok: false as const,
+    status: 'invalid_request' as const,
+    message,
+    retryable: false,
+    messageContext: {
+      messageId,
+    },
     metadata: {
       validationError: true,
     },
@@ -323,6 +350,70 @@ export function buildContextTools({
             userId: input.userId,
           });
           toolResultCache.set('list_inbox_emails', normalizedArgs, result);
+          return result;
+        },
+      },
+
+      read_email_pdf_attachment: {
+        description: readEmailPdfAttachmentToolDescription,
+        inputSchema: readEmailPdfAttachmentArgsSchema,
+        providerInputSchema: readEmailPdfAttachmentProviderSchema,
+        execute: async (args: ReadEmailPdfAttachmentArgs) => {
+          let normalizedArgs;
+          try {
+            normalizedArgs = normalizeReadEmailPdfAttachmentArgs(args);
+          } catch (error) {
+            const message =
+              error instanceof z.ZodError
+                ? error.issues[0]?.message ?? 'Invalid read_email_pdf_attachment request.'
+                : error instanceof Error
+                  ? error.message
+                  : 'Invalid read_email_pdf_attachment request.';
+            logger.warn('[executiveAgent] read_email_pdf_attachment invalid args', {
+              userId: input.userId,
+              message,
+              args,
+            });
+            const fallbackMessageId =
+              args && typeof args === 'object' && typeof args.messageId === 'string'
+                ? args.messageId
+                : 'unknown';
+            return buildInvalidReadEmailPdfAttachmentResult(fallbackMessageId, message);
+          }
+
+          const cachedResult = toolResultCache.get('read_email_pdf_attachment', normalizedArgs);
+          if (cachedResult) {
+            logger.info(
+              `[executiveAgent] read_email_pdf_attachment cache hit: messageId="${truncate(normalizedArgs.messageId, 80)}"`,
+            );
+            return cachedResult;
+          }
+
+          logger.info(
+            `[executiveAgent] read_email_pdf_attachment: messageId="${truncate(normalizedArgs.messageId, 80)}" mailbox="${truncate(normalizedArgs.mailboxEmail ?? normalizedArgs.mailboxId ?? '(auto)', 80)}"`,
+          );
+
+          const toolCallIndex = nextSubagentCallIndex();
+          const result = await runWithSubagentBudget({
+            toolName: 'read_email_pdf_attachment',
+            counts: { total: 0, tool: 0 },
+            timeLeftMs: toolAbort.timeLeftMs(),
+            abortSignal: toolAbortSignal,
+            toolCallIndex,
+            run: (budgetContext) =>
+              readEmailPdfAttachment({
+                userId: input.userId,
+                messageId: normalizedArgs.messageId,
+                mailboxId: normalizedArgs.mailboxId,
+                mailboxEmail: normalizedArgs.mailboxEmail,
+                attachmentId: normalizedArgs.attachmentId,
+                attachmentFilename: normalizedArgs.attachmentFilename,
+                abortSignal: budgetContext.abortSignal,
+                traceContext: input.traceContext,
+              }),
+          });
+
+          toolResultCache.set('read_email_pdf_attachment', normalizedArgs, result);
           return result;
         },
       },
