@@ -17,6 +17,10 @@ import type {
 import { getDateOnlyInTimezone } from '@/lib/utils/timezone';
 import { logger } from '@/lib/logger';
 import { buildRunContextPromptFragment } from '@/lib/services/messaging-orchestration';
+import {
+  fetchReplyPipelineSnapshot,
+  formatReplyPipelineInstruction,
+} from './replyPipelineContext';
 
 export const EXECUTIVE_AGENT_PROMPT_VERSION = 'ea-prompt-v3';
 
@@ -32,6 +36,7 @@ function buildCurrentTurnMessage(params: {
   memoryContext: string;
   runContextFragment: string;
   pendingCalendarInstruction: string;
+  replyPipelineInstruction: string;
   harnessReminders: string[];
 }): string {
   const sections = [
@@ -48,6 +53,9 @@ function buildCurrentTurnMessage(params: {
     '',
     '## Pending Calendar State',
     params.pendingCalendarInstruction,
+    '',
+    '## Reply Pipeline Status',
+    params.replyPipelineInstruction,
     '',
     ...(params.harnessReminders.length > 0
       ? [
@@ -126,9 +134,12 @@ export async function buildExecutiveAgentPrompt(
     currentDateUserTzDateOnly = getDateOnlyInTimezone(now, DEFAULT_CALENDAR_TIMEZONE);
   }
 
-  // Keep this memory snapshot generic and compact so it doesn't churn on every
-  // request. Detailed recall should go through search_memory at runtime.
+  // Fetch memory snapshot and reply pipeline status in parallel.
+  // Memory: compact snapshot for context; detailed recall via search_memory at runtime.
+  // Pipeline: tells the agent which threads already have auto-generated drafts.
   let memoryContext = '(No memories stored yet)';
+  const pipelineSnapshotPromise = fetchReplyPipelineSnapshot(input.userId);
+
   if (isSupermemoryConfigured()) {
     try {
       const memories = await gatherMemoryContextForReply({
@@ -146,6 +157,9 @@ export async function buildExecutiveAgentPrompt(
       logger.debug('[executiveAgent] Failed to fetch memory context:', error);
     }
   }
+
+  const pipelineSnapshot = await pipelineSnapshotPromise;
+  const replyPipelineInstruction = formatReplyPipelineInstruction(pipelineSnapshot);
 
   // Calculate time since last message (if any)
   let timeSinceLastMessage = '';
@@ -182,6 +196,7 @@ export async function buildExecutiveAgentPrompt(
           runContextFragment,
           pendingCalendarInstruction:
             options?.pendingCalendarInstruction ?? 'No active pending calendar change exists.',
+          replyPipelineInstruction,
           harnessReminders: options?.harnessReminders ?? [],
         }),
       },
