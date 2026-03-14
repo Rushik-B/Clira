@@ -40,14 +40,22 @@ function formatResolvedEvents(events?: ResolvedCalendarEvent[]): string {
 export function buildCalendarCreatorPrompt(context: CalendarCreatorContext): string {
   const template = readPromptFile('core-processing/calendarCreatorPrompt.md');
 
-  return template
-    .replace('{utcNow}', context.currentTime.utcNow)
-    .replace('{userTimezone}', context.currentTime.userTimezone)
-    .replace('{userLocalNow}', context.currentTime.userLocalNow)
-    .replace('{dayOfWeek}', context.currentTime.dayOfWeek)
-    .replace('{userRequest}', context.request)
-    .replace('{availableCalendars}', formatAvailableCalendars(context.availableCalendars))
-    .replace('{resolvedEvents}', formatResolvedEvents(context.resolvedEvents));
+  const replacements: Record<string, string> = {
+    '{utcNow}': context.currentTime.utcNow,
+    '{userTimezone}': context.currentTime.userTimezone,
+    '{userLocalNow}': context.currentTime.userLocalNow,
+    '{dayOfWeek}': context.currentTime.dayOfWeek,
+    '{userRequest}': context.request,
+    '{availableCalendars}': formatAvailableCalendars(context.availableCalendars),
+    '{resolvedEvents}': formatResolvedEvents(context.resolvedEvents),
+  };
+
+  const placeholderPattern = new RegExp(
+    Object.keys(replacements).map((k) => k.replace(/[{}]/g, '\\$&')).join('|'),
+    'g',
+  );
+
+  return template.replace(placeholderPattern, (match) => replacements[match] ?? match);
 }
 
 function normalizeLookupValue(value: string): string {
