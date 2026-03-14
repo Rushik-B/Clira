@@ -205,4 +205,98 @@ describe('MCP runtime executor', () => {
     expect(getMcpConnectionWithSecretsMock).not.toHaveBeenCalled();
     expect(createAuditMock).toHaveBeenCalledTimes(1);
   });
+
+  test('blocks direct mutation execution without explicit confirmation', async () => {
+    const connection = buildConnection({
+      id: 'conn-2',
+      serverKey: 'calendar',
+      displayName: 'Work Calendar',
+    });
+    const tool = buildTool({
+      id: 'tool-2',
+      connectionId: connection.id,
+      toolName: 'create_event',
+      toolSlug: 'create_event',
+      modelToolName: 'mcp__calendar__create_event',
+      displayTitle: 'Create event',
+      actionClass: 'write',
+      capabilityId: 'calendar_external_mutation',
+      safeForAutoUse: false,
+    });
+
+    getMcpManifestByModelToolNameMock.mockResolvedValue({ connection, tool });
+
+    const result = await executeMcpTool({
+      userId: 'user-1',
+      connectionId: connection.id,
+      toolName: tool.modelToolName,
+      args: { title: 'Interview' },
+      deadlineMs: 2_000,
+      requestId: 'run-2',
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.errorClass).toBe('confirmation_required');
+    expect(createMcpTransportClientMock).not.toHaveBeenCalled();
+    expect(createAuditMock).toHaveBeenCalledTimes(1);
+  });
+
+  test('executes confirmed mutations without caching and preserves idempotency audit state', async () => {
+    const connection = buildConnection({
+      id: 'conn-2',
+      serverKey: 'calendar',
+      displayName: 'Work Calendar',
+    });
+    const tool = buildTool({
+      id: 'tool-2',
+      connectionId: connection.id,
+      toolName: 'create_event',
+      toolSlug: 'create_event',
+      modelToolName: 'mcp__calendar__create_event',
+      displayTitle: 'Create event',
+      actionClass: 'write',
+      capabilityId: 'calendar_external_mutation',
+      safeForAutoUse: false,
+    });
+    const closeMock = vi.fn().mockResolvedValue(undefined);
+    const callToolMock = vi.fn().mockResolvedValue({
+      content: [{ type: 'text', text: 'created' }],
+      structuredContent: { id: 'evt_1' },
+      isError: false,
+    });
+
+    getMcpManifestByModelToolNameMock.mockResolvedValue({ connection, tool });
+    getCachedMcpResultMock.mockReturnValue(null);
+    getMcpConnectionWithSecretsMock.mockResolvedValue({
+      connection,
+      secrets: { authMode: 'none' } satisfies McpSecretConfig,
+    });
+    createMcpTransportClientMock.mockResolvedValue({
+      listTools: vi.fn(),
+      callTool: callToolMock,
+      close: closeMock,
+    });
+
+    const result = await executeMcpTool({
+      userId: 'user-1',
+      connectionId: connection.id,
+      toolName: tool.modelToolName,
+      args: { title: 'Interview' },
+      deadlineMs: 2_000,
+      requestId: 'run-3',
+      idempotencyKey: 'idem-123',
+      mutationApproval: 'confirmed',
+    });
+
+    expect(result.ok).toBe(true);
+    expect(setCachedMcpResultMock).not.toHaveBeenCalled();
+    expect(createAuditMock).toHaveBeenCalledTimes(1);
+    expect(createAuditMock.mock.calls[0]?.[0]).toMatchObject({
+      data: {
+        idempotencyKey: 'idem-123',
+        actionClass: 'WRITE',
+        cacheHit: false,
+      },
+    });
+  });
 });

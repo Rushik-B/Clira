@@ -43,6 +43,21 @@ describe('Executive MCP capability routing', () => {
     expect(intents).toEqual(['calendar_external_read']);
   });
 
+  test('maps calendar mutation turns to external calendar read plus preview-only mutation intent', () => {
+    const intents = resolveExecutiveMcpCapabilityIntents({
+      packIds: ['calendar_mutation_pack'],
+      userRequest: 'Put the interview on my external work calendar.',
+      turnFeatures: buildFeatures({
+        calendarMutationIntent: true,
+      }),
+    });
+
+    expect(intents).toEqual([
+      'calendar_external_mutation',
+      'calendar_external_read',
+    ]);
+  });
+
   test('does not add arbitrary MCP intents for reminders or settings turns', () => {
     const intents = resolveExecutiveMcpCapabilityIntents({
       packIds: ['reminder_alert_pack', 'settings_mutation_pack'],

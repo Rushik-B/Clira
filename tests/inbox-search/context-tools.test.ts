@@ -261,6 +261,20 @@ function createMockToolResultCache() {
         },
       };
     },
+    getMcp() { return null; },
+    setMcp() {},
+    noteMcpMutation() {},
+    getMcpStats() {
+      return {
+        history_hit: 0,
+        runtime_hit: 0,
+        miss_not_found: 0,
+        miss_expired: 0,
+        miss_invalidated: 0,
+        set_ok: 0,
+        set_skipped_non_cacheable: 0,
+      };
+    },
   };
 }
 

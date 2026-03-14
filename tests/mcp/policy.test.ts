@@ -9,10 +9,12 @@ const {
   loadMcpRegistrySnapshotMock,
   isMcpEnabledMock,
   isMcpChannelEnabledMock,
+  getLatestPendingMcpActionMock,
 } = vi.hoisted(() => ({
   loadMcpRegistrySnapshotMock: vi.fn(),
   isMcpEnabledMock: vi.fn(),
   isMcpChannelEnabledMock: vi.fn(),
+  getLatestPendingMcpActionMock: vi.fn(),
 }));
 
 vi.mock('@/lib/services/mcp/registry/service', () => ({
@@ -22,6 +24,10 @@ vi.mock('@/lib/services/mcp/registry/service', () => ({
 vi.mock('@/lib/services/mcp/config/featureFlags', () => ({
   isMcpEnabled: isMcpEnabledMock,
   isMcpChannelEnabled: isMcpChannelEnabledMock,
+}));
+
+vi.mock('@/lib/services/mcp/runtime/mutationFlow', () => ({
+  getLatestPendingMcpAction: getLatestPendingMcpActionMock,
 }));
 
 import { resolveMcpToolExposure } from '@/lib/services/mcp/policy/service';
@@ -84,6 +90,7 @@ describe('MCP policy service', () => {
     vi.clearAllMocks();
     isMcpEnabledMock.mockReturnValue(true);
     isMcpChannelEnabledMock.mockReturnValue(true);
+    getLatestPendingMcpActionMock.mockResolvedValue(null);
   });
 
   test('approves only relevant read-only tools and surfaces degraded matches', async () => {
@@ -125,11 +132,10 @@ describe('MCP policy service', () => {
             buildTool({
               id: 'tool-3',
               connectionId: 'conn-3',
-              toolName: 'update_doc',
-              toolSlug: 'update_doc',
-              modelToolName: 'mcp__writer__update_doc',
-              displayTitle: 'Update doc',
-              actionClass: 'write',
+              toolName: 'lookup_docs',
+              toolSlug: 'lookup_docs',
+              modelToolName: 'mcp__writer__lookup_docs',
+              displayTitle: 'Lookup docs',
               safeForAutoUse: false,
               capabilityId: 'docs_read',
             }),
@@ -141,6 +147,7 @@ describe('MCP policy service', () => {
 
     const exposure = await resolveMcpToolExposure({
       userId: 'user-1',
+      conversationId: 'conv-1',
       channel: 'twilio',
       capabilityIntents: ['docs_read'],
     });
@@ -148,9 +155,10 @@ describe('MCP policy service', () => {
     expect(exposure.approvedTools.map((candidate) => candidate.tool.modelToolName)).toEqual([
       'mcp__docs__search_docs',
     ]);
+    expect(exposure.mutationTools).toEqual([]);
     expect(exposure.degradedTools.map((candidate) => candidate.tool.modelToolName)).toEqual([
       'mcp__crm__search_crm',
-      'mcp__writer__update_doc',
+      'mcp__writer__lookup_docs',
     ]);
     expect(exposure.degradedTools.map((candidate) => candidate.decision.reason)).toEqual([
       'connection_not_ready',
@@ -165,18 +173,136 @@ describe('MCP policy service', () => {
     ]);
   });
 
+  test('surfaces calendar mutation tools as preview-only candidates and carries pending action state', async () => {
+    const snapshot: McpRegistrySnapshot = {
+      userId: 'user-1',
+      fetchedAt: new Date('2026-03-02T18:05:00.000Z'),
+      connections: [
+        {
+          connection: buildConnection({
+            id: 'conn-cal',
+            serverKey: 'calendar',
+            displayName: 'Work Calendar',
+          }),
+          tools: [
+            buildTool({
+              id: 'tool-cal-write',
+              connectionId: 'conn-cal',
+              toolName: 'create_event',
+              toolSlug: 'create_event',
+              modelToolName: 'mcp__calendar__create_event',
+              displayTitle: 'Create event',
+              actionClass: 'write',
+              capabilityId: 'calendar_external_mutation',
+              safeForAutoUse: false,
+            }),
+          ],
+        },
+      ],
+    };
+    loadMcpRegistrySnapshotMock.mockResolvedValue(snapshot);
+    getLatestPendingMcpActionMock.mockResolvedValue({
+      id: 'pending-1',
+      userId: 'user-1',
+      conversationId: 'conv-1',
+      connectionId: 'conn-cal',
+      toolName: 'create_event',
+      modelToolName: 'mcp__calendar__create_event',
+      displayTitle: 'Create event',
+      capabilityId: 'calendar_external_mutation',
+      actionClass: 'write',
+      trustClass: 'user_configured',
+      userRequest: 'Book time',
+      args: { title: 'Interview' },
+      previewText: 'Preview',
+      previewSummary: null,
+      status: 'pending',
+      idempotencyKey: 'idem-1',
+      expiresAt: new Date('2026-03-02T19:00:00.000Z'),
+      consumedAt: null,
+      cancelledAt: null,
+      resultSummary: null,
+      createdAt: new Date('2026-03-02T18:00:00.000Z'),
+      updatedAt: new Date('2026-03-02T18:00:00.000Z'),
+    });
+
+    const exposure = await resolveMcpToolExposure({
+      userId: 'user-1',
+      conversationId: 'conv-1',
+      channel: 'twilio',
+      capabilityIntents: ['calendar_external_mutation'],
+    });
+
+    expect(exposure.approvedTools).toEqual([]);
+    expect(exposure.mutationTools.map((candidate) => candidate.tool.modelToolName)).toEqual([
+      'mcp__calendar__create_event',
+    ]);
+    expect(exposure.mutationTools[0]?.decision.reason).toBe('preview_required');
+    expect(exposure.pendingAction?.id).toBe('pending-1');
+    expect(exposure.promptSummary.capabilityLines).toEqual([
+      'Work Calendar: calendar_external_mutation via Create event (preview required)',
+    ]);
+  });
+
+  test('blocks third-party MCP mutations even when the capability intent matches', async () => {
+    const snapshot: McpRegistrySnapshot = {
+      userId: 'user-1',
+      fetchedAt: new Date('2026-03-02T18:05:00.000Z'),
+      connections: [
+        {
+          connection: buildConnection({
+            id: 'conn-third',
+            serverKey: 'calendar',
+            displayName: 'Vendor Calendar',
+            trustClass: 'third_party',
+          }),
+          tools: [
+            buildTool({
+              id: 'tool-third',
+              connectionId: 'conn-third',
+              toolName: 'create_event',
+              toolSlug: 'create_event',
+              modelToolName: 'mcp__calendar__create_event',
+              displayTitle: 'Create event',
+              actionClass: 'write',
+              capabilityId: 'calendar_external_mutation',
+              safeForAutoUse: false,
+            }),
+          ],
+        },
+      ],
+    };
+    loadMcpRegistrySnapshotMock.mockResolvedValue(snapshot);
+
+    const exposure = await resolveMcpToolExposure({
+      userId: 'user-1',
+      conversationId: 'conv-1',
+      channel: 'twilio',
+      capabilityIntents: ['calendar_external_mutation'],
+    });
+
+    expect(exposure.mutationTools).toEqual([]);
+    expect(exposure.degradedTools[0]?.decision.reason).toBe('third_party_mutation_blocked');
+    expect(exposure.promptSummary.degradedLines).toEqual([
+      'Vendor Calendar: calendar_external_mutation unavailable (third_party_mutation_blocked)',
+    ]);
+  });
+
   test('returns an empty exposure when MCP is disabled', async () => {
     isMcpEnabledMock.mockReturnValue(false);
 
     const exposure = await resolveMcpToolExposure({
       userId: 'user-1',
+      conversationId: 'conv-1',
       channel: 'twilio',
       capabilityIntents: ['docs_read'],
     });
 
     expect(loadMcpRegistrySnapshotMock).not.toHaveBeenCalled();
     expect(exposure.approvedTools).toEqual([]);
+    expect(exposure.mutationTools).toEqual([]);
     expect(exposure.degradedTools).toEqual([]);
+    expect(exposure.pendingAction).toBeNull();
     expect(exposure.promptSummary).toEqual({
       capabilityLines: [],
       degradedLines: [],

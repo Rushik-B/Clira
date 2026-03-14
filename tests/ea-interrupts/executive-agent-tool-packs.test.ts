@@ -135,6 +135,18 @@ function buildContext(params: {
           set_skipped_non_cacheable: 0,
         },
       }),
+      getMcp: () => null,
+      setMcp: () => {},
+      noteMcpMutation: () => {},
+      getMcpStats: () => ({
+        history_hit: 0,
+        runtime_hit: 0,
+        miss_not_found: 0,
+        miss_expired: 0,
+        miss_invalidated: 0,
+        set_ok: 0,
+        set_skipped_non_cacheable: 0,
+      }),
     },
   };
 }
@@ -343,7 +355,9 @@ describe('Executive agent tool packs', () => {
           },
         },
       ],
+      mutationTools: [],
       degradedTools: [],
+      pendingAction: null,
       promptSummary: {
         capabilityLines: ['Docs Workspace: docs_read via Search docs'],
         degradedLines: [],
@@ -354,5 +368,82 @@ describe('Executive agent tool packs', () => {
 
     expect(toolNames).toContain('search_inbox_context');
     expect(toolNames).toContain('mcp__docs__search_docs');
+  });
+
+  test('mutation-capable MCP exposure adds preview and pending confirmation wrappers instead of raw mutating tools', () => {
+    const context = buildContext({
+      input: buildInput({ userRequest: 'put the interview on my external work calendar' }),
+      pendingCalendarChangePresent: false,
+      selectedPacks: ['calendar_mutation_pack'],
+    });
+
+    context.mcpToolExposure = {
+      capabilityIntents: ['calendar_external_mutation'],
+      approvedTools: [],
+      mutationTools: [
+        {
+          connection: buildMcpConnection({
+            id: 'mcp-conn-cal',
+            serverKey: 'calendar',
+            displayName: 'Work Calendar',
+          }),
+          tool: buildMcpTool({
+            id: 'mcp-tool-cal',
+            connectionId: 'mcp-conn-cal',
+            toolName: 'create_event',
+            toolSlug: 'create_event',
+            modelToolName: 'mcp__calendar__create_event',
+            displayTitle: 'Create event',
+            actionClass: 'write',
+            capabilityId: 'calendar_external_mutation',
+            safeForAutoUse: false,
+          }),
+          decision: {
+            visible: true,
+            callable: false,
+            requiresConfirmation: true,
+            reason: 'preview_required',
+          },
+        },
+      ],
+      degradedTools: [],
+      pendingAction: {
+        id: 'pending-1',
+        userId: 'user-1',
+        conversationId: 'conv-1',
+        connectionId: 'mcp-conn-cal',
+        toolName: 'create_event',
+        modelToolName: 'mcp__calendar__create_event',
+        displayTitle: 'Create event',
+        capabilityId: 'calendar_external_mutation',
+        actionClass: 'write',
+        trustClass: 'user_configured',
+        userRequest: 'put the interview on my external work calendar',
+        args: { title: 'Interview' },
+        previewText: 'Preview',
+        previewSummary: null,
+        status: 'pending',
+        idempotencyKey: 'idem-1',
+        expiresAt: new Date('2026-03-02T19:00:00.000Z'),
+        consumedAt: null,
+        cancelledAt: null,
+        resultSummary: null,
+        createdAt: new Date('2026-03-02T18:00:00.000Z'),
+        updatedAt: new Date('2026-03-02T18:00:00.000Z'),
+      },
+      promptSummary: {
+        capabilityLines: [
+          'Work Calendar: calendar_external_mutation via Create event (preview required)',
+        ],
+        degradedLines: [],
+      },
+    };
+
+    const toolNames = Object.keys(buildExecutiveAgentTools(context));
+
+    expect(toolNames).toContain('plan_mcp_action');
+    expect(toolNames).toContain('commit_mcp_action');
+    expect(toolNames).toContain('cancel_mcp_action');
+    expect(toolNames).not.toContain('mcp__calendar__create_event');
   });
 });
