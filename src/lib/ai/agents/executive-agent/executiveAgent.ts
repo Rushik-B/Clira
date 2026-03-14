@@ -49,6 +49,7 @@ import {
   extractExecutiveTurnFeatures,
   selectExecutiveToolPackForTurn,
 } from './selector';
+import { buildExecutiveMcpPromptFragments } from './mcp/promptFragments';
 import { EXECUTIVE_AGENT_PACK_VERSION } from './toolPacks';
 import {
   createExecutiveToolResultReuseCache,
@@ -70,6 +71,7 @@ import type {
   PendingCalendarChangeRecord,
   ToolPackId,
 } from './types';
+import { resolveMcpToolExposure } from '@/lib/services/mcp/policy/service';
 
 export class ExecutiveAgent {
   async process(input: ExecutiveAgentInput): Promise<ExecutiveAgentOutput> {
@@ -96,6 +98,7 @@ export class ExecutiveAgent {
     let selectedPacks: ToolPackId[] = [];
     let selectorReasons: string[] = [];
     let turnFeatures: ExecutiveTurnFeatures | null = null;
+    let mcpToolExposure: Awaited<ReturnType<typeof resolveMcpToolExposure>> | null = null;
     let workingStateController: ReturnType<typeof createWorkingStateController> | null = null;
     let steerMetadata: Prisma.InputJsonValue | null = null;
 
@@ -107,6 +110,7 @@ export class ExecutiveAgent {
       return stripUndefined({
           selectedPack,
           selectedPacks,
+          capabilityIntents: mcpToolExposure?.capabilityIntents ?? [],
           selectorReasons,
           workingState: workingStateController.getState(),
           promptVersion: EXECUTIVE_AGENT_PROMPT_VERSION,
@@ -181,10 +185,17 @@ export class ExecutiveAgent {
       selectedPack = activePack;
       selectedPacks = activePacks;
       selectorReasons = selection.reasons;
+      mcpToolExposure = await resolveMcpToolExposure({
+        userId: input.userId,
+        channel: resolvedChannel,
+        capabilityIntents: selection.capabilityIntents,
+      });
+      const mcpPromptFragments = buildExecutiveMcpPromptFragments(mcpToolExposure);
 
       logger.info('[executiveAgent] harness.selection', {
         selectedPack,
         selectedPacks,
+        capabilityIntents: selection.capabilityIntents,
         selectorReasons,
         draftCandidatePresent: activeTurnFeatures.draftCandidatePresent,
         draftCandidateReason: activeTurnFeatures.draftCandidateReason,
@@ -205,7 +216,12 @@ export class ExecutiveAgent {
 
       const promptContext = await buildExecutiveAgentPrompt(input, resolvedChannel, {
         pendingCalendarInstruction,
-        harnessReminders: selection.reminders,
+        harnessReminders: [
+          ...selection.reminders,
+          ...mcpPromptFragments.reminderLines,
+        ],
+        mcpCapabilitySummaryLines: mcpPromptFragments.capabilitySummaryLines,
+        mcpDegradedSummaryLines: mcpPromptFragments.degradedSummaryLines,
       });
       const {
         systemPrompt: promptSystemPrompt,
@@ -256,6 +272,7 @@ export class ExecutiveAgent {
           toolResultCacheStatsReader.read = readStats;
         },
         toolResultCache,
+        mcpToolExposure,
       });
 
       logger.info('[executiveAgent] harness.pack_tools', {

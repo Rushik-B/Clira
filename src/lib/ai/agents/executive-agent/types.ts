@@ -19,6 +19,10 @@ import type {
   ExecutiveToolResultCacheStats,
 } from './toolResultReuseCache';
 import type { AiTraceContext } from '@/lib/ai/tracing';
+import type {
+  McpCapabilityIntent,
+  McpToolExposure,
+} from '@/lib/services/mcp/types';
 
 export interface ExecutiveAgentInput {
   userId: string;
@@ -126,6 +130,7 @@ export interface ExecutiveTurnFeatures {
 export interface PackSelection {
   packId: ToolPackId;
   packIds: ToolPackId[];
+  capabilityIntents: McpCapabilityIntent[];
   reasons: string[];
   reminders: string[];
 }
@@ -194,4 +199,5 @@ export type ExecutiveRuntimeContext = {
     readStats: () => ExecutiveToolResultCacheStats,
   ) => void;
   toolResultCache: ExecutiveToolResultReuseCache;
+  mcpToolExposure?: McpToolExposure | null;
 };

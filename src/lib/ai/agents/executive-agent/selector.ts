@@ -12,6 +12,7 @@ import type {
   PackSelection,
   ToolPackId,
 } from './types';
+import { resolveExecutiveMcpCapabilityIntents } from './mcp/capabilityResolver';
 
 const TOOL_PACK_IDS = [
   'core_recall_pack',
@@ -23,8 +24,19 @@ const TOOL_PACK_IDS = [
   'email_send_pack',
 ] as const satisfies readonly ToolPackId[];
 
-function buildAllPackSelection(reasons: string[], reminders: string[] = []): PackSelection {
-  return buildSelection([...TOOL_PACK_IDS], reasons, reminders);
+function buildAllPackSelection(params: {
+  reasons: string[];
+  reminders?: string[];
+  userRequest: string;
+  features: ExecutiveTurnFeatures;
+}): PackSelection {
+  return buildSelection({
+    packIdOrPackIds: [...TOOL_PACK_IDS],
+    reasons: params.reasons,
+    reminders: params.reminders,
+    userRequest: params.userRequest,
+    features: params.features,
+  });
 }
 
 function normalizeText(value: string): string {
@@ -398,12 +410,18 @@ function uniquePackIds(packIds: readonly ToolPackId[]): ToolPackId[] {
 }
 
 function buildSelection(
-  packIdOrPackIds: ToolPackId | readonly ToolPackId[],
-  reasons: string[],
-  reminders: string[] = [],
+  params: {
+    packIdOrPackIds: ToolPackId | readonly ToolPackId[];
+    reasons: string[];
+    reminders?: string[];
+    userRequest: string;
+    features: ExecutiveTurnFeatures;
+  },
 ): PackSelection {
   const packIds = uniquePackIds(
-    Array.isArray(packIdOrPackIds) ? packIdOrPackIds : [packIdOrPackIds],
+    Array.isArray(params.packIdOrPackIds)
+      ? params.packIdOrPackIds
+      : [params.packIdOrPackIds],
   );
   const normalizedPackIds: ToolPackId[] =
     packIds.length > 0 ? packIds : ['core_recall_pack'];
@@ -411,8 +429,13 @@ function buildSelection(
   return {
     packId: normalizedPackIds[0],
     packIds: normalizedPackIds,
-    reasons,
-    reminders,
+    capabilityIntents: resolveExecutiveMcpCapabilityIntents({
+      packIds: normalizedPackIds,
+      userRequest: params.userRequest,
+      turnFeatures: params.features,
+    }),
+    reasons: params.reasons,
+    reminders: params.reminders ?? [],
   };
 }
 
@@ -727,8 +750,13 @@ async function callCerebrasSelector(params: {
  * Bypass LLM routing only for flows that must stay deterministic.
  */
 function selectDeterministicBypassSelection(
-  features: ExecutiveTurnFeatures,
+  params: {
+    features: ExecutiveTurnFeatures;
+    userRequest: string;
+  },
 ): PackSelection | null {
+  const { features, userRequest } = params;
+
   if (features.explicitSendApproval && features.draftCandidatePresent) {
     const packIds: ToolPackId[] = ['email_send_pack'];
     if (features.calendarMutationIntent) {
@@ -740,11 +768,13 @@ function selectDeterministicBypassSelection(
       packIds.push('reminder_alert_pack');
     }
 
-    return buildSelection(
-      packIds,
-      ['explicit send approval with recent unsent draft candidate'],
-      ['User approval is present; only send the already-shown draft.'],
-    );
+    return buildSelection({
+      packIdOrPackIds: packIds,
+      reasons: ['explicit send approval with recent unsent draft candidate'],
+      reminders: ['User approval is present; only send the already-shown draft.'],
+      userRequest,
+      features,
+    });
   }
 
   if (
@@ -758,15 +788,17 @@ function selectDeterministicBypassSelection(
       packIds.push('reminder_alert_pack');
     }
 
-    return buildSelection(
-      packIds,
-      [
+    return buildSelection({
+      packIdOrPackIds: packIds,
+      reasons: [
         features.pendingCalendarModifyIntent
           ? 'pending calendar change exists and latest turn explicitly modifies the plan'
           : 'pending calendar change exists and latest turn resolves it',
       ],
-      ['A pending calendar change exists; confirm, cancel, or explicitly modify it.'],
-    );
+      reminders: ['A pending calendar change exists; confirm, cancel, or explicitly modify it.'],
+      userRequest,
+      features,
+    });
   }
 
   return null;
@@ -777,10 +809,17 @@ export async function selectExecutiveToolPackForTurn(params: {
   features: ExecutiveTurnFeatures;
 }): Promise<PackSelection> {
   if (!isSelectorLlmEnabled(params.features.channel)) {
-    return buildAllPackSelection(['selector unavailable; exposed all packs']);
+    return buildAllPackSelection({
+      reasons: ['selector unavailable; exposed all packs'],
+      userRequest: params.input.userRequest,
+      features: params.features,
+    });
   }
 
-  const bypassSelection = selectDeterministicBypassSelection(params.features);
+  const bypassSelection = selectDeterministicBypassSelection({
+    features: params.features,
+    userRequest: params.input.userRequest,
+  });
   if (bypassSelection) {
     return bypassSelection;
   }
@@ -806,16 +845,22 @@ export async function selectExecutiveToolPackForTurn(params: {
       });
     }
 
-    return buildSelection(
-      safePackIds,
-      ['llm selector'],
-      getDefaultPackRemindersForSelection(safePackIds),
-    );
+    return buildSelection({
+      packIdOrPackIds: safePackIds,
+      reasons: ['llm selector'],
+      reminders: getDefaultPackRemindersForSelection(safePackIds),
+      userRequest: params.input.userRequest,
+      features: params.features,
+    });
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     logger.warn('[executiveAgent] selector.llm_failed_expose_all_packs', {
       error: errorMessage,
     });
-    return buildAllPackSelection(['selector failed; exposed all packs']);
+    return buildAllPackSelection({
+      reasons: ['selector failed; exposed all packs'],
+      userRequest: params.input.userRequest,
+      features: params.features,
+    });
   }
 }

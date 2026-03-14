@@ -38,6 +38,8 @@ function buildCurrentTurnMessage(params: {
   pendingCalendarInstruction: string;
   replyPipelineInstruction: string;
   harnessReminders: string[];
+  mcpCapabilitySummaryLines: string[];
+  mcpDegradedSummaryLines: string[];
 }): string {
   const sections = [
     '## Current Turn Context',
@@ -57,6 +59,20 @@ function buildCurrentTurnMessage(params: {
     '## Reply Pipeline Status',
     params.replyPipelineInstruction,
     '',
+    ...(params.mcpCapabilitySummaryLines.length > 0
+      ? [
+          '## MCP Capabilities This Turn',
+          ...params.mcpCapabilitySummaryLines.map((line) => `- ${line}`),
+          '',
+        ]
+      : []),
+    ...(params.mcpDegradedSummaryLines.length > 0
+      ? [
+          '## MCP Degraded Capabilities',
+          ...params.mcpDegradedSummaryLines.map((line) => `- ${line}`),
+          '',
+        ]
+      : []),
     ...(params.harnessReminders.length > 0
       ? [
           '## Harness Reminders',
@@ -80,6 +96,8 @@ export async function buildExecutiveAgentPrompt(
   options?: {
     pendingCalendarInstruction?: string;
     harnessReminders?: string[];
+    mcpCapabilitySummaryLines?: string[];
+    mcpDegradedSummaryLines?: string[];
   },
 ): Promise<PromptContext> {
   const systemPrompt = readPromptFile('whatsapp/executiveAgentPrompt.md');
@@ -198,6 +216,8 @@ export async function buildExecutiveAgentPrompt(
             options?.pendingCalendarInstruction ?? 'No active pending calendar change exists.',
           replyPipelineInstruction,
           harnessReminders: options?.harnessReminders ?? [],
+          mcpCapabilitySummaryLines: options?.mcpCapabilitySummaryLines ?? [],
+          mcpDegradedSummaryLines: options?.mcpDegradedSummaryLines ?? [],
         }),
       },
     ],

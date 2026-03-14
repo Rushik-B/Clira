@@ -9,10 +9,8 @@ import type {
 import { buildContextTools } from './tools/context-tools';
 import { buildCalendarMutationTools } from './tools/calendar-mutation-tools';
 import { buildMessagingTools } from './tools/messaging-tools';
-import {
-  buildPackToolAllowlistForSelection,
-  type ExecutiveToolName,
-} from './toolPacks';
+import { buildPackToolAllowlistForSelection } from './toolPacks';
+import { buildExecutiveMcpTools } from './mcp/toolAdapter';
 
 const progressUpdateInputSchema = z.object({
   kind: z.enum(progressUpdateKinds).describe('Progress update category'),
@@ -55,6 +53,10 @@ export function buildExecutiveAgentTools(context: ExecutiveRuntimeContext): Reco
     ...buildContextTools({ context, nextSubagentCallIndex }),
     ...buildCalendarMutationTools({ context, nextSubagentCallIndex }),
     ...buildMessagingTools({ context }),
+    ...buildExecutiveMcpTools({
+      context,
+      exposure: context.mcpToolExposure ?? null,
+    }),
   };
 
   allTools.send_progress_update = context.input.progressContext
@@ -66,12 +68,15 @@ export function buildExecutiveAgentTools(context: ExecutiveRuntimeContext): Reco
       })
     : buildUnavailableProgressUpdateTool(context);
 
-  const allowlist = new Set(
+  const allowlist = new Set<string>(
     buildPackToolAllowlistForSelection(context.selectedPacks, context.turnFeatures),
   );
+  for (const candidate of context.mcpToolExposure?.approvedTools ?? []) {
+    allowlist.add(candidate.tool.modelToolName);
+  }
 
   const filteredTools = Object.fromEntries(
-    Object.entries(allTools).filter(([toolName]) => allowlist.has(toolName as ExecutiveToolName)),
+    Object.entries(allTools).filter(([toolName]) => allowlist.has(toolName)),
   );
 
   return orderToolsDeterministically(filteredTools);
