@@ -10,6 +10,7 @@ import { createGmailServiceForUser } from '@/lib/security/getUserGmailCredential
 import { encryptEmailContent, encryptThreadContent, decryptEmailContent, decryptEmails, decryptThreadContent } from '@/lib/security/emailCrypto';
 import { triggerAlertNotification } from '@/lib/services/alertNotificationService';
 import { enqueueInboxIndexJob } from '@/lib/services/inbox-search';
+import { reconcileResolvedGeneratedDrafts } from '@/lib/services/queue/reconcileResolvedGeneratedDrafts';
 // AI queue label removed: no longer creating/applying a dedicated Gmail label
 import type { AiTraceContext } from '@/lib/ai/tracing';
 import {
@@ -1426,77 +1427,34 @@ export class GmailPushService {
       // Ensure token is valid before attempting any Gmail operations
       await this.ensureAuthenticated();
 
-      // Find the latest incoming email in this thread that has a generated reply but no feedback
-      const unprocessedRecord = await prisma.email.findFirst({
-        where: {
-          mailboxId,
-          thread: { userId, mailboxId },
-          gmailThreadId: sentEmail.gmailThreadId,
-          isSent: false,
-          feedback: null,
-          generatedDraft: { isNot: null },
-        },
-        include: { generatedDraft: true, thread: true },
-        orderBy: { createdAt: 'desc' }, // Get the most recent one
-      });
-
-      if (!unprocessedRecord) {
-        console.log(`📤 No unprocessed AI replies found for thread ${sentEmail.gmailThreadId}`);
+      if (!this.gmailService) {
+        console.warn(`⚠️ Gmail service unavailable during sent-email reconciliation for thread ${sentEmail.gmailThreadId}`);
         return;
       }
 
-      const unprocessedEmail = await decryptEmailContent({ email: unprocessedRecord, userId });
+      const resolvedAt = sentEmail.date instanceof Date
+        ? sentEmail.date
+        : new Date(sentEmail.date ?? Date.now());
 
-      console.log(`📤 Found unprocessed AI reply for email ${unprocessedEmail.id}, marking as externally handled`);
+      const reconciliation = await reconcileResolvedGeneratedDrafts({
+        userId,
+        mailboxId,
+        gmailThreadId: sentEmail.gmailThreadId,
+        resolvedAt,
+        sentMessageId: sentEmail.messageId,
+        source: 'gmail-push-external-send',
+        gmail: this.gmailService,
+      });
 
-      // Create feedback entry to mark as handled externally
-      await prisma.feedback.upsert({
-        where: { emailId: unprocessedEmail.id },
-        update: {
-          action: 'ACCEPTED',
-          editDelta: {
-            external: true,
-            sentVia: 'gmail_client',
-            repliedAt: new Date().toISOString(),
-            sentEmailId: sentEmail.messageId,
-        },
-      },
-      create: {
-        userId: userId,
-        emailId: unprocessedEmail.id,
-        action: 'ACCEPTED',
-        editDelta: {
-          external: true,
-          sentVia: 'gmail_client', 
-          repliedAt: new Date().toISOString(),
-          sentEmailId: sentEmail.messageId,
-        },
-      },
-    });
-
-    // If there's a Gmail draft ID, we can try to clean it up (optional)
-    if (unprocessedEmail.generatedDraft?.gmailDraftId) {
-      try {
-        console.log(`📤 Attempting to clean up Gmail draft ${unprocessedEmail.generatedDraft.gmailDraftId}`);
-        await this.ensureAuthenticated();
-        await this.gmail.users.drafts.delete({
-          userId: 'me',
-          id: unprocessedEmail.generatedDraft.gmailDraftId,
-        });
-        
-        // Remove draft metadata to keep pointers accurate
-        await prisma.generatedDraft.delete({
-          where: { id: unprocessedEmail.generatedDraft.id },
-        });
-        
-        console.log(`✅ Cleaned up Gmail draft ${unprocessedEmail.generatedDraft.gmailDraftId}`);
-      } catch (draftCleanupError) {
-        console.warn(`⚠️ Failed to clean up Gmail draft ${unprocessedEmail.generatedDraft.gmailDraftId}:`, draftCleanupError);
-        // Don't fail the whole process if draft cleanup fails
+      if (reconciliation.candidateCount === 0) {
+        console.log(`📤 No pending AI drafts found for thread ${sentEmail.gmailThreadId}`);
+        return;
       }
-    }
 
-      console.log(`✅ Marked AI reply for email ${unprocessedEmail.id} as handled externally`);
+      console.log(`✅ Reconciled sent-email thread ${sentEmail.gmailThreadId}`, {
+        mailboxId,
+        ...reconciliation,
+      });
       
     } catch (error) {
       console.error(`❌ Error handling sent email for reply resolution:`, error);

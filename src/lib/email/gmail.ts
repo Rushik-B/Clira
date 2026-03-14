@@ -82,6 +82,10 @@ function getDraftCacheKey(userId: string, draftId: string) {
   return `${userId || 'anonymous'}:${draftId}`
 }
 
+function evictDraftCacheEntry(userId: string, draftId: string) {
+  draftCache.delete(getDraftCacheKey(userId, draftId))
+}
+
 export class GmailService {
   private gmail: any
   private auth: any
@@ -671,6 +675,8 @@ export class GmailService {
           id: draftId,
         },
       });
+
+      evictDraftCacheEntry(this.userId, draftId)
       
       console.log(`✅ Draft sent successfully. Message ID: ${response.data.id}`);
       
@@ -680,6 +686,26 @@ export class GmailService {
       };
     } catch (error) {
       console.error(`❌ Error sending Gmail draft ${draftId}:`, error);
+      throw error;
+    }
+  }
+
+  async deleteDraft(draftId: string): Promise<void> {
+    await this.refreshTokenIfNeeded();
+
+    try {
+      console.log(`🗑️ Deleting Gmail draft: ${draftId}`);
+
+      await this.gmail.users.drafts.delete({
+        userId: 'me',
+        id: draftId,
+      });
+
+      evictDraftCacheEntry(this.userId, draftId)
+      console.log(`✅ Draft deleted successfully: ${draftId}`);
+    } catch (error) {
+      evictDraftCacheEntry(this.userId, draftId)
+      console.error(`❌ Error deleting Gmail draft ${draftId}:`, error);
       throw error;
     }
   }
@@ -727,6 +753,8 @@ export class GmailService {
         id: draftId,
         requestBody,
       });
+
+      evictDraftCacheEntry(this.userId, draftId)
       
       console.log(`✅ Draft updated successfully. Draft ID: ${response.data.id}`);
       
