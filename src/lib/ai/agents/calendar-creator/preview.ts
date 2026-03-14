@@ -131,6 +131,9 @@ function summarizeCreateDraft(
 function summarizeUpdateChanges(
   draft: CalendarEventDraftDTO,
   fallbackTimeZone: string,
+  calendars: AvailableCalendar[] | undefined,
+  destinationCalendarId?: string,
+  createMeetLink = false,
 ): string {
   const changes: string[] = [];
 
@@ -153,6 +156,48 @@ function summarizeUpdateChanges(
 
   if (draft.attendees) {
     changes.push('update attendees');
+  }
+
+  if (draft.reminders) {
+    changes.push('update reminders');
+  }
+
+  if (draft.recurrence) {
+    changes.push('update recurrence');
+  }
+
+  if (draft.visibility) {
+    changes.push(`set visibility to ${draft.visibility}`);
+  }
+
+  if (draft.transparency) {
+    changes.push(`mark as ${draft.transparency === 'transparent' ? 'free' : 'busy'}`);
+  }
+
+  if (draft.colorId) {
+    changes.push('change event color');
+  }
+
+  if (typeof draft.guestsCanModify === 'boolean') {
+    changes.push(`${draft.guestsCanModify ? 'allow' : 'disallow'} guest edits`);
+  }
+
+  if (typeof draft.guestsCanInviteOthers === 'boolean') {
+    changes.push(`${draft.guestsCanInviteOthers ? 'allow' : 'disallow'} guest invites`);
+  }
+
+  if (typeof draft.guestsCanSeeOtherGuests === 'boolean') {
+    changes.push(
+      `${draft.guestsCanSeeOtherGuests ? 'allow' : 'hide'} guest list visibility`,
+    );
+  }
+
+  if (destinationCalendarId) {
+    changes.push(`move to ${getCalendarLabel(destinationCalendarId, calendars)}`);
+  }
+
+  if (createMeetLink) {
+    changes.push('add Google Meet link');
   }
 
   if (changes.length === 0) {
@@ -200,11 +245,22 @@ export function buildCalendarPlanPreview(
   if (plan.action === 'update') {
     const targets = plan.targets?.length ? plan.targets : plan.target ? [plan.target] : [];
     const drafts = plan.eventDrafts?.length ? plan.eventDrafts : plan.eventDraft ? [plan.eventDraft] : [];
+    const destinationCalendarIds = plan.destinationCalendarIds?.length
+      ? plan.destinationCalendarIds
+      : plan.destinationCalendarId
+        ? [plan.destinationCalendarId]
+        : [];
     const items = targets.map((target, index) => {
       const draft = drafts[index] ?? plan.eventDraft;
       const targetSummary = summarizeTarget(target, context.resolvedEvents);
       const changeSummary = draft
-        ? summarizeUpdateChanges(draft, fallbackTimeZone)
+        ? summarizeUpdateChanges(
+            draft,
+            fallbackTimeZone,
+            context.availableCalendars,
+            destinationCalendarIds[index],
+            plan.createMeetLink,
+          )
         : 'apply the requested changes';
       return `${targetSummary} -> ${changeSummary}`;
     });

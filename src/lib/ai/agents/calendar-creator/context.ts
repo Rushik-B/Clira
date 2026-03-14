@@ -62,17 +62,16 @@ function normalizeLookupValue(value: string): string {
   return value.trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
-export function resolveCalendarId(
+export function findCalendarId(
   candidate: string | undefined,
   calendars: AvailableCalendar[] | undefined,
-  fallback = 'primary',
-): string {
+): string | null {
   if (!candidate || !candidate.trim()) {
-    return calendars?.find((calendar) => calendar.primary)?.id ?? fallback;
+    return null;
   }
 
   if (!calendars || calendars.length === 0) {
-    return fallback;
+    return null;
   }
 
   const normalizedCandidate = normalizeLookupValue(candidate);
@@ -102,7 +101,19 @@ export function resolveCalendarId(
     return fuzzyNameMatch.id;
   }
 
-  return calendars.find((calendar) => calendar.primary)?.id ?? fallback;
+  return null;
+}
+
+export function resolveCalendarId(
+  candidate: string | undefined,
+  calendars: AvailableCalendar[] | undefined,
+  fallback = 'primary',
+): string {
+  return (
+    findCalendarId(candidate, calendars) ??
+    calendars?.find((calendar) => calendar.primary)?.id ??
+    fallback
+  );
 }
 
 export function getCalendarLabel(

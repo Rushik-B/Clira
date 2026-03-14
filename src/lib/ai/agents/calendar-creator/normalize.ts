@@ -6,7 +6,7 @@ import {
   type CalendarTargetDTO,
 } from '@/lib/ai/schemas/calendarCreatorSchemas';
 import { buildCalendarPlanPreview } from './preview';
-import { resolveCalendarId } from './context';
+import { findCalendarId, resolveCalendarId } from './context';
 import type {
   CalendarCreatorContext,
   ResolvedCalendarEvent,
@@ -102,7 +102,10 @@ function createClarifyPlan(
 
 export function mapLlmOutputToPlan(
   raw: LlmPlanOutput,
-  context: Pick<CalendarCreatorContext, 'availableCalendars' | 'resolvedEvents' | 'currentTime'>,
+  context: Pick<
+    CalendarCreatorContext,
+    'availableCalendars' | 'resolvedEvents' | 'currentTime' | 'request'
+  >,
 ): CalendarCreatorPlanDTO {
   const shared = {
     confidence: raw.confidence ?? 70,
@@ -178,6 +181,9 @@ export function mapLlmOutputToPlan(
   }
 
   if (raw.action === 'update') {
+    const requestLooksLikeCalendarContainerChange =
+      /\bcalendar\b|\bmove\b|\bmoved\b|\bwrong\b/i.test(context.request);
+
     const updates = (raw.updateItems ?? []).map((item) => ({
       target: resolveTargetFromPreResolvedEvents(
         item.target,
@@ -185,10 +191,36 @@ export function mapLlmOutputToPlan(
         shared.calendarId,
       ),
       eventDraft: item.eventDraft,
+      destinationCalendarId: item.destinationCalendarId
+        ? findCalendarId(item.destinationCalendarId, context.availableCalendars)
+        : undefined,
     }));
 
     if (updates.length === 0) {
       return createClarifyPlan(shared, 'Which event should I update, and what should change?');
+    }
+
+    const hasSuspiciousCalendarAsLocation = updates.some((item) => {
+      const location = item.eventDraft.location?.trim();
+      return (
+        requestLooksLikeCalendarContainerChange &&
+        typeof location === 'string' &&
+        /\bcalendar\b/i.test(location)
+      );
+    });
+
+    if (hasSuspiciousCalendarAsLocation) {
+      return createClarifyPlan(
+        shared,
+        'Tell me which calendar each event should go to. Calendar choice is separate from the event details.',
+      );
+    }
+
+    if (updates.some((item) => item.destinationCalendarId === null)) {
+      return createClarifyPlan(
+        shared,
+        'I could not match one of those destination calendars. Tell me the exact calendar name you want for each event.',
+      );
     }
 
     const plan: CalendarCreatorPlanDTO =
@@ -202,6 +234,7 @@ export function mapLlmOutputToPlan(
             calendarId: shared.calendarId,
             target: updates[0]!.target,
             eventDraft: updates[0]!.eventDraft,
+            destinationCalendarId: updates[0]!.destinationCalendarId ?? undefined,
             userPreviewText: '',
           }
         : {
@@ -213,6 +246,9 @@ export function mapLlmOutputToPlan(
             calendarId: shared.calendarId,
             targets: updates.map((item) => item.target),
             eventDrafts: updates.map((item) => item.eventDraft),
+            destinationCalendarIds: updates.some((item) => item.destinationCalendarId !== undefined)
+              ? updates.map((item) => item.destinationCalendarId ?? undefined)
+              : undefined,
             userPreviewText: '',
           };
 
