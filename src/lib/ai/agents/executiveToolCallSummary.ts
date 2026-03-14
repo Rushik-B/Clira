@@ -227,8 +227,27 @@ function summarizeToolResult(toolName: string, result: unknown): string | null {
       summary = `list_email_alerts: ${count} active`;
       break;
     }
-    default:
-      return null;
+    default: {
+      if (!toolName.startsWith('mcp__')) return null;
+
+      const status = output.ok === true ? 'ok' : output.ok === false ? 'failed' : 'unknown';
+      const displayName = getStringValue(output.displayName) ?? 'MCP';
+      const snippets = Array.isArray(output.snippets) ? output.snippets : [];
+      const snippetCount = snippets.length;
+      const degraded = output.degraded === true;
+      const errorClass = getStringValue(output.errorClass);
+
+      if (degraded && errorClass) {
+        summary = `${toolName}: ${status} via ${displayName} (${errorClass})`;
+      } else if (snippetCount > 0) {
+        const firstSnippet = getStringValue(snippets[0]);
+        summary = `${toolName}: ${status} via ${displayName}, ${snippetCount} snippet(s)`;
+        if (firstSnippet) summary += ` — ${firstSnippet}`;
+      } else {
+        summary = `${toolName}: ${status} via ${displayName}`;
+      }
+      break;
+    }
   }
 
   return summary ? truncateText(summary, MAX_SUMMARY_CHARS) : null;
