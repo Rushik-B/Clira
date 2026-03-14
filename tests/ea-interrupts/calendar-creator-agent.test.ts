@@ -163,6 +163,185 @@ describe('runCalendarCreatorAgent', () => {
     );
   });
 
+  test('keeps broad field categories distinct in update previews', async () => {
+    llmMocks.callObject.mockResolvedValue({
+      object: {
+        action: 'update',
+        confidence: 91,
+        updateItems: [
+          {
+            target: {
+              eventId: 'evt-1',
+              calendarId: 'personal-cal',
+            },
+            eventDraft: {
+              location: 'AQ 3145',
+              description: 'Bring calculator and student ID.',
+              reminders: {
+                useDefault: false,
+                overrides: [{ method: 'popup', minutes: 60 }],
+              },
+            },
+            destinationCalendarId: 'Work',
+          },
+        ],
+      },
+    });
+
+    const result = await runCalendarCreatorAgent(
+      {
+        request: 'move this to my Work calendar, change the room to AQ 3145, add notes, and set a reminder',
+      },
+      {
+        currentTime: {
+          utcNow: '2026-03-13T21:00:00.000Z',
+          userTimezone: 'America/Los_Angeles',
+          userLocalNow: '2026-03-13T14:00:00',
+          dayOfWeek: 'Friday',
+        },
+        availableCalendars: [
+          {
+            id: 'personal-cal',
+            summary: 'Personal',
+            primary: true,
+            accessRole: 'owner',
+          },
+          {
+            id: 'work-cal',
+            summary: 'Work',
+            primary: false,
+            accessRole: 'writer',
+          },
+        ],
+        resolvedEvents: [
+          {
+            eventId: 'evt-1',
+            calendarId: 'personal-cal',
+            name: 'Office Hours',
+            start: '2026-03-16T09:00:00-07:00',
+            end: '2026-03-16T10:00:00-07:00',
+          },
+        ],
+      },
+    );
+
+    expect(result.action).toBe('update');
+    if (result.action !== 'update') {
+      throw new Error('Expected update result');
+    }
+    expect(result.destinationCalendarId).toBe('work-cal');
+    expect(result.userPreviewText).toContain('set location to "AQ 3145"');
+    expect(result.userPreviewText).toContain('update notes');
+    expect(result.userPreviewText).toContain('update reminders');
+    expect(result.userPreviewText).toContain('move to Work');
+  });
+
+  test('treats Google Meet links as a distinct update capability', async () => {
+    llmMocks.callObject.mockResolvedValue({
+      object: {
+        action: 'update',
+        confidence: 87,
+        createMeetLink: true,
+        updateItems: [
+          {
+            target: {
+              eventId: 'evt-1',
+              calendarId: 'personal-cal',
+            },
+            eventDraft: {},
+          },
+        ],
+      },
+    });
+
+    const result = await runCalendarCreatorAgent(
+      {
+        request: 'add a Google Meet link to this event',
+      },
+      {
+        currentTime: {
+          utcNow: '2026-03-13T21:00:00.000Z',
+          userTimezone: 'America/Los_Angeles',
+          userLocalNow: '2026-03-13T14:00:00',
+          dayOfWeek: 'Friday',
+        },
+        availableCalendars: [
+          {
+            id: 'personal-cal',
+            summary: 'Personal',
+            primary: true,
+            accessRole: 'owner',
+          },
+        ],
+        resolvedEvents: [
+          {
+            eventId: 'evt-1',
+            calendarId: 'personal-cal',
+            name: 'Office Hours',
+            start: '2026-03-16T09:00:00-07:00',
+            end: '2026-03-16T10:00:00-07:00',
+          },
+        ],
+      },
+    );
+
+    expect(result.action).toBe('update');
+    expect(result.createMeetLink).toBe(true);
+    expect(result.userPreviewText).toContain('add Google Meet link');
+  });
+
+  test('asks to clarify when a calendar-container request is expressed as a location update', async () => {
+    llmMocks.callObject.mockResolvedValue({
+      object: {
+        action: 'update',
+        confidence: 80,
+        updateItems: [
+          {
+            target: {
+              eventId: 'evt-1',
+              calendarId: 'personal-cal',
+            },
+            eventDraft: {
+              location: 'Moved to Work calendar',
+            },
+          },
+        ],
+      },
+    });
+
+    const result = await runCalendarCreatorAgent(
+      {
+        request: 'this event is in the wrong calendar',
+      },
+      {
+        currentTime: {
+          utcNow: '2026-03-13T21:00:00.000Z',
+          userTimezone: 'America/Los_Angeles',
+          userLocalNow: '2026-03-13T14:00:00',
+          dayOfWeek: 'Friday',
+        },
+        availableCalendars: [
+          {
+            id: 'personal-cal',
+            summary: 'Personal',
+            primary: true,
+            accessRole: 'owner',
+          },
+          {
+            id: 'work-cal',
+            summary: 'Work',
+            primary: false,
+            accessRole: 'writer',
+          },
+        ],
+      },
+    );
+
+    expect(result.action).toBe('clarify');
+    expect(result.userPreviewText).toContain('calendar');
+    expect(result.userPreviewText).not.toContain('location');
+  });
+
   test('builds a specific deletion preview when multiple resolved events share the same title', async () => {
     llmMocks.callObject.mockResolvedValue({
       object: {
