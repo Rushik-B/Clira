@@ -61,7 +61,9 @@ function formatTimeLabel(value: string, timeZone: string): string {
   const date = parseDateTime(value);
   if (!date) return value;
 
-  const minute = date.getUTCMinutes();
+  const minute = Number(
+    new Intl.DateTimeFormat('en-US', { minute: 'numeric', timeZone }).format(date),
+  );
 
   return new Intl.DateTimeFormat('en-US', {
     hour: 'numeric',
