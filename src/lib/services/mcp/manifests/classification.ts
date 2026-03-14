@@ -53,12 +53,14 @@ export function classifyMcpActionClass(tool: Tool): McpActionClass {
 export function classifyMcpCapabilityId(tool: Tool, actionClass: McpActionClass): McpCapabilityId {
   const text = combinedText(tool);
 
-  if (actionClass !== 'read') {
-    return 'generic_read';
+  if (hasAny(text, ['calendar', 'event', 'availability', 'freebusy', 'schedule'])) {
+    return actionClass === 'read'
+      ? 'calendar_external_read'
+      : 'calendar_external_mutation';
   }
 
-  if (hasAny(text, ['calendar', 'event', 'availability', 'freebusy', 'schedule'])) {
-    return 'calendar_external_read';
+  if (actionClass !== 'read') {
+    return 'generic_mutation';
   }
 
   if (hasAny(text, ['crm', 'customer', 'contact', 'lead', 'account', 'opportunity', 'salesforce', 'hubspot', 'company'])) {

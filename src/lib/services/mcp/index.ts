@@ -4,5 +4,6 @@ export * from './connections/service';
 export * from './policy/service';
 export * from './registry/service';
 export * from './runtime/executor';
+export * from './runtime/mutationFlow';
 export * from './workers/handlers';
 export * from './workers/queue';

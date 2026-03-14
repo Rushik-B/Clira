@@ -2,6 +2,10 @@ function stripControlChars(value: string): string {
   return value.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '');
 }
 
+function collapseWhitespace(value: string): string {
+  return value.replace(/\s+/g, ' ').trim();
+}
+
 function truncateString(value: string, maxLength: number): string {
   if (value.length <= maxLength) return value;
   return `${value.slice(0, maxLength - 1)}…`;
@@ -9,6 +13,10 @@ function truncateString(value: string, maxLength: number): string {
 
 export function sanitizeMcpText(value: string, maxLength = 4_000): string {
   return truncateString(stripControlChars(value), maxLength);
+}
+
+export function sanitizeMcpInlineText(value: string, maxLength = 400): string {
+  return truncateString(collapseWhitespace(stripControlChars(value)), maxLength);
 }
 
 export function sanitizeMcpJson(value: unknown, maxDepth = 5): unknown {
@@ -41,4 +49,10 @@ export function sanitizeMcpJson(value: unknown, maxDepth = 5): unknown {
     .map(([key, entryValue]) => [key, sanitizeMcpJson(entryValue, maxDepth - 1)] as const);
 
   return Object.fromEntries(entries);
+}
+
+export function stringifySanitizedMcpJson(value: unknown, maxDepth = 3, maxLength = 600): string {
+  const sanitized = sanitizeMcpJson(value, maxDepth);
+  const json = JSON.stringify(sanitized);
+  return sanitizeMcpInlineText(json ?? '', maxLength);
 }

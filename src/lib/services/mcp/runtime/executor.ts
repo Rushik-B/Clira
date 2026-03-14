@@ -55,6 +55,40 @@ function buildFreshness(lastSyncedAt: Date | null) {
   };
 }
 
+async function writeAudit(params: {
+  userId: string;
+  connectionId: string;
+  toolName: string;
+  modelToolName: string;
+  actionClass: McpActionClass;
+  args: Record<string, unknown>;
+  resultSummary: Record<string, unknown>;
+  latencyMs?: number;
+  cacheHit: boolean;
+  freshness: ReturnType<typeof buildFreshness>;
+  degraded: boolean;
+  errorClass?: string;
+  idempotencyKey?: string;
+}) {
+  await prisma.mcpExecutionAudit.create({
+    data: {
+      userId: params.userId,
+      connectionId: params.connectionId,
+      toolName: params.toolName,
+      modelToolName: params.modelToolName,
+      actionClass: toPrismaActionClass(params.actionClass),
+      args: toPrismaJsonObject(params.args),
+      resultSummary: toPrismaJsonObject(params.resultSummary),
+      latencyMs: params.latencyMs,
+      cacheHit: params.cacheHit,
+      freshness: toPrismaJsonObject(params.freshness),
+      degraded: params.degraded,
+      errorClass: params.errorClass,
+      idempotencyKey: params.idempotencyKey,
+    },
+  }).catch(() => {});
+}
+
 export async function executeMcpTool(
   request: McpExecutionRequest,
 ): Promise<McpExecutionResult> {
@@ -80,6 +114,49 @@ export async function executeMcpTool(
     };
   }
 
+  if (
+    registryEntry.tool.actionClass !== 'read' &&
+    request.mutationApproval !== 'confirmed'
+  ) {
+    const blockedResult: McpExecutionResult = {
+      ok: false,
+      toolName: registryEntry.tool.toolName,
+      modelToolName: registryEntry.tool.modelToolName,
+      connectionId: registryEntry.connection.id,
+      displayName: registryEntry.connection.displayName,
+      content: [],
+      degraded: true,
+      latencyMs: 0,
+      cache: 'miss',
+      freshness: buildFreshness(registryEntry.connection.lastSyncedAt),
+      errorClass: 'confirmation_required',
+      userFacingDegradedReason:
+        'This MCP action requires a preview and explicit confirmation before it can run.',
+    };
+
+    await writeAudit({
+      userId: request.userId,
+      connectionId: registryEntry.connection.id,
+      toolName: registryEntry.tool.toolName,
+      modelToolName: registryEntry.tool.modelToolName,
+      actionClass: registryEntry.tool.actionClass,
+      args: request.args,
+      resultSummary: {
+        ok: false,
+        blocked: true,
+        reason: 'confirmation_required',
+      },
+      latencyMs: 0,
+      cacheHit: false,
+      freshness: blockedResult.freshness,
+      degraded: true,
+      errorClass: blockedResult.errorClass,
+      idempotencyKey: request.idempotencyKey,
+    });
+
+    return blockedResult;
+  }
+
   const freshnessKey = registryEntry.connection.lastSyncedAt?.toISOString() ?? 'never';
   const cached = getCachedMcpResult({
     userId: request.userId,
@@ -89,26 +166,24 @@ export async function executeMcpTool(
     freshnessKey,
   });
   if (cached) {
-    await prisma.mcpExecutionAudit.create({
-      data: {
-        userId: request.userId,
-        connectionId: registryEntry.connection.id,
-        toolName: registryEntry.tool.toolName,
-        modelToolName: registryEntry.tool.modelToolName,
-        actionClass: toPrismaActionClass(registryEntry.tool.actionClass),
-        args: toPrismaJsonObject(request.args),
-        resultSummary: toPrismaJsonObject({
-          cache: 'hit',
-          ok: cached.ok,
-        }),
-        latencyMs: cached.latencyMs,
-        cacheHit: true,
-        freshness: toPrismaJsonObject(cached.freshness),
-        degraded: cached.degraded,
-        errorClass: cached.errorClass,
-        idempotencyKey: request.idempotencyKey,
+    await writeAudit({
+      userId: request.userId,
+      connectionId: registryEntry.connection.id,
+      toolName: registryEntry.tool.toolName,
+      modelToolName: registryEntry.tool.modelToolName,
+      actionClass: registryEntry.tool.actionClass,
+      args: request.args,
+      resultSummary: {
+        cache: 'hit',
+        ok: cached.ok,
       },
-    }).catch(() => {});
+      latencyMs: cached.latencyMs,
+      cacheHit: true,
+      freshness: cached.freshness,
+      degraded: cached.degraded,
+      errorClass: cached.errorClass,
+      idempotencyKey: request.idempotencyKey,
+    });
 
     return cached;
   }
@@ -188,27 +263,25 @@ export async function executeMcpTool(
     await client.close().catch(() => {});
   }
 
-  await prisma.mcpExecutionAudit.create({
-    data: {
-      userId: request.userId,
-      connectionId: registryEntry.connection.id,
-      toolName: registryEntry.tool.toolName,
-      modelToolName: registryEntry.tool.modelToolName,
-      actionClass: toPrismaActionClass(registryEntry.tool.actionClass),
-      args: toPrismaJsonObject(request.args),
-      resultSummary: toPrismaJsonObject({
-        ok: result.ok,
-        degraded: result.degraded,
-        errorClass: result.errorClass ?? null,
-      }),
-      latencyMs: result.latencyMs,
-      cacheHit: false,
-      freshness: toPrismaJsonObject(result.freshness),
+  await writeAudit({
+    userId: request.userId,
+    connectionId: registryEntry.connection.id,
+    toolName: registryEntry.tool.toolName,
+    modelToolName: registryEntry.tool.modelToolName,
+    actionClass: registryEntry.tool.actionClass,
+    args: request.args,
+    resultSummary: {
+      ok: result.ok,
       degraded: result.degraded,
-      errorClass: result.errorClass,
-      idempotencyKey: request.idempotencyKey,
+      errorClass: result.errorClass ?? null,
     },
-  }).catch(() => {});
+    latencyMs: result.latencyMs,
+    cacheHit: false,
+    freshness: result.freshness,
+    degraded: result.degraded,
+    errorClass: result.errorClass,
+    idempotencyKey: request.idempotencyKey,
+  });
 
   if (registryEntry.tool.actionClass === 'read' && result.ok) {
     setCachedMcpResult({
