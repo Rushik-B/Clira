@@ -1,4 +1,5 @@
 import {
+  callTextWithMessages,
   callTextWithTools,
   createDeadlineController,
 } from '@/lib/ai/callLlm';
@@ -371,6 +372,10 @@ export class ExecutiveAgent {
           });
 
       const { text, toolCalls, toolResults, steps, toolBudget } = exec;
+      const messagesWhenEmpty =
+        exec && typeof exec === 'object' && 'messagesWhenEmpty' in exec
+          ? (exec as { messagesWhenEmpty?: unknown[] }).messagesWhenEmpty
+          : undefined;
       steerMetadata =
         exec && typeof exec === 'object' && 'steer' in exec
           ? ((exec as { steer?: Prisma.InputJsonValue }).steer ?? null)
@@ -408,6 +413,32 @@ export class ExecutiveAgent {
       }
 
       let response = (text || '').trim();
+      if (!response && steps.length > 0 && Array.isArray(messagesWhenEmpty) && messagesWhenEmpty.length > 0) {
+        const synthesisSystem =
+          (promptSystemPrompt ?? '') +
+          '\n\n[SYSTEM: The user is waiting for a reply. Produce a brief, direct response based on the tool results above. If results were poor or inconclusive, say so and offer to try again. Your reply must be non-empty.]';
+        try {
+          const synthesis = await callTextWithMessages({
+            model: models.execAgent(),
+            system: synthesisSystem,
+            messages: messagesWhenEmpty,
+            temperature: 0.3,
+            abortSignal: toolAbortSignal,
+            op: `${resolvedChannel}.executive.synthesis`,
+            concurrency: { key: `${resolvedChannel}.executive`, maxConcurrency: 4 },
+            retry: { maxAttempts: 3, baseDelayMs: 500 },
+            providerOptions,
+            traceContext: input.traceContext,
+          });
+          const synthesized = (synthesis.text || '').trim();
+          if (synthesized) {
+            response = synthesized;
+            logger.info(`[executiveAgent] Synthesis produced reply (was empty)`);
+          }
+        } catch (err) {
+          logger.warn(`[executiveAgent] Synthesis failed, using fallback`, { err });
+        }
+      }
       if (!response) {
         response = buildTerminalFallbackResponse(toolResults, steps, {
           selectedPack,
