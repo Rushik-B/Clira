@@ -19,6 +19,7 @@ const TOOL_PACK_IDS = [
   'calendar_query_pack',
   'calendar_mutation_pack',
   'reminder_alert_pack',
+  'settings_mutation_pack',
   'email_send_pack',
 ] as const satisfies readonly ToolPackId[];
 
@@ -365,6 +366,23 @@ export function extractExecutiveTurnFeatures(params: {
         'what should i work on',
       ]));
 
+  const replyPreferenceIntent =
+    /\b(?:always|never|whenever|every time|from now on)\b/.test(latestMessage) &&
+      /\b(?:reply|respond|email|emails)\b/.test(latestMessage) &&
+      /\b(?:tone|informal|formal|shorter|short|longer|brief|sign off|signoff|end with|ending|calendar times|volunteer|mention|say)\b/.test(
+        latestMessage,
+      ) ||
+    hasAnyPhrase(latestMessage, [
+      'always reply',
+      'when replying',
+      'for replies to',
+      'reply to my mom',
+      'reply to my manager',
+      'keep replies shorter',
+      'end with',
+      'never volunteer calendar times',
+    ]);
+
   return {
     explicitSendApproval,
     draftCandidatePresent: draftCandidate.present,
@@ -374,6 +392,7 @@ export function extractExecutiveTurnFeatures(params: {
     workloadOverviewIntent,
     reminderIntent,
     alertIntent,
+    replyPreferenceIntent,
     channel: params.input.channel,
     hasRecentPendingCalendarPreview: pendingPreviewPresent,
     pendingCalendarConfirmIntent,
@@ -566,6 +585,7 @@ function buildSelectorPrompt(params: {
     'calendar_query_pack — read calendar, check availability, workload overview',
     'calendar_mutation_pack — create/move/cancel calendar events; includes anaphoric "add it", "put it in my cal", "book it"',
     'reminder_alert_pack — set/snooze/dismiss reminders or email alerts',
+    'settings_mutation_pack — save standing reply preferences for planner/style behavior',
     'email_send_pack — send approved draft (only when draftCandidatePresent=true AND explicitSendApproval=true)',
     '',
     'Examples:',
@@ -578,6 +598,9 @@ function buildSelectorPrompt(params: {
     '"who is my manager?" → core_recall_pack',
     '"when was my whistler trip?" → core_recall_pack',
     '"remind me in an hour" → reminder_alert_pack',
+    '"always reply to my mom informally and end with love you" → settings_mutation_pack',
+    '"keep replies shorter by default" → settings_mutation_pack',
+    '"never volunteer calendar times unless i ask" → settings_mutation_pack',
     '"remind me on march 9 at 9pm and put it on my calendar" → ["calendar_mutation_pack", "reminder_alert_pack"]',
     '"yes send it" [draftCandidatePresent=true] → email_send_pack',
     '',
@@ -745,6 +768,23 @@ function selectDeterministicBypassSelection(
           : 'pending calendar change exists and latest turn resolves it',
       ],
       ['A pending calendar change exists; confirm, cancel, or explicitly modify it.'],
+    );
+  }
+
+  if (features.replyPreferenceIntent) {
+    const packIds: ToolPackId[] = ['settings_mutation_pack'];
+    if (features.reminderIntent || features.alertIntent) {
+      packIds.push('reminder_alert_pack');
+    } else if (features.calendarMutationIntent) {
+      packIds.push('calendar_mutation_pack');
+    } else if (features.calendarQueryIntent || features.workloadOverviewIntent) {
+      packIds.push('calendar_query_pack');
+    }
+
+    return buildSelection(
+      packIds,
+      ['standing reply preference update intent detected'],
+      ['Update explicit planner/style reply instructions before continuing.'],
     );
   }
 
