@@ -1,0 +1,188 @@
+import type { ProgressUpdateChannel } from '@/lib/ai/progressTypes';
+
+export type McpCapabilityId =
+  | 'docs_read'
+  | 'storage_read'
+  | 'crm_lookup'
+  | 'project_tasks_read'
+  | 'calendar_external_read'
+  | 'generic_read';
+
+export type McpActionClass = 'read' | 'write' | 'delete' | 'side_effectful';
+export type McpLatencyClass = 'fast' | 'standard' | 'slow';
+export type McpTransportKind = 'stdio' | 'streamable_http';
+export type McpAuthMode = 'none' | 'bearer_token' | 'static_header';
+export type McpTrustClass = 'first_party' | 'user_configured' | 'third_party';
+export type McpConnectionStatus = 'pending' | 'synced' | 'degraded' | 'disabled';
+export type McpConnectionId = string;
+
+export type McpTransportConfig =
+  | {
+      type: 'stdio';
+      command: string;
+      args: string[];
+      cwd?: string | null;
+      inheritEnv?: boolean;
+    }
+  | {
+      type: 'streamable_http';
+      endpoint: string;
+      headers?: Record<string, string>;
+    };
+
+export type McpSecretConfig =
+  | {
+      authMode: 'none';
+      env?: Record<string, string>;
+    }
+  | {
+      authMode: 'bearer_token';
+      bearerToken: string;
+      env?: Record<string, string>;
+    }
+  | {
+      authMode: 'static_header';
+      headerName: string;
+      headerValue: string;
+      env?: Record<string, string>;
+    };
+
+export type McpConnectionRecord = {
+  id: string;
+  userId: string;
+  serverKey: string;
+  displayName: string;
+  transport: McpTransportConfig;
+  authMode: McpAuthMode;
+  status: McpConnectionStatus;
+  trustClass: McpTrustClass;
+  degradedReason: string | null;
+  syncDiagnostics: unknown;
+  healthDiagnostics: unknown;
+  lastSyncedAt: Date | null;
+  lastHealthCheckedAt: Date | null;
+  consecutiveFailures: number;
+  circuitOpenedAt: Date | null;
+  circuitOpenUntil: Date | null;
+  disabledAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export type McpToolManifestRecord = {
+  id: string;
+  connectionId: string;
+  toolName: string;
+  toolSlug: string;
+  modelToolName: string;
+  displayTitle: string;
+  description: string | null;
+  inputSchema: Record<string, unknown>;
+  outputSchema: Record<string, unknown> | null;
+  annotations: Record<string, unknown> | null;
+  actionClass: McpActionClass;
+  capabilityId: McpCapabilityId;
+  latencyClass: McpLatencyClass;
+  safeForAutoUse: boolean;
+  syncDiagnostics: unknown;
+  lastSyncedAt: Date;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export type McpRegistryConnection = {
+  connection: McpConnectionRecord;
+  tools: McpToolManifestRecord[];
+};
+
+export type McpRegistrySnapshot = {
+  userId: string;
+  fetchedAt: Date;
+  connections: McpRegistryConnection[];
+};
+
+export type McpCapabilityIntent = McpCapabilityId;
+
+export type McpPolicyDecision = {
+  visible: boolean;
+  callable: boolean;
+  requiresConfirmation: boolean;
+  reason: string;
+};
+
+export type McpPolicyCandidate = {
+  connection: McpConnectionRecord;
+  tool: McpToolManifestRecord;
+  decision: McpPolicyDecision;
+};
+
+export type McpExecutionRequest = {
+  userId: string;
+  connectionId: string;
+  toolName: string;
+  args: Record<string, unknown>;
+  deadlineMs: number;
+  requestId: string;
+  conversationId?: string;
+  idempotencyKey?: string;
+};
+
+export type McpExecutionFreshness = {
+  cacheTtlMs: number;
+  cachedAt: string;
+  connectionLastSyncedAt: string | null;
+};
+
+export type McpExecutionResult = {
+  ok: boolean;
+  toolName: string;
+  modelToolName: string;
+  connectionId: string;
+  displayName: string;
+  content: unknown[];
+  structuredContent?: Record<string, unknown>;
+  degraded: boolean;
+  latencyMs: number;
+  cache: 'hit' | 'miss';
+  freshness: McpExecutionFreshness;
+  errorClass?: string;
+  userFacingDegradedReason?: string | null;
+};
+
+export type McpPromptSummary = {
+  capabilityLines: string[];
+  degradedLines: string[];
+};
+
+export type McpToolExposure = {
+  capabilityIntents: McpCapabilityIntent[];
+  approvedTools: McpPolicyCandidate[];
+  degradedTools: McpPolicyCandidate[];
+  promptSummary: McpPromptSummary;
+};
+
+export type McpTurnContext = {
+  userId: string;
+  channel: ProgressUpdateChannel;
+  packIds: readonly string[];
+  capabilityIntents: readonly McpCapabilityIntent[];
+};
+
+export class McpServiceError extends Error {
+  readonly retryable: boolean;
+  readonly errorClass: string;
+
+  constructor(
+    message: string,
+    options?: {
+      retryable?: boolean;
+      errorClass?: string;
+      cause?: unknown;
+    },
+  ) {
+    super(message, options?.cause ? { cause: options.cause } : undefined);
+    this.name = 'McpServiceError';
+    this.retryable = options?.retryable ?? false;
+    this.errorClass = options?.errorClass ?? 'unknown';
+  }
+}
