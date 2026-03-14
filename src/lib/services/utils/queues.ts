@@ -135,6 +135,18 @@ export interface SupermemoryBootstrapJobData {
   dryRun?: boolean;
 }
 
+export interface McpSyncConnectionJobData {
+  connectionId: string;
+  userId: string;
+  reason: 'created' | 'updated' | 'manual' | 'scheduled';
+}
+
+export interface McpHealthcheckConnectionJobData {
+  connectionId: string;
+  userId: string;
+  reason: 'manual' | 'scheduled' | 'post-sync';
+}
+
 // A queue for various email-related jobs
 export const emailQueue = new Queue('email-jobs', {
   connection: redisConnection,
@@ -352,6 +364,32 @@ export const supermemoryBootstrapQueue = new Queue<SupermemoryBootstrapJobData>(
   },
 });
 
+export const mcpSyncConnectionQueue = new Queue<McpSyncConnectionJobData>('mcp-sync-connection', {
+  connection: redisConnection,
+  defaultJobOptions: {
+    attempts: 3,
+    backoff: {
+      type: 'exponential',
+      delay: 5_000,
+    },
+    removeOnComplete: 50,
+    removeOnFail: 50,
+  },
+});
+
+export const mcpHealthcheckConnectionQueue = new Queue<McpHealthcheckConnectionJobData>('mcp-healthcheck-connection', {
+  connection: redisConnection,
+  defaultJobOptions: {
+    attempts: 3,
+    backoff: {
+      type: 'exponential',
+      delay: 5_000,
+    },
+    removeOnComplete: 50,
+    removeOnFail: 50,
+  },
+});
+
 // Export all queues for easy access
 export const allQueues = {
   onboarding: onboardingQueue,
@@ -372,6 +410,8 @@ export const allQueues = {
   inboxEmbedRetry: inboxEmbedRetryQueue,
   // Supermemory queue (separate worker)
   supermemoryBootstrap: supermemoryBootstrapQueue,
+  mcpSyncConnection: mcpSyncConnectionQueue,
+  mcpHealthcheckConnection: mcpHealthcheckConnectionQueue,
 };
 
 // Graceful shutdown function
@@ -396,6 +436,8 @@ export async function closeQueues() {
     inboxEmbedRetryQueue.close(),
     // Supermemory queue
     supermemoryBootstrapQueue.close(),
+    mcpSyncConnectionQueue.close(),
+    mcpHealthcheckConnectionQueue.close(),
   ]);
   console.log('✅ All queues closed');
 }
