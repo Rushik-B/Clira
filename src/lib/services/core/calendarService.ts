@@ -358,6 +358,22 @@ export class CalendarService {
     );
   }
 
+  async moveEvent(params: {
+    calendarId: string;
+    eventId: string;
+    destinationCalendarId: string;
+    sendUpdates?: 'all' | 'externalOnly' | 'none';
+  }) {
+    return this.executeCalendarRequest('events.move', () =>
+      this.calendar.events.move({
+        calendarId: params.calendarId,
+        eventId: params.eventId,
+        destination: params.destinationCalendarId,
+        sendUpdates: params.sendUpdates,
+      }),
+    );
+  }
+
   async deleteEvent(params: {
     calendarId: string;
     eventId: string;
