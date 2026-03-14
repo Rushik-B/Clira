@@ -42,6 +42,8 @@ describe('Executive agent prompt', () => {
     const prompt = await buildExecutiveAgentPrompt(input, 'twilio', {
       pendingCalendarInstruction: 'Active pending calendar change exists (pendingId=pc-1).',
       harnessReminders: ['User approval is present; only send the already-shown draft.'],
+      mcpCapabilitySummaryLines: ['Notion Workspace: docs_read via Search docs'],
+      mcpDegradedSummaryLines: ['CRM Mirror: crm_lookup unavailable (auth expired)'],
     });
 
     expect(prompt.systemPrompt).toBe(readPromptFile('whatsapp/executiveAgentPrompt.md'));
@@ -50,6 +52,10 @@ describe('Executive agent prompt', () => {
     expect(prompt.messages[0]?.content).toContain('pendingId=pc-1');
     expect(prompt.messages[0]?.content).toContain('## Harness Reminders');
     expect(prompt.messages[0]?.content).toContain('only send the already-shown draft');
+    expect(prompt.messages[0]?.content).toContain('## MCP Capabilities This Turn');
+    expect(prompt.messages[0]?.content).toContain('Search docs');
+    expect(prompt.messages[0]?.content).toContain('## MCP Degraded Capabilities');
+    expect(prompt.messages[0]?.content).toContain('auth expired');
     expect(prompt.messages[0]?.content).toContain('## Current User Request');
     expect(prompt.messages[0]?.content).toContain('send it');
   });
