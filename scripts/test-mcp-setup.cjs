@@ -17,6 +17,7 @@
  */
 
 const { PrismaClient } = require('@prisma/client');
+const { PrismaPg } = require('@prisma/adapter-pg');
 const { createCipheriv, randomBytes, scryptSync } = require('crypto');
 const { writeFileSync, mkdirSync, existsSync } = require('fs');
 const { execSync } = require('child_process');
@@ -96,7 +97,13 @@ function preInstallMcpServer() {
 // ─── Main ─────────────────────────────────────────────────────────────────
 
 async function main() {
-  const prisma = new PrismaClient();
+  const connectionString = process.env.DIRECT_URL || process.env.DATABASE_URL;
+  if (!connectionString) {
+    console.error('[error] Missing DATABASE_URL or DIRECT_URL');
+    process.exit(1);
+  }
+  const adapter = new PrismaPg({ connectionString });
+  const prisma = new PrismaClient({ adapter });
 
   try {
     // 1. Find a user
