@@ -30,6 +30,8 @@ function mapPackToPrimaryDomain(packId: ToolPackId): ExecutivePrimaryDomain {
       return 'calendar';
     case 'reminder_alert_pack':
       return 'reminder';
+    case 'settings_mutation_pack':
+      return 'settings';
     case 'email_send_pack':
       return 'email_send';
     default:
@@ -43,6 +45,7 @@ function initialPhaseForPack(
 ): ExecutiveWorkingStatePhase {
   if (packId === 'email_send_pack') return 'act';
   if (packId === 'reminder_alert_pack') return 'act';
+  if (packId === 'settings_mutation_pack') return 'act';
   if (packId === 'calendar_mutation_pack') {
     if (features.pendingCalendarChangePresent) {
       return features.pendingCalendarModifyIntent ? 'draft' : 'act';
@@ -59,6 +62,9 @@ function initialNextStep(
   if (packId === 'email_send_pack') return 'Send the approved draft.';
   if (packId === 'reminder_alert_pack') {
     return 'Complete the requested reminder or alert action.';
+  }
+  if (packId === 'settings_mutation_pack') {
+    return 'Update the reply preference docs safely.';
   }
   if (packId === 'calendar_mutation_pack') {
     if (features.pendingCalendarChangePresent) {
@@ -143,6 +149,7 @@ function summarizeToolResult(toolName: string, result: unknown): string | null {
       'snooze_reminder',
       'dismiss_reminder',
       'cancel_reminder',
+      'manage_reply_preferences',
     ].includes(toolName)
   ) {
     return `${toolName} completed`;

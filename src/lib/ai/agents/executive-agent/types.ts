@@ -40,6 +40,7 @@ export interface ExecutiveAgentInput {
       | 'calendar_query_pack'
       | 'calendar_mutation_pack'
       | 'reminder_alert_pack'
+      | 'settings_mutation_pack'
       | 'email_send_pack'
       | null;
     droppedSummary?: string[];
@@ -67,6 +68,7 @@ export type ToolPackId =
   | 'calendar_query_pack'
   | 'calendar_mutation_pack'
   | 'reminder_alert_pack'
+  | 'settings_mutation_pack'
   | 'email_send_pack';
 
 export type ExecutiveWorkingStatePhase =
@@ -84,6 +86,7 @@ export type ExecutivePrimaryDomain =
   | 'inbox'
   | 'calendar'
   | 'reminder'
+  | 'settings'
   | 'email_send';
 
 export interface ExecutiveWorkingState {
@@ -112,6 +115,7 @@ export interface ExecutiveTurnFeatures {
   workloadOverviewIntent: boolean;
   reminderIntent: boolean;
   alertIntent: boolean;
+  replyPreferenceIntent?: boolean;
   channel: ProgressUpdateChannel;
   hasRecentPendingCalendarPreview: boolean;
   pendingCalendarConfirmIntent: boolean;

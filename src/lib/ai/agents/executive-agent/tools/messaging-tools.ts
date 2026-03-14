@@ -5,6 +5,7 @@ import { createGmailServiceForUser } from '@/lib/security/getUserGmailCredential
 import { parseReminderTime } from '@/lib/utils/timeParser';
 import { formatDateTimeInTimeZone } from '@/lib/utils/timezone';
 import { getSupermemoryClient, isSupermemoryConfigured } from '@/lib/services/supermemory/client';
+import { manageReplyPreferences } from '../replyPreferenceManager';
 import {
   generateMemoryCustomId,
   truncate,
@@ -99,7 +100,64 @@ export function buildMessagingTools({
       },
 
       // ─────────────────────────────────────────────────────────────────────────
-      // Tool 8: Add Email Alert
+      // Tool 8: Manage Reply Preferences
+      // ─────────────────────────────────────────────────────────────────────────
+      manage_reply_preferences: {
+        description:
+          'Store standing reply preferences for the reply planner/style docs. ' +
+          'Use when the user gives persistent instructions like tone, endings, brevity, or planning constraints ' +
+          'such as "always reply to my mom informally", "keep replies shorter by default", or ' +
+          '"never volunteer calendar times unless I ask". This tool decides whether the preference belongs to ' +
+          'the planner doc, the style doc, or both, and whether it is global or sender-specific.',
+        inputSchema: z.object({
+          instruction: z
+            .string()
+            .min(1)
+            .max(500)
+            .describe('The raw standing reply preference instruction from the user'),
+          scopeHint: z.enum(['global', 'sender']).optional(),
+          senderHint: z
+            .string()
+            .min(1)
+            .max(200)
+            .optional()
+            .describe('Optional explicit sender/email hint when already known'),
+        }),
+        execute: async (args: {
+          instruction: string;
+          scopeHint?: 'global' | 'sender';
+          senderHint?: string;
+        }) => {
+          const stale = await ensureCurrentRun('manage_reply_preferences');
+          if (stale) return stale;
+
+          const result = await manageReplyPreferences({
+            userId: input.userId,
+            rawInstruction: args.instruction,
+            scopeHint: args.scopeHint,
+            senderHint: args.senderHint,
+            abortSignal: context.toolAbortSignal,
+            traceContext: input.traceContext,
+          });
+
+          return {
+            updated: result.updated,
+            needsClarification: result.needsClarification,
+            clarificationQuestion: result.clarificationQuestion,
+            summary: result.summary,
+            scope: result.scope,
+            updates: result.updates.map((update) => ({
+              target: update.target,
+              scope: update.scope,
+              scopeKey: update.scopeKey,
+              version: update.version,
+            })),
+          };
+        },
+      },
+
+      // ─────────────────────────────────────────────────────────────────────────
+      // Tool 9: Add Email Alert
       // ─────────────────────────────────────────────────────────────────────────
       add_email_alert: {
         description:
@@ -141,7 +199,7 @@ export function buildMessagingTools({
       },
 
       // ─────────────────────────────────────────────────────────────────────────
-      // Tool 9: Remove Email Alert
+      // Tool 10: Remove Email Alert
       // ─────────────────────────────────────────────────────────────────────────
       remove_email_alert: {
         description:
@@ -193,7 +251,7 @@ export function buildMessagingTools({
       },
 
       // ─────────────────────────────────────────────────────────────────────────
-      // Tool 10: List Email Alerts
+      // Tool 11: List Email Alerts
       // ─────────────────────────────────────────────────────────────────────────
       list_email_alerts: {
         description: 'List all active email alerts.',
@@ -217,7 +275,7 @@ export function buildMessagingTools({
       },
 
       // ─────────────────────────────────────────────────────────────────────────
-      // Tool 11: Add Reminder
+      // Tool 12: Add Reminder
       // ─────────────────────────────────────────────────────────────────────────
       add_reminder: {
         description:
@@ -309,7 +367,7 @@ export function buildMessagingTools({
       },
 
       // ─────────────────────────────────────────────────────────────────────────
-      // Tool 12: List Reminders
+      // Tool 13: List Reminders
       // ─────────────────────────────────────────────────────────────────────────
       list_reminders: {
         description: 'List upcoming reminders (pending and snoozed by default).',
@@ -349,7 +407,7 @@ export function buildMessagingTools({
       },
 
       // ─────────────────────────────────────────────────────────────────────────
-      // Tool 13: Snooze Reminder
+      // Tool 14: Snooze Reminder
       // ─────────────────────────────────────────────────────────────────────────
       snooze_reminder: {
         description: 'Snooze a reminder until a new time.',

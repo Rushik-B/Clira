@@ -24,6 +24,7 @@ export const EXECUTIVE_TOOL_NAMES = [
   'snooze_reminder',
   'dismiss_reminder',
   'cancel_reminder',
+  'manage_reply_preferences',
   'send_email',
 ] as const;
 
@@ -77,6 +78,11 @@ const RAW_TOOL_PACKS: Record<ToolPackId, readonly ExecutiveToolName[]> = {
     'dismiss_reminder',
     'cancel_reminder',
   ],
+  settings_mutation_pack: [
+    'search_memory',
+    'send_progress_update',
+    'manage_reply_preferences',
+  ],
   email_send_pack: [
     'search_memory',
     'append_to_supermemory',
@@ -99,6 +105,7 @@ export const EXECUTIVE_TOOL_PACKS = {
   calendar_query_pack: sortToolNames(RAW_TOOL_PACKS.calendar_query_pack),
   calendar_mutation_pack: sortToolNames(RAW_TOOL_PACKS.calendar_mutation_pack),
   reminder_alert_pack: sortToolNames(RAW_TOOL_PACKS.reminder_alert_pack),
+  settings_mutation_pack: sortToolNames(RAW_TOOL_PACKS.settings_mutation_pack),
   email_send_pack: sortToolNames(RAW_TOOL_PACKS.email_send_pack),
 } satisfies Record<ToolPackId, readonly ExecutiveToolName[]>;
 

@@ -28,6 +28,7 @@ export type RunPackId =
   | 'calendar_query_pack'
   | 'calendar_mutation_pack'
   | 'reminder_alert_pack'
+  | 'settings_mutation_pack'
   | 'email_send_pack';
 
 export type SteerEvent = {
