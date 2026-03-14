@@ -195,7 +195,21 @@ describe('Executive agent selector', () => {
     vi.stubEnv('EA_SELECTOR_CEREBRAS_MODEL', 'llama3.1-8b');
     vi.stubEnv('CEREBRAS_API_KEY', 'test-key');
 
-    const fetchMock = vi.spyOn(globalThis, 'fetch');
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                packIds: ['settings_mutation_pack'],
+              }),
+            },
+          },
+        ],
+        id: 'resp-settings-write',
+      }),
+    } as Response);
     const input = buildInput({
       userRequest: 'always reply to my mom informally and end with love you',
     });
@@ -209,8 +223,45 @@ describe('Executive agent selector', () => {
       features,
     });
 
-    expect(features.replyPreferenceIntent).toBe(true);
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(selection.packIds).toEqual(['settings_mutation_pack']);
+  });
+
+  test('detects reply preference read phrasing', async () => {
+    vi.stubEnv('EA_SELECTOR_CEREBRAS_ENABLED', 'true');
+    vi.stubEnv('EA_SELECTOR_CEREBRAS_TWILIO', 'true');
+    vi.stubEnv('EA_SELECTOR_CEREBRAS_MODEL', 'llama3.1-8b');
+    vi.stubEnv('CEREBRAS_API_KEY', 'test-key');
+
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                packIds: ['settings_mutation_pack'],
+              }),
+            },
+          },
+        ],
+        id: 'resp-settings-read',
+      }),
+    } as Response);
+    const input = buildInput({
+      userRequest: 'what reply preferences do you have saved for me?',
+    });
+
+    const features = extractExecutiveTurnFeatures({
+      input,
+      pendingCalendarChangePresent: false,
+    });
+    const selection = await selectExecutiveToolPackForTurn({
+      input,
+      features,
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(selection.packIds).toEqual(['settings_mutation_pack']);
   });
 

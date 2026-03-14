@@ -37,6 +37,32 @@ vi.mock('@/lib/prisma', () => ({
           );
         return candidates[0] ?? null;
       }),
+      findMany: vi.fn(async ({ where, orderBy }: any) => {
+        const candidates = dbState.docs.filter((record) => {
+          if (where.userId && record.userId !== where.userId) return false;
+          if (where.isActive !== undefined && record.isActive !== where.isActive) return false;
+          if (where.target && record.target !== where.target) return false;
+          if (where.OR) {
+            return where.OR.some((clause: Record<string, any>) => matchesWhere(record, clause));
+          }
+          return true;
+        });
+
+        return candidates.sort((left, right) => {
+          const orderEntries = Array.isArray(orderBy) ? orderBy : [];
+          for (const entry of orderEntries) {
+            const [field, direction] = Object.entries(entry)[0] as [string, 'asc' | 'desc'];
+            const leftValue = left[field];
+            const rightValue = right[field];
+            if (leftValue === rightValue) continue;
+            if (direction === 'asc') {
+              return leftValue > rightValue ? 1 : -1;
+            }
+            return leftValue < rightValue ? 1 : -1;
+          }
+          return 0;
+        });
+      }),
       updateMany: vi.fn(async ({ where, data }: any) => {
         let count = 0;
         for (const doc of dbState.docs) {
@@ -70,6 +96,7 @@ const {
 
 const {
   compileEffectiveReplyInstructionDoc,
+  readReplyInstructionOverview,
 } = await import('@/lib/services/reply-instructions');
 
 describe('reply preference manager', () => {
@@ -367,5 +394,71 @@ describe('reply preference manager', () => {
 
     expect(matching).toContain('Sender-specific style rule.');
     expect(nonMatching).not.toContain('Sender-specific style rule.');
+  });
+
+  test('reads active docs and effective docs without mutating anything', async () => {
+    dbState.docs = [
+      {
+        id: 'rid-1',
+        userId: 'user-1',
+        target: 'planner',
+        scope: 'global',
+        scopeKey: null,
+        content: 'Global planner rule.',
+        version: 2,
+        isActive: true,
+        metadata: {
+          version: 1,
+          summary: 'Planner summary',
+          rules: [
+            {
+              key: 'calendar_disclosure',
+              title: 'Calendar Disclosure',
+              instruction: 'Do not volunteer times.',
+              sourceInstruction: 'never volunteer times',
+              updatedAt: '2026-03-14T19:00:00.000Z',
+            },
+          ],
+        },
+        createdAt: new Date('2026-03-14T19:00:00.000Z'),
+        updatedAt: new Date('2026-03-14T19:00:00.000Z'),
+      },
+      {
+        id: 'rid-2',
+        userId: 'user-1',
+        target: 'style',
+        scope: 'sender',
+        scopeKey: 'mom@example.com',
+        content: 'Sender style rule.',
+        version: 1,
+        isActive: true,
+        metadata: {
+          version: 1,
+          summary: 'Mom style summary',
+          senderDisplayName: 'Mom',
+          rules: [
+            {
+              key: 'tone',
+              title: 'Tone',
+              instruction: 'Use an informal tone.',
+              sourceInstruction: 'reply informally',
+              updatedAt: '2026-03-14T19:00:00.000Z',
+            },
+          ],
+        },
+        createdAt: new Date('2026-03-14T19:00:00.000Z'),
+        updatedAt: new Date('2026-03-14T19:00:00.000Z'),
+      },
+    ];
+
+    const overview = await readReplyInstructionOverview({
+      userId: 'user-1',
+      senderEmail: 'mom@example.com',
+    });
+
+    expect(overview.docs).toHaveLength(2);
+    expect(overview.docs[0]?.summary).toBeTruthy();
+    expect(overview.effectiveDocs.planner).toContain('Global planner rule.');
+    expect(overview.effectiveDocs.style).toContain('Sender style rule.');
   });
 });

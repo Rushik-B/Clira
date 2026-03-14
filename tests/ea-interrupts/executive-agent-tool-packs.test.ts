@@ -214,6 +214,7 @@ describe('Executive agent tool packs', () => {
     const toolNames = Object.keys(buildExecutiveAgentTools(context));
 
     expect(toolNames).toContain('manage_reply_preferences');
+    expect(toolNames).toContain('get_reply_preferences');
     expect(toolNames).toContain('search_memory');
     expect(toolNames).not.toContain('send_email');
     expect(toolNames).not.toContain('plan_calendar_change');

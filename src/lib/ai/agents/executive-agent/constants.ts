@@ -18,6 +18,7 @@ export const MESSAGING_TOOL_BUDGETS_BASE: Record<string, number> = {
   check_calendar: 1,
   search_memory: 3,
   append_to_supermemory: 3,
+  get_reply_preferences: 4,
   manage_reply_preferences: 2,
   add_email_alert: 10,
   remove_email_alert: 10,

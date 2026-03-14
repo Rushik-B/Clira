@@ -279,3 +279,94 @@ export async function compileEffectiveReplyInstructionDoc(params: {
 
   return sections.join('\n\n').trim();
 }
+
+export async function listActiveReplyInstructionDocs(params: {
+  userId: string;
+  target?: ReplyInstructionTarget;
+  senderEmail?: string | null;
+}): Promise<ReplyInstructionDocRecord[]> {
+  const senderEmail = params.senderEmail?.trim().toLowerCase() || null;
+
+  const records = await prisma.replyInstructionDoc.findMany({
+    where: {
+      userId: params.userId,
+      isActive: true,
+      ...(params.target ? { target: params.target } : {}),
+      ...(senderEmail
+        ? {
+            OR: [
+              { scope: 'global' },
+              { scope: 'sender', scopeKey: senderEmail },
+            ],
+          }
+        : {}),
+    },
+    orderBy: [
+      { target: 'asc' },
+      { scope: 'asc' },
+      { version: 'desc' },
+    ],
+  });
+
+  return records.map(mapDocRecord);
+}
+
+export async function readReplyInstructionOverview(params: {
+  userId: string;
+  target?: ReplyInstructionTarget;
+  senderEmail?: string | null;
+}): Promise<{
+  docs: Array<{
+    id: string;
+    target: ReplyInstructionTarget;
+    scope: ReplyInstructionScope;
+    scopeKey: string | null;
+    version: number;
+    summary: string;
+    senderDisplayName?: string;
+    relationLabel?: string;
+    content: string;
+    ruleCount: number;
+    rules: ReplyInstructionRule[];
+  }>;
+  effectiveDocs: Partial<Record<ReplyInstructionTarget, string>>;
+}> {
+  const senderEmail = params.senderEmail?.trim().toLowerCase() || null;
+  const docs = await listActiveReplyInstructionDocs({
+    userId: params.userId,
+    target: params.target,
+    senderEmail,
+  });
+
+  const targets: ReplyInstructionTarget[] = params.target
+    ? [params.target]
+    : ['planner', 'style'];
+
+  const effectiveEntries = await Promise.all(
+    targets.map(async (target) => [
+      target,
+      await compileEffectiveReplyInstructionDoc({
+        userId: params.userId,
+        target,
+        senderEmail,
+      }),
+    ] as const),
+  );
+
+  return {
+    docs: docs.map((doc) => ({
+      id: doc.id,
+      target: doc.target,
+      scope: doc.scope,
+      scopeKey: doc.scopeKey,
+      version: doc.version,
+      summary: doc.metadata.summary,
+      senderDisplayName: doc.metadata.senderDisplayName,
+      relationLabel: doc.metadata.relationLabel,
+      content: doc.content,
+      ruleCount: doc.metadata.rules.length,
+      rules: doc.metadata.rules,
+    })),
+    effectiveDocs: Object.fromEntries(effectiveEntries),
+  };
+}

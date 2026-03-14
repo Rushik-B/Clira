@@ -366,23 +366,6 @@ export function extractExecutiveTurnFeatures(params: {
         'what should i work on',
       ]));
 
-  const replyPreferenceIntent =
-    /\b(?:always|never|whenever|every time|from now on)\b/.test(latestMessage) &&
-      /\b(?:reply|respond|email|emails)\b/.test(latestMessage) &&
-      /\b(?:tone|informal|formal|shorter|short|longer|brief|sign off|signoff|end with|ending|calendar times|volunteer|mention|say)\b/.test(
-        latestMessage,
-      ) ||
-    hasAnyPhrase(latestMessage, [
-      'always reply',
-      'when replying',
-      'for replies to',
-      'reply to my mom',
-      'reply to my manager',
-      'keep replies shorter',
-      'end with',
-      'never volunteer calendar times',
-    ]);
-
   return {
     explicitSendApproval,
     draftCandidatePresent: draftCandidate.present,
@@ -392,7 +375,6 @@ export function extractExecutiveTurnFeatures(params: {
     workloadOverviewIntent,
     reminderIntent,
     alertIntent,
-    replyPreferenceIntent,
     channel: params.input.channel,
     hasRecentPendingCalendarPreview: pendingPreviewPresent,
     pendingCalendarConfirmIntent,
@@ -577,21 +559,35 @@ function buildSelectorPrompt(params: {
 
   return [
     'Pick one or more packIds for the user message.',
+    'Classify by user intent and the minimum tool family needed to answer or act safely.',
+    'Do not rely on exact wording. Infer the underlying job the assistant must do.',
     'Return multiple packs only when the same turn genuinely needs multiple tool families.',
     'Order matters: put the primary pack first.',
+    '',
+    'Routing principles:',
+    '- If the user wants to remember, inspect, or change standing reply behavior, choose settings_mutation_pack.',
+    '- settings_mutation_pack covers BOTH reading saved reply rules and writing/updating them.',
+    '- Use settings_mutation_pack for questions like "what preferences do you have saved", "show my style rules", "how do you reply to my mom", or "from now on keep replies shorter".',
+    '- Use inbox_context_pack when the user wants email lookup, drafting, or to know what someone said.',
+    '- Use core_recall_pack for personal memory/facts recall when inbox lookup or drafting is not the main job.',
+    '- Use calendar_query_pack for calendar lookup or availability/workload questions.',
+    '- Use calendar_mutation_pack for creating, moving, cancelling, or changing calendar items.',
+    '- Use reminder_alert_pack for reminders and email alerts.',
+    '- Use email_send_pack only when there is an already-approved unsent draft and the user is clearly approving send.',
+    '- If the user both changes reply preferences AND asks for a reminder/calendar action in the same turn, include both relevant packs.',
     '',
     'core_recall_pack — personal facts, memory, preferences',
     'inbox_context_pack — email lookup, what someone said/wrote, drafting',
     'calendar_query_pack — read calendar, check availability, workload overview',
     'calendar_mutation_pack — create/move/cancel calendar events; includes anaphoric "add it", "put it in my cal", "book it"',
     'reminder_alert_pack — set/snooze/dismiss reminders or email alerts',
-    'settings_mutation_pack — save standing reply preferences for planner/style behavior',
+    'settings_mutation_pack — read or write standing reply preferences for planner/style behavior',
     'email_send_pack — send approved draft (only when draftCandidatePresent=true AND explicitSendApproval=true)',
     '',
-    'Examples:',
+    'Intent examples:',
     '"when is my next meeting?" → calendar_query_pack',
+    '"am i free after 3 tomorrow?" → calendar_query_pack',
     '"block tomorrow 2-3pm" → calendar_mutation_pack',
-    '"add that to my calendar" → calendar_mutation_pack',
     '"put it in my cal too" → calendar_mutation_pack',
     '"what did alex say in his email?" → inbox_context_pack',
     '"draft a reply to sarah" → inbox_context_pack',
@@ -599,9 +595,11 @@ function buildSelectorPrompt(params: {
     '"when was my whistler trip?" → core_recall_pack',
     '"remind me in an hour" → reminder_alert_pack',
     '"always reply to my mom informally and end with love you" → settings_mutation_pack',
-    '"keep replies shorter by default" → settings_mutation_pack',
+    '"for replies to investors, keep it formal and short" → settings_mutation_pack',
     '"never volunteer calendar times unless i ask" → settings_mutation_pack',
-    '"remind me on march 9 at 9pm and put it on my calendar" → ["calendar_mutation_pack", "reminder_alert_pack"]',
+    '"what reply preferences do you have saved?" → settings_mutation_pack',
+    '"show me how you reply to my mom right now" → settings_mutation_pack',
+    '"update my reply rules and remind me tomorrow at 9" → ["settings_mutation_pack", "reminder_alert_pack"]',
     '"yes send it" [draftCandidatePresent=true] → email_send_pack',
     '',
     `State: draftCandidatePresent=${features.draftCandidatePresent}, explicitSendApproval=${features.explicitSendApproval}, pendingCalendarChangePresent=${features.pendingCalendarChangePresent}`,
@@ -641,7 +639,7 @@ async function callCerebrasSelector(params: {
       {
         role: 'system',
         content:
-          'You are a routing classifier for executive tool packs. Return strict JSON only.',
+          'You are a routing classifier for executive tool packs. Route by intent and required capabilities, not exact word overlap. Return strict JSON only.',
       },
       {
         role: 'user',
@@ -768,23 +766,6 @@ function selectDeterministicBypassSelection(
           : 'pending calendar change exists and latest turn resolves it',
       ],
       ['A pending calendar change exists; confirm, cancel, or explicitly modify it.'],
-    );
-  }
-
-  if (features.replyPreferenceIntent) {
-    const packIds: ToolPackId[] = ['settings_mutation_pack'];
-    if (features.reminderIntent || features.alertIntent) {
-      packIds.push('reminder_alert_pack');
-    } else if (features.calendarMutationIntent) {
-      packIds.push('calendar_mutation_pack');
-    } else if (features.calendarQueryIntent || features.workloadOverviewIntent) {
-      packIds.push('calendar_query_pack');
-    }
-
-    return buildSelection(
-      packIds,
-      ['standing reply preference update intent detected'],
-      ['Update explicit planner/style reply instructions before continuing.'],
     );
   }
 

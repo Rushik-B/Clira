@@ -7,6 +7,10 @@ import { formatDateTimeInTimeZone } from '@/lib/utils/timezone';
 import { getSupermemoryClient, isSupermemoryConfigured } from '@/lib/services/supermemory/client';
 import { manageReplyPreferences } from '../replyPreferenceManager';
 import {
+  readReplyInstructionOverview,
+  resolveReplyInstructionSenderEmail,
+} from '@/lib/services/reply-instructions';
+import {
   generateMemoryCustomId,
   truncate,
 } from '../helpers';
@@ -100,7 +104,69 @@ export function buildMessagingTools({
       },
 
       // ─────────────────────────────────────────────────────────────────────────
-      // Tool 8: Manage Reply Preferences
+      // Tool 8: Read Reply Preferences
+      // ─────────────────────────────────────────────────────────────────────────
+      get_reply_preferences: {
+        description:
+          'Read the saved reply preferences from the planner/style instruction docs. ' +
+          'Use this when the user asks what preferences are saved, how replies are currently configured, ' +
+          'or how Clira replies to a specific sender right now. This is read-only and does not modify anything.',
+        inputSchema: z.object({
+          target: z.enum(['planner', 'style', 'all']).default('all'),
+          senderEmail: z
+            .string()
+            .email()
+            .optional()
+            .describe('Optional exact sender email to include matching sender-specific overrides.'),
+          includeContent: z
+            .boolean()
+            .default(true)
+            .describe('Whether to include the rendered document content in the result.'),
+        }),
+        execute: async (args: {
+          target?: 'planner' | 'style' | 'all';
+          senderEmail?: string;
+          includeContent?: boolean;
+        }) => {
+          const target = args.target ?? 'all';
+          const senderEmail = resolveReplyInstructionSenderEmail(args.senderEmail);
+          const overview = await readReplyInstructionOverview({
+            userId: input.userId,
+            target: target === 'all' ? undefined : target,
+            senderEmail,
+          });
+
+          return {
+            count: overview.docs.length,
+            target,
+            senderEmail: senderEmail ?? null,
+            docs: overview.docs.map((doc) => ({
+              id: doc.id,
+              target: doc.target,
+              scope: doc.scope,
+              scopeKey: doc.scopeKey,
+              version: doc.version,
+              summary: doc.summary,
+              senderDisplayName: doc.senderDisplayName,
+              relationLabel: doc.relationLabel,
+              ruleCount: doc.ruleCount,
+              rules: doc.rules.map((rule) => ({
+                key: rule.key,
+                title: rule.title,
+                instruction: rule.instruction,
+              })),
+              ...(args.includeContent ?? true ? { content: doc.content } : {}),
+            })),
+            effectiveDocs:
+              args.includeContent ?? true
+                ? overview.effectiveDocs
+                : undefined,
+          };
+        },
+      },
+
+      // ─────────────────────────────────────────────────────────────────────────
+      // Tool 9: Manage Reply Preferences
       // ─────────────────────────────────────────────────────────────────────────
       manage_reply_preferences: {
         description:
@@ -157,7 +223,7 @@ export function buildMessagingTools({
       },
 
       // ─────────────────────────────────────────────────────────────────────────
-      // Tool 9: Add Email Alert
+      // Tool 10: Add Email Alert
       // ─────────────────────────────────────────────────────────────────────────
       add_email_alert: {
         description:
@@ -199,7 +265,7 @@ export function buildMessagingTools({
       },
 
       // ─────────────────────────────────────────────────────────────────────────
-      // Tool 10: Remove Email Alert
+      // Tool 11: Remove Email Alert
       // ─────────────────────────────────────────────────────────────────────────
       remove_email_alert: {
         description:
@@ -251,7 +317,7 @@ export function buildMessagingTools({
       },
 
       // ─────────────────────────────────────────────────────────────────────────
-      // Tool 11: List Email Alerts
+      // Tool 12: List Email Alerts
       // ─────────────────────────────────────────────────────────────────────────
       list_email_alerts: {
         description: 'List all active email alerts.',
@@ -275,7 +341,7 @@ export function buildMessagingTools({
       },
 
       // ─────────────────────────────────────────────────────────────────────────
-      // Tool 12: Add Reminder
+      // Tool 13: Add Reminder
       // ─────────────────────────────────────────────────────────────────────────
       add_reminder: {
         description:
@@ -367,7 +433,7 @@ export function buildMessagingTools({
       },
 
       // ─────────────────────────────────────────────────────────────────────────
-      // Tool 13: List Reminders
+      // Tool 14: List Reminders
       // ─────────────────────────────────────────────────────────────────────────
       list_reminders: {
         description: 'List upcoming reminders (pending and snoozed by default).',
@@ -407,7 +473,7 @@ export function buildMessagingTools({
       },
 
       // ─────────────────────────────────────────────────────────────────────────
-      // Tool 14: Snooze Reminder
+      // Tool 15: Snooze Reminder
       // ─────────────────────────────────────────────────────────────────────────
       snooze_reminder: {
         description: 'Snooze a reminder until a new time.',

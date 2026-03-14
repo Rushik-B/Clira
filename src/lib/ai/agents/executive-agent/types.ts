@@ -115,7 +115,6 @@ export interface ExecutiveTurnFeatures {
   workloadOverviewIntent: boolean;
   reminderIntent: boolean;
   alertIntent: boolean;
-  replyPreferenceIntent?: boolean;
   channel: ProgressUpdateChannel;
   hasRecentPendingCalendarPreview: boolean;
   pendingCalendarConfirmIntent: boolean;

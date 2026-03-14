@@ -24,6 +24,7 @@ export const EXECUTIVE_TOOL_NAMES = [
   'snooze_reminder',
   'dismiss_reminder',
   'cancel_reminder',
+  'get_reply_preferences',
   'manage_reply_preferences',
   'send_email',
 ] as const;
@@ -81,6 +82,7 @@ const RAW_TOOL_PACKS: Record<ToolPackId, readonly ExecutiveToolName[]> = {
   settings_mutation_pack: [
     'search_memory',
     'send_progress_update',
+    'get_reply_preferences',
     'manage_reply_preferences',
   ],
   email_send_pack: [
