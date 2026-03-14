@@ -202,6 +202,24 @@ describe('Executive agent tool packs', () => {
     expect(toolNames).not.toContain('list_inbox_emails');
   });
 
+  test('settings turns expose only the reply preference tool family', () => {
+    const context = buildContext({
+      input: buildInput({
+        userRequest: 'always reply to my mom informally and end with love you',
+      }),
+      pendingCalendarChangePresent: false,
+      selectedPacks: ['settings_mutation_pack'],
+    });
+
+    const toolNames = Object.keys(buildExecutiveAgentTools(context));
+
+    expect(toolNames).toContain('manage_reply_preferences');
+    expect(toolNames).toContain('search_memory');
+    expect(toolNames).not.toContain('send_email');
+    expect(toolNames).not.toContain('plan_calendar_change');
+    expect(toolNames).not.toContain('add_reminder');
+  });
+
   test('pending calendar confirm turns expose commit but not plan', () => {
     const context = buildContext({
       input: buildInput({ userRequest: 'yes' }),

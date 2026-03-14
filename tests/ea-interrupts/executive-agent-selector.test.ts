@@ -16,6 +16,7 @@ const ALL_PACKS = [
   'calendar_query_pack',
   'calendar_mutation_pack',
   'reminder_alert_pack',
+  'settings_mutation_pack',
   'email_send_pack',
 ] as const;
 
@@ -186,6 +187,31 @@ describe('Executive agent selector', () => {
 
     expect(features.calendarMutationIntent).toBe(true);
     expect(features.reminderIntent).toBe(true);
+  });
+
+  test('detects reply preference mutation phrasing', async () => {
+    vi.stubEnv('EA_SELECTOR_CEREBRAS_ENABLED', 'true');
+    vi.stubEnv('EA_SELECTOR_CEREBRAS_TWILIO', 'true');
+    vi.stubEnv('EA_SELECTOR_CEREBRAS_MODEL', 'llama3.1-8b');
+    vi.stubEnv('CEREBRAS_API_KEY', 'test-key');
+
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+    const input = buildInput({
+      userRequest: 'always reply to my mom informally and end with love you',
+    });
+
+    const features = extractExecutiveTurnFeatures({
+      input,
+      pendingCalendarChangePresent: false,
+    });
+    const selection = await selectExecutiveToolPackForTurn({
+      input,
+      features,
+    });
+
+    expect(features.replyPreferenceIntent).toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(selection.packIds).toEqual(['settings_mutation_pack']);
   });
 
   test('safety guard downgrades unsafe email_send_pack', () => {
