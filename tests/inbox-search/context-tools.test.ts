@@ -364,7 +364,7 @@ describe('buildContextTools search_inbox_context', () => {
           sizeBytes: 2048,
         },
       ],
-      extractedText: 'SUMMARY: Invoice attached.',
+      extractedText: 'Invoice attached.\nTotal due: $400',
     });
     supermemoryMocks.isSupermemoryConfigured.mockReturnValue(false);
     prismaMocks.mailboxFindMany.mockResolvedValue([]);
@@ -673,7 +673,7 @@ describe('buildContextTools search_inbox_context', () => {
     expect(readPdfMocks.readEmailPdfAttachment).toHaveBeenCalledTimes(1);
     expect(helperMocks.runWithSubagentBudget).toHaveBeenCalledTimes(1);
     expect(nextSubagentCallIndex).toHaveBeenCalledTimes(1);
-    expect((first as any).extractedText).toContain('SUMMARY: Invoice attached.');
+    expect((first as any).extractedText).toContain('Invoice attached.\nTotal due: $400');
     expect((second as any).metadata?.cached).toBe(true);
   });
 

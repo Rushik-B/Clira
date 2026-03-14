@@ -256,7 +256,7 @@ describe('Executive tool result reuse cache', () => {
               result: {
                 ok: true,
                 status: 'ok',
-                extractedText: 'SUMMARY: Invoice attached.',
+                extractedText: 'Invoice attached.\nTotal due: $400',
               },
             },
           ],
@@ -272,7 +272,7 @@ describe('Executive tool result reuse cache', () => {
     });
 
     expect(cached).toBeTruthy();
-    expect(cached?.extractedText).toBe('SUMMARY: Invoice attached.');
+    expect(cached?.extractedText).toBe('Invoice attached.\nTotal due: $400');
     expect((cached?._cache as { source?: string } | undefined)?.source).toBe('history');
     expect(cache.getStats().read_email_pdf_attachment.history_hit).toBe(1);
   });

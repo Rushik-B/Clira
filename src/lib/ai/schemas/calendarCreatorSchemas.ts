@@ -31,17 +31,26 @@ export const CalendarAttendeeSchema = z
   })
   .strict();
 
+// Allow up to 365 days (525600 min). Google Calendar accepts reminder minutes in this range.
+const CALENDAR_REMINDER_MAX_MINUTES = 525_600;
+
 const CalendarReminderOverrideSchema = z
   .object({
     method: z.enum(['email', 'popup']),
-    minutes: z.number().int().min(0).max(10_080),
+    minutes: z.number().int().min(0).max(CALENDAR_REMINDER_MAX_MINUTES),
   })
   .strict();
+
+// Google Calendar API allows at most 5 reminder overrides per event.
+export const CALENDAR_REMINDER_MAX_OVERRIDES = 5;
 
 const CalendarRemindersSchema = z
   .object({
     useDefault: z.boolean(),
-    overrides: z.array(CalendarReminderOverrideSchema).optional(),
+    overrides: z
+      .array(CalendarReminderOverrideSchema)
+      .max(CALENDAR_REMINDER_MAX_OVERRIDES)
+      .optional(),
   })
   .strict();
 

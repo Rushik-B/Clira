@@ -6,8 +6,9 @@ import type { ProgressUpdateChannel } from '@/lib/ai/progressTypes';
 import type {
   ConversationMessageDTO,
 } from '@/lib/ai/schemas/executiveAgentSchemas';
-import type {
-  CalendarEventDraftDTO,
+import {
+  CALENDAR_REMINDER_MAX_OVERRIDES,
+  type CalendarEventDraftDTO,
 } from '@/lib/ai/schemas/calendarCreatorSchemas';
 import type {
   ExecutivePromptMessage,
@@ -545,6 +546,22 @@ export function normalizeUpdateDraftTimesForPatch({
   }
 
   return { ok: false, message: 'Invalid event time format.' };
+}
+
+/**
+ * Google Calendar API allows at most 5 reminder overrides per event.
+ * Truncate overrides so we never send more than the limit.
+ */
+export function applyGoogleReminderLimit(draft: CalendarEventDraftDTO): CalendarEventDraftDTO {
+  const overrides = draft.reminders?.overrides;
+  if (!overrides || overrides.length <= CALENDAR_REMINDER_MAX_OVERRIDES) return draft;
+  return {
+    ...draft,
+    reminders: {
+      ...draft.reminders!,
+      overrides: overrides.slice(0, CALENDAR_REMINDER_MAX_OVERRIDES),
+    },
+  };
 }
 
 export function stripUndefined<T>(value: T): T {

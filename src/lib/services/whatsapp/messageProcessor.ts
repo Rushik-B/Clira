@@ -489,7 +489,7 @@ export async function processWhatsAppMessage(
           'User sent a PDF on WhatsApp.',
           message.pdfFilename ? `Filename: ${message.pdfFilename}` : null,
           caption ? `User caption: ${caption}` : null,
-          'Detailed PDF extraction:',
+          'Raw PDF text:',
           extractedText,
         ]
           .filter(Boolean)

@@ -75,6 +75,11 @@ Use exactly one action and the matching canonical payload key:
 - Start must be before end.
 - For updates ONLY, it is allowed to provide only `start` OR only `end` when the user intent is clear (see update rules above).
 
+## Reminders (create/update)
+- To add or change reminders, set `eventDraft.reminders`: `{ "useDefault": false, "overrides": [ { "method": "popup", "minutes": N }, ... ] }`.
+- `minutes` = minutes before the event (e.g. 3 days = 4320, 7 days = 10080, 30 days = 43200). Supported up to 365 days (525600).
+- Use `method`: "popup" or "email". **At most 5 overrides per event** (Google limit). If the user asks for more than 5, include the 5 most relevant (e.g. closest to the event: 3, 7, 10, 14, 15 days).
+
 ## Update/Delete Target Rules
 - Use `target: { calendarId, eventId }` **only** for events that clearly match a pre-resolved event (same event the user is referring to). For any other event, use `lookupQuery`.
 - If you cannot uniquely identify an event or there are no pre-resolved events available, use target={ lookupQuery, lookupRange? } so the system can search and disambiguate.

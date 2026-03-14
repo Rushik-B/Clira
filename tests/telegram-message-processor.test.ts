@@ -257,7 +257,7 @@ describe('processTelegramMessage', () => {
     expect(mockPrepareRunWithAdapter).toHaveBeenCalledWith(
       expect.objectContaining({
         userRequest: expect.stringContaining(
-          'Detailed PDF extraction:\n\nInvoice for March\nAccount: ACME Co.\nTotal due: $400',
+          'Raw PDF text:\n\nInvoice for March\nAccount: ACME Co.\nTotal due: $400',
         ),
       }),
     );

@@ -482,7 +482,7 @@ export async function processTelegramMessage(
           'User sent a PDF on Telegram.',
           message.pdfFilename ? `Filename: ${message.pdfFilename}` : null,
           caption ? `User caption: ${caption}` : null,
-          'Detailed PDF extraction:',
+          'Raw PDF text:',
           extractedText,
         ]
           .filter(Boolean)

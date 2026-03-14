@@ -35,6 +35,7 @@ import {
 import {
   type GoogleEventTime,
   isCalendarScopeError,
+  applyGoogleReminderLimit,
   normalizeUpdateDraftTimesForPatch,
   runWithSubagentBudget,
   stripUndefined,
@@ -1023,7 +1024,8 @@ export function buildCalendarMutationTools({
 
                 // Strip calendarId from the draft before building requestBody
                 // (calendarId is a path param for Google API, not an event field)
-                const { calendarId: _draftCalId, ...draftWithoutCalendarId } = draft as Record<string, unknown>;
+                const draftForApi = applyGoogleReminderLimit(draft);
+                const { calendarId: _draftCalId, ...draftWithoutCalendarId } = draftForApi as Record<string, unknown>;
 
                 const requestBody = stripUndefined({
                   ...draftWithoutCalendarId,
@@ -1216,8 +1218,9 @@ export function buildCalendarMutationTools({
                         }
                       : undefined;
 
+                    const patchForApi = applyGoogleReminderLimit(normalizedDraft.patch);
                     const requestBody = stripUndefined({
-                      ...normalizedDraft.patch,
+                      ...patchForApi,
                       extendedProperties: {
                         private: {
                           ...(currentEvent.extendedProperties?.private ?? {}),
@@ -1380,8 +1383,9 @@ export function buildCalendarMutationTools({
                   }
                 : undefined;
 
+              const patchForApi = applyGoogleReminderLimit(normalizedDraft.patch);
               const requestBody = stripUndefined({
-                ...normalizedDraft.patch,
+                ...patchForApi,
                 extendedProperties: {
                   private: {
                     ...(currentEvent.extendedProperties?.private ?? {}),
