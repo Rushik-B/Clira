@@ -131,6 +131,23 @@ function summarizeToolResult(toolName: string, result: unknown): string | null {
       : 'calendar change resolved';
   }
 
+  if (toolName === 'plan_mcp_action') {
+    const pendingAction = record.pendingAction;
+    if (pendingAction && typeof pendingAction === 'object') {
+      const pendingId = (pendingAction as Record<string, unknown>).pendingId;
+      return typeof pendingId === 'string'
+        ? `pending mcp action=${pendingId}`
+        : 'pending mcp action created';
+    }
+    return 'external action preview evaluated';
+  }
+
+  if (toolName === 'commit_mcp_action' || toolName === 'cancel_mcp_action') {
+    return typeof record.status === 'string'
+      ? `mcp action=${record.status}`
+      : 'external action resolved';
+  }
+
   if (toolName === 'send_email') {
     return record.success === true ? 'email sent' : 'email send attempted';
   }
@@ -180,6 +197,20 @@ function deriveFact(toolName: string, result: unknown): string | null {
 
   if (toolName === 'list_inbox_emails' && typeof record.matchedCount === 'number') {
     return truncateFact(`Listed ${record.returnedCount ?? record.matchedCount} of ${record.matchedCount} matching inbox emails.`);
+  }
+
+  if (toolName.startsWith('mcp__')) {
+    const displayName = typeof record.displayName === 'string' ? record.displayName : 'MCP';
+    const snippets = Array.isArray(record.snippets) ? record.snippets : [];
+    const firstSnippet =
+      snippets.length > 0 && typeof snippets[0] === 'string' ? snippets[0] : null;
+    if (firstSnippet) {
+      return truncateFact(`${displayName}: ${firstSnippet}`);
+    }
+    if (record.ok === true) {
+      return truncateFact(`${displayName}: returned ${snippets.length} result(s).`);
+    }
+    return null;
   }
 
   return null;
@@ -288,11 +319,45 @@ export function createWorkingStateController(initialState: ExecutiveWorkingState
         return;
       }
 
+      if (toolName === 'plan_mcp_action') {
+        const pendingAction = record?.pendingAction;
+        if (pendingAction && typeof pendingAction === 'object') {
+          const pendingId = (pendingAction as Record<string, unknown>).pendingId;
+          state = {
+            ...state,
+            artifacts: {
+              ...state.artifacts,
+              pendingMcpActionId:
+                typeof pendingId === 'string' ? pendingId : state.artifacts.pendingMcpActionId,
+            },
+          };
+          setPhase('await_approval', 'Wait for confirm, cancel, or explicit replacement.');
+          return;
+        }
+
+        if (record?.ok === false) {
+          setPhase('clarify', 'Ask one short clarification and stop.');
+          return;
+        }
+
+        setPhase('draft', 'Prepare a concise external action preview.');
+        return;
+      }
+
       if (toolName === 'commit_calendar_change') {
         if (record?.ok === true) {
           setPhase('complete', null);
         } else {
           setPhase('failed', 'Explain the calendar failure briefly.');
+        }
+        return;
+      }
+
+      if (toolName === 'commit_mcp_action' || toolName === 'cancel_mcp_action') {
+        if (record?.ok === true) {
+          setPhase('complete', null);
+        } else {
+          setPhase('failed', 'Explain the external action failure briefly.');
         }
         return;
       }

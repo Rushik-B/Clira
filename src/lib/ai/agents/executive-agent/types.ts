@@ -103,6 +103,7 @@ export interface ExecutiveWorkingState {
   factsLearned: string[];
   artifacts: {
     pendingCalendarChangeId?: string;
+    pendingMcpActionId?: string;
     lastTool?: string;
     lastToolSummary?: string;
     lastUserFacingText?: string;

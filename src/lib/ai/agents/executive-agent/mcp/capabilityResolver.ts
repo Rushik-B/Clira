@@ -13,8 +13,15 @@ export function resolveExecutiveMcpCapabilityIntents(params: {
   const request = params.userRequest.trim().toLowerCase();
   const intents = new Set<McpCapabilityIntent>();
 
-  if (params.packIds.includes('calendar_query_pack')) {
+  if (
+    params.packIds.includes('calendar_query_pack') ||
+    params.packIds.includes('calendar_mutation_pack')
+  ) {
     intents.add('calendar_external_read');
+  }
+
+  if (params.packIds.includes('calendar_mutation_pack')) {
+    intents.add('calendar_external_mutation');
   }
 
   if (params.packIds.includes('inbox_context_pack')) {

@@ -187,6 +187,7 @@ export class ExecutiveAgent {
       selectorReasons = selection.reasons;
       mcpToolExposure = await resolveMcpToolExposure({
         userId: input.userId,
+        conversationId: input.conversationId,
         channel: resolvedChannel,
         capabilityIntents: selection.capabilityIntents,
       });
@@ -315,6 +316,16 @@ export class ExecutiveAgent {
             isCommitCalendarChangeSuccessful(args, result)
           ) {
             toolResultCache.noteMutation('commit_calendar_change', observedAtMs);
+            return;
+          }
+
+          if (
+            toolName === 'commit_mcp_action' &&
+            result != null &&
+            typeof result === 'object' &&
+            (result as Record<string, unknown>).ok === true
+          ) {
+            toolResultCache.noteMcpMutation(observedAtMs);
           }
         },
       });
@@ -327,6 +338,9 @@ export class ExecutiveAgent {
         stopWhenToolCalled('send_email'),
         stopWhenToolCalled('plan_calendar_change'),
         stopWhenToolCalled('commit_calendar_change'),
+        stopWhenToolCalled('plan_mcp_action'),
+        stopWhenToolCalled('commit_mcp_action'),
+        stopWhenToolCalled('cancel_mcp_action'),
       ];
 
       const isNotificationFlow =

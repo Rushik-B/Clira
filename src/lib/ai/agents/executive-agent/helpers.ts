@@ -111,6 +111,23 @@ export function extractUserFacingToolText(
     return null;
   }
 
+  if (toolName === 'commit_mcp_action' || toolName === 'cancel_mcp_action') {
+    const message = resolved.message;
+    if (typeof message === 'string' && message.trim()) return message;
+    if (resolved.ok === true) return 'External action completed.';
+    return null;
+  }
+
+  if (toolName === 'plan_mcp_action') {
+    const previewText = typeof resolved.previewText === 'string' ? resolved.previewText : null;
+    if (previewText && previewText.trim()) return previewText;
+
+    const message = resolved.message;
+    if (typeof message === 'string' && message.trim()) return message;
+    if (resolved.ok === true) return 'I staged that external action.';
+    return null;
+  }
+
   if (toolName === 'plan_calendar_change') {
     const previewText =
       (typeof resolved.previewText === 'string' ? resolved.previewText : null) ??
@@ -182,6 +199,28 @@ export function buildTerminalFallbackResponse(
     return 'I could not complete that calendar change.';
   }
 
+  const commitMcpResult = extractLatestToolResultFromExecution({
+    toolResults,
+    steps,
+    toolName: 'commit_mcp_action',
+  });
+  if (commitMcpResult) {
+    const response = extractUserFacingToolText('commit_mcp_action', commitMcpResult);
+    if (response) return response;
+    return 'I could not complete that external action.';
+  }
+
+  const cancelMcpResult = extractLatestToolResultFromExecution({
+    toolResults,
+    steps,
+    toolName: 'cancel_mcp_action',
+  });
+  if (cancelMcpResult) {
+    const response = extractUserFacingToolText('cancel_mcp_action', cancelMcpResult);
+    if (response) return response;
+    return 'I could not cancel that external action.';
+  }
+
   const planResult = extractLatestToolResultFromExecution({
     toolResults,
     steps,
@@ -191,6 +230,17 @@ export function buildTerminalFallbackResponse(
     const response = extractUserFacingToolText('plan_calendar_change', planResult);
     if (response) return response;
     return 'I could not plan that calendar change. Please try again.';
+  }
+
+  const planMcpResult = extractLatestToolResultFromExecution({
+    toolResults,
+    steps,
+    toolName: 'plan_mcp_action',
+  });
+  if (planMcpResult) {
+    const response = extractUserFacingToolText('plan_mcp_action', planMcpResult);
+    if (response) return response;
+    return 'I could not stage that external action. Please try again.';
   }
 
   const pendingChangeId = context?.workingState?.artifacts.pendingCalendarChangeId;
@@ -821,6 +871,9 @@ const DEFER_ON_STALE_TOOLS = new Set([
   'send_email',
   'plan_calendar_change',
   'commit_calendar_change',
+  'plan_mcp_action',
+  'commit_mcp_action',
+  'cancel_mcp_action',
   'add_reminder',
   'snooze_reminder',
   'dismiss_reminder',
@@ -832,10 +885,17 @@ const DEFER_ON_STALE_TOOLS = new Set([
 const DEFER_ON_PENDING_STEER_TOOLS = new Set([
   'send_email',
   'commit_calendar_change',
+  'commit_mcp_action',
 ]);
 
 function buildStaleRunDeferredResult(toolName: string): Record<string, unknown> {
-  if (toolName === 'plan_calendar_change' || toolName === 'commit_calendar_change') {
+  if (
+    toolName === 'plan_calendar_change' ||
+    toolName === 'commit_calendar_change' ||
+    toolName === 'plan_mcp_action' ||
+    toolName === 'commit_mcp_action' ||
+    toolName === 'cancel_mcp_action'
+  ) {
     return {
       ok: false,
       status: 'deferred',
@@ -854,7 +914,7 @@ function buildStaleRunDeferredResult(toolName: string): Record<string, unknown> 
 
 function buildPendingSteerDeferredResult(toolName: string): Record<string, unknown> {
   const message = 'A new user correction arrived, so this action was deferred.';
-  if (toolName === 'commit_calendar_change') {
+  if (toolName === 'commit_calendar_change' || toolName === 'commit_mcp_action') {
     return {
       ok: false,
       status: 'deferred',
