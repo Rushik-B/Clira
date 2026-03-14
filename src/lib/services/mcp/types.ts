@@ -6,7 +6,9 @@ export type McpCapabilityId =
   | 'crm_lookup'
   | 'project_tasks_read'
   | 'calendar_external_read'
-  | 'generic_read';
+  | 'calendar_external_mutation'
+  | 'generic_read'
+  | 'generic_mutation';
 
 export type McpActionClass = 'read' | 'write' | 'delete' | 'side_effectful';
 export type McpLatencyClass = 'fast' | 'standard' | 'slow';
@@ -116,6 +118,38 @@ export type McpPolicyCandidate = {
   decision: McpPolicyDecision;
 };
 
+export type McpPendingActionStatus =
+  | 'pending'
+  | 'in_progress'
+  | 'consumed'
+  | 'cancelled'
+  | 'expired';
+
+export type McpPendingActionRecord = {
+  id: string;
+  userId: string;
+  conversationId: string;
+  connectionId: string;
+  toolName: string;
+  modelToolName: string;
+  displayTitle: string;
+  capabilityId: McpCapabilityId;
+  actionClass: McpActionClass;
+  trustClass: McpTrustClass;
+  userRequest: string;
+  args: Record<string, unknown>;
+  previewText: string;
+  previewSummary: Record<string, unknown> | null;
+  status: McpPendingActionStatus;
+  idempotencyKey: string;
+  expiresAt: Date;
+  consumedAt: Date | null;
+  cancelledAt: Date | null;
+  resultSummary: Record<string, unknown> | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
 export type McpExecutionRequest = {
   userId: string;
   connectionId: string;
@@ -125,6 +159,7 @@ export type McpExecutionRequest = {
   requestId: string;
   conversationId?: string;
   idempotencyKey?: string;
+  mutationApproval?: 'confirmed';
 };
 
 export type McpExecutionFreshness = {
@@ -157,7 +192,9 @@ export type McpPromptSummary = {
 export type McpToolExposure = {
   capabilityIntents: McpCapabilityIntent[];
   approvedTools: McpPolicyCandidate[];
+  mutationTools: McpPolicyCandidate[];
   degradedTools: McpPolicyCandidate[];
+  pendingAction: McpPendingActionRecord | null;
   promptSummary: McpPromptSummary;
 };
 

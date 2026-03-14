@@ -44,6 +44,39 @@ model PendingCalendarChange {
   @@index([expiresAt, status])
 }
 
+model PendingMcpAction {
+  id             String                 @id @default(cuid())
+  userId         String
+  conversationId String
+  connectionId   String
+  toolName       String
+  modelToolName  String
+  displayTitle   String
+  capabilityId   String
+  actionClass    McpActionClass
+  trustClass     McpTrustClass
+  userRequest    String
+  args           Json
+  previewText    String
+  previewSummary Json?
+  status         PendingMcpActionStatus @default(PENDING)
+  idempotencyKey String
+  expiresAt      DateTime
+  consumedAt     DateTime?
+  cancelledAt    DateTime?
+  resultSummary  Json?
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @updatedAt
+  user           User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  connection     McpConnection          @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@index([userId, conversationId, status])
+  @@index([userId, conversationId, createdAt])
+  @@index([connectionId, status, createdAt])
+  @@index([expiresAt, status])
+  @@index([idempotencyKey])
+}
+
 model BatchSortJob {
   id              String      @id @default(cuid())
   userId          String
@@ -456,6 +489,7 @@ model McpConnection {
   user                User                @relation(fields: [userId], references: [id], onDelete: Cascade)
   toolManifests       McpToolManifest[]
   executionAudits     McpExecutionAudit[]
+  pendingActions      PendingMcpAction[]
 
   @@unique([userId, serverKey], name: "McpConnection_userId_serverKey_key")
   @@index([userId, status], name: "McpConnection_userId_status_idx")
@@ -606,6 +640,7 @@ model User {
   emailAlerts                        EmailAlert[]
   reminders                          Reminder[]
   pendingCalendarChanges             PendingCalendarChange[]
+  pendingMcpActions                  PendingMcpAction[]
   mcpConnections                     McpConnection[]
   mcpExecutionAudits                 McpExecutionAudit[]
   threads                            Thread[]
@@ -817,6 +852,14 @@ enum ReminderStatus {
 }
 
 enum PendingCalendarChangeStatus {
+  PENDING
+  IN_PROGRESS
+  CONSUMED
+  CANCELLED
+  EXPIRED
+}
+
+enum PendingMcpActionStatus {
   PENDING
   IN_PROGRESS
   CONSUMED
