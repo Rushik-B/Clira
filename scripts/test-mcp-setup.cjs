@@ -204,7 +204,7 @@ async function main() {
 
         const manifest = await prisma.mcpToolManifest.upsert({
           where: {
-            connectionId_toolName: {
+            McpToolManifest_connectionId_toolName_key: {
               connectionId: connection.id,
               toolName: tool.name,
             },
