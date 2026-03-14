@@ -393,6 +393,24 @@ model MasterPrompt {
   user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
+model ReplyInstructionDoc {
+  id        String   @id @default(cuid())
+  userId    String
+  target    String
+  scope     String
+  scopeKey  String?
+  content   String
+  version   Int      @default(1)
+  isActive  Boolean  @default(true)
+  metadata  Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, target, scope, scopeKey, isActive])
+  @@index([userId, isActive])
+}
+
 model OAuthAccount {
   id                String   @id @default(cuid())
   userId            String
@@ -499,6 +517,7 @@ model User {
   labels                             Label[]
   mailboxes                          Mailbox[]
   masterPrompts                      MasterPrompt[]
+  replyInstructionDocs               ReplyInstructionDoc[]
   accounts                           OAuthAccount[]
   inboxSearchDocuments               InboxSearchDocument[]
   inboxSearchCheckpoints             InboxSearchCheckpoint[]
