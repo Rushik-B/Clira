@@ -17,6 +17,7 @@ import type { Prisma } from '@prisma/client';
 import { getExecutiveAgent, type ExecutiveAgentOutput } from '@/lib/ai/agents/executiveAgent';
 import { transcribeVoiceMemo } from '@/lib/ai/transcribeVoiceMemo';
 import { describeIncomingImage } from '@/lib/ai/describeIncomingImage';
+import { extractIncomingPdfText } from '@/lib/ai/extractIncomingPdfText';
 import type { ProgressUpdateContext } from '@/lib/ai/tools/sendProgressUpdate';
 import {
   createAiTraceRoot,
@@ -342,7 +343,15 @@ export async function processTelegramMessage(
   };
 
   logger.info(
-    `[telegramProcessor] Processing message: chatId=${chatId} telegramUserId=${telegramUserId} ${message.voiceFileId ? 'voice' : message.imageFileId ? 'image' : `text="${message.text.slice(0, 50)}..."`}`,
+    `[telegramProcessor] Processing message: chatId=${chatId} telegramUserId=${telegramUserId} ${
+      message.voiceFileId
+        ? 'voice'
+        : message.imageFileId
+          ? 'image'
+          : message.pdfFileId
+            ? 'pdf'
+            : `text="${message.text.slice(0, 50)}..."`
+    }`,
   );
 
   const isDuplicateByUpdate = await conversationManager.hasInboundMessageWithUpdateId(updateId);
@@ -420,7 +429,7 @@ export async function processTelegramMessage(
   const replyContextForAgent = formatReplyContextForAgent(resolvedReplyContext);
   let commandText = message.text;
 
-  if (message.voiceFileId || message.imageFileId) {
+  if (message.voiceFileId || message.imageFileId || message.pdfFileId) {
     try {
       if (message.voiceFileId) {
         const media = await telegramClient.getFileBuffer(message.voiceFileId);
@@ -439,7 +448,7 @@ export async function processTelegramMessage(
           };
         }
         inboundMetadata = { senderName, fromVoiceMemo: true };
-      } else {
+      } else if (message.imageFileId) {
         const media = await telegramClient.getFileBuffer(message.imageFileId!);
         const caption = message.imageCaption?.trim();
         const description = await describeIncomingImage(media.data, message.imageMimeType ?? media.mimeType, {
@@ -456,6 +465,34 @@ export async function processTelegramMessage(
           .filter(Boolean)
           .join('\n\n');
         inboundMetadata = { senderName, fromImage: true, imageCaption: message.imageCaption ?? null };
+      } else {
+        const media = await telegramClient.getFileBuffer(message.pdfFileId!);
+        const caption = message.pdfCaption?.trim();
+        const extractedText = await extractIncomingPdfText(
+          media.data,
+          message.pdfMimeType ?? media.mimeType,
+          {
+            channelLabel: 'Telegram',
+            filename: message.pdfFilename ?? null,
+            userCaption: caption,
+          },
+        );
+        commandText = caption ?? '';
+        effectiveText = [
+          'User sent a PDF on Telegram.',
+          message.pdfFilename ? `Filename: ${message.pdfFilename}` : null,
+          caption ? `User caption: ${caption}` : null,
+          'Raw PDF text:',
+          extractedText,
+        ]
+          .filter(Boolean)
+          .join('\n\n');
+        inboundMetadata = {
+          senderName,
+          fromPdf: true,
+          pdfFilename: message.pdfFilename ?? null,
+          pdfCaption: message.pdfCaption ?? null,
+        };
       }
     } catch (error) {
       if (isAbortError(error)) {
@@ -473,7 +510,9 @@ export async function processTelegramMessage(
           chatId,
           message.voiceFileId
             ? "I couldn't process that voice memo. Please try again or send text."
-            : "I couldn't process that image. Please try again or send text.",
+            : message.imageFileId
+              ? "I couldn't process that image. Please try again or send text."
+              : "I couldn't process that PDF. Please try again or send text.",
         );
       } catch (sendError) {
         logger.error('[telegramProcessor] Failed to send media processing error message', {
@@ -485,7 +524,11 @@ export async function processTelegramMessage(
       return {
         success: false,
         response: '',
-        error: message.voiceFileId ? 'Voice memo processing failed' : 'Image processing failed',
+        error: message.voiceFileId
+          ? 'Voice memo processing failed'
+          : message.imageFileId
+            ? 'Image processing failed'
+            : 'PDF processing failed',
       };
     }
   } else {
@@ -746,7 +789,7 @@ async function runExecutiveAgent(
 
     return {
       success: false,
-      response: "Hmm, something went wrong on my end. Can you try that again?",
+      response: "I did not finish that cleanly. Ask again and I'll retry it.",
       error: message,
     };
   }

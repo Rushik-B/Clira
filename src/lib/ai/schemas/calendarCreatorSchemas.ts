@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+export const CALENDAR_CREATOR_MAX_ITEMS = 100;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Calendar Creator Subagent Schemas
 //
@@ -29,17 +31,26 @@ export const CalendarAttendeeSchema = z
   })
   .strict();
 
+// Allow up to 365 days (525600 min). Google Calendar accepts reminder minutes in this range.
+const CALENDAR_REMINDER_MAX_MINUTES = 525_600;
+
 const CalendarReminderOverrideSchema = z
   .object({
     method: z.enum(['email', 'popup']),
-    minutes: z.number().int().min(0).max(10_080),
+    minutes: z.number().int().min(0).max(CALENDAR_REMINDER_MAX_MINUTES),
   })
   .strict();
+
+// Google Calendar API allows at most 5 reminder overrides per event.
+export const CALENDAR_REMINDER_MAX_OVERRIDES = 5;
 
 const CalendarRemindersSchema = z
   .object({
     useDefault: z.boolean(),
-    overrides: z.array(CalendarReminderOverrideSchema).optional(),
+    overrides: z
+      .array(CalendarReminderOverrideSchema)
+      .max(CALENDAR_REMINDER_MAX_OVERRIDES)
+      .optional(),
   })
   .strict();
 
@@ -82,7 +93,10 @@ const CalendarEventPatchSchema = CalendarEventDraftSchema.refine(
   },
 );
 
-const CalendarEventDraftsSchema = z.array(CalendarCreateEventDraftSchema).min(1).max(50);
+const CalendarEventDraftsSchema = z
+  .array(CalendarCreateEventDraftSchema)
+  .min(1)
+  .max(CALENDAR_CREATOR_MAX_ITEMS);
 
 const CalendarTargetByIdSchema = z
   .object({
@@ -106,8 +120,14 @@ const CalendarTargetLookupSchema = z
   .strict();
 
 export const CalendarTargetSchema = z.union([CalendarTargetByIdSchema, CalendarTargetLookupSchema]);
-const CalendarTargetsSchema = z.array(CalendarTargetSchema).min(1).max(50);
-const CalendarEventPatchesSchema = z.array(CalendarEventPatchSchema).min(1).max(50);
+const CalendarTargetsSchema = z
+  .array(CalendarTargetSchema)
+  .min(1)
+  .max(CALENDAR_CREATOR_MAX_ITEMS);
+const CalendarEventPatchesSchema = z
+  .array(CalendarEventPatchSchema)
+  .min(1)
+  .max(CALENDAR_CREATOR_MAX_ITEMS);
 
 const CalendarCreatorPlanShared = {
   confidence: z.number().min(0).max(100),
@@ -306,10 +326,22 @@ export const CalendarCreatorLlmSchema = z
     sendUpdates: z.enum(['none', 'all', 'externalOnly']).optional(),
     createMeetLink: z.boolean().optional(),
     calendarId: z.string().optional(),
-    userPreviewText: z.string().min(1).max(1200),
-    createItems: z.array(CalendarCreateEventDraftSchema).min(0).max(50).optional(),
-    updateItems: z.array(CalendarLlmUpdateItemSchema).min(0).max(50).optional(),
-    deleteTargets: z.array(CalendarTargetSchema).min(0).max(50).optional(),
+    userPreviewText: z.string().min(1).max(1200).optional(),
+    createItems: z
+      .array(CalendarCreateEventDraftSchema)
+      .min(0)
+      .max(CALENDAR_CREATOR_MAX_ITEMS)
+      .optional(),
+    updateItems: z
+      .array(CalendarLlmUpdateItemSchema)
+      .min(0)
+      .max(CALENDAR_CREATOR_MAX_ITEMS)
+      .optional(),
+    deleteTargets: z
+      .array(CalendarTargetSchema)
+      .min(0)
+      .max(CALENDAR_CREATOR_MAX_ITEMS)
+      .optional(),
     clarifyingQuestions: z.array(z.string().min(1).max(200)).min(0).max(3).optional(),
   })
   .strict();

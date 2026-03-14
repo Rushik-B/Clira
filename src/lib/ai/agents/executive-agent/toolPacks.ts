@@ -3,7 +3,7 @@ import type {
   ToolPackId,
 } from './types';
 
-export const EXECUTIVE_AGENT_PACK_VERSION = 'ea-packs-v1';
+export const EXECUTIVE_AGENT_PACK_VERSION = 'ea-packs-v2';
 
 export const EXECUTIVE_TOOL_NAMES = [
   'search_memory',
@@ -11,6 +11,7 @@ export const EXECUTIVE_TOOL_NAMES = [
   'send_progress_update',
   'search_inbox_context',
   'list_inbox_emails',
+  'read_email_pdf_attachment',
   'search_calendar',
   'check_calendar',
   'plan_calendar_change',
@@ -41,6 +42,7 @@ const RAW_TOOL_PACKS: Record<ToolPackId, readonly ExecutiveToolName[]> = {
     'send_progress_update',
     'search_inbox_context',
     'list_inbox_emails',
+    'read_email_pdf_attachment',
     'search_calendar',
   ],
   calendar_query_pack: [
@@ -51,6 +53,7 @@ const RAW_TOOL_PACKS: Record<ToolPackId, readonly ExecutiveToolName[]> = {
     'check_calendar',
     'search_inbox_context',
     'list_inbox_emails',
+    'read_email_pdf_attachment',
   ],
   calendar_mutation_pack: [
     'search_memory',
@@ -79,6 +82,7 @@ const RAW_TOOL_PACKS: Record<ToolPackId, readonly ExecutiveToolName[]> = {
     'append_to_supermemory',
     'send_progress_update',
     'search_inbox_context',
+    'read_email_pdf_attachment',
     'send_email',
   ],
 };
@@ -125,7 +129,10 @@ export function buildPackToolAllowlist(
     allowlist.delete('send_email');
   }
 
-  if (!features.pendingCalendarChangePresent || !resolutionIntent) {
+  // commit_calendar_change is available whenever a pending change exists and the user
+  // is not explicitly trying to modify the plan. The tool's own decision parameter
+  // ("confirm" | "cancel") is the real safety gate — the model must choose explicitly.
+  if (!features.pendingCalendarChangePresent || features.pendingCalendarModifyIntent) {
     allowlist.delete('commit_calendar_change');
   }
 
@@ -141,18 +148,9 @@ export function buildPackToolAllowlist(
     allowlist.delete('plan_calendar_change');
   }
 
-  if (
-    features.pendingCalendarChangePresent &&
-    resolutionIntent
-  ) {
+  // Don't re-plan when user is confirming or cancelling an existing pending change.
+  if (features.pendingCalendarChangePresent && resolutionIntent) {
     allowlist.delete('plan_calendar_change');
-  }
-
-  if (
-    features.pendingCalendarChangePresent &&
-    (features.pendingCalendarModifyIntent || !resolutionIntent)
-  ) {
-    allowlist.delete('commit_calendar_change');
   }
 
   return [...allowlist].sort();

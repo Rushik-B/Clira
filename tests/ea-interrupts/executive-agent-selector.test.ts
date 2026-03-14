@@ -5,9 +5,9 @@ import type {
 import {
   enforcePackSafety,
   extractExecutiveTurnFeatures,
-  selectExecutiveToolPack,
   selectExecutiveToolPackForTurn,
 } from '@/lib/ai/agents/executive-agent/selector';
+import { buildPackToolAllowlist } from '@/lib/ai/agents/executive-agent/toolPacks';
 import type { ExecutiveAgentInput } from '@/lib/ai/agents/executive-agent/types';
 
 const ALL_PACKS = [
@@ -69,7 +69,14 @@ describe('Executive agent selector', () => {
     vi.unstubAllEnvs();
   });
 
-  test('chooses email_send_pack only with explicit approval and recent unsent draft', () => {
+  test('bypasses the LLM for explicit send approval with a recent unsent draft', async () => {
+    vi.stubEnv('EA_SELECTOR_CEREBRAS_ENABLED', 'true');
+    vi.stubEnv('EA_SELECTOR_CEREBRAS_TWILIO', 'true');
+    vi.stubEnv('EA_SELECTOR_CEREBRAS_MODEL', 'llama3.1-8b');
+    vi.stubEnv('CEREBRAS_API_KEY', 'test-key');
+
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+
     const input = buildInput({
       userRequest: 'send it',
       history: [
@@ -84,11 +91,14 @@ describe('Executive agent selector', () => {
       input,
       pendingCalendarChangePresent: false,
     });
-    const selection = selectExecutiveToolPack(features);
+    const selection = await selectExecutiveToolPackForTurn({
+      input,
+      features,
+    });
 
     expect(features.explicitSendApproval).toBe(true);
     expect(features.draftCandidatePresent).toBe(true);
-    expect(features.hasRecentSendSuccess).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
     expect(selection.packId).toBe('email_send_pack');
   });
 
@@ -119,47 +129,15 @@ describe('Executive agent selector', () => {
       input,
       pendingCalendarChangePresent: false,
     });
-    const selection = selectExecutiveToolPack(features);
 
     expect(features.explicitSendApproval).toBe(true);
     expect(features.draftCandidatePresent).toBe(false);
-    expect(features.hasRecentSendSuccess).toBe(true);
-    expect(selection.packId).not.toBe('email_send_pack');
+    expect(
+      enforcePackSafety('email_send_pack', features),
+    ).toBe('inbox_context_pack');
   });
 
-  test('ambiguous email-like turn fails open to inbox_context_pack', () => {
-    const input = buildInput({
-      userRequest: 'what did Alex say about tomorrow?',
-      classifierDecision: 'ambiguous',
-    });
-
-    const features = extractExecutiveTurnFeatures({
-      input,
-      pendingCalendarChangePresent: false,
-    });
-    const selection = selectExecutiveToolPack(features);
-
-    expect(features.ambiguousEmailLike).toBe(true);
-    expect(selection.packId).toBe('inbox_context_pack');
-  });
-
-  test('ambiguous calendar-like turn fails open to calendar_query_pack', () => {
-    const input = buildInput({
-      userRequest: "what's on my calendar friday?",
-      classifierDecision: 'ambiguous',
-    });
-
-    const features = extractExecutiveTurnFeatures({
-      input,
-      pendingCalendarChangePresent: false,
-    });
-    const selection = selectExecutiveToolPack(features);
-
-    expect(features.ambiguousCalendarLike).toBe(true);
-    expect(selection.packId).toBe('calendar_query_pack');
-  });
-
-  test('workload overview phrasing routes to calendar_query_pack', () => {
+  test('detects workload overview phrasing', () => {
     const input = buildInput({
       userRequest: "what's on my plate today?",
     });
@@ -168,13 +146,11 @@ describe('Executive agent selector', () => {
       input,
       pendingCalendarChangePresent: false,
     });
-    const selection = selectExecutiveToolPack(features);
 
     expect(features.workloadOverviewIntent).toBe(true);
-    expect(selection.packId).toBe('calendar_query_pack');
   });
 
-  test('deadline-oriented phrasing routes to calendar_query_pack', () => {
+  test('detects deadline-oriented workload overview phrasing', () => {
     const input = buildInput({
       userRequest: 'what are my upcoming deadlines this week?',
     });
@@ -183,13 +159,11 @@ describe('Executive agent selector', () => {
       input,
       pendingCalendarChangePresent: false,
     });
-    const selection = selectExecutiveToolPack(features);
 
     expect(features.workloadOverviewIntent).toBe(true);
-    expect(selection.packId).toBe('calendar_query_pack');
   });
 
-  test('time-window mutation phrasing routes to calendar_mutation_pack', () => {
+  test('detects time-window mutation phrasing', () => {
     const input = buildInput({
       userRequest: 'block out tonight 9-10pm',
     });
@@ -197,13 +171,11 @@ describe('Executive agent selector', () => {
       input,
       pendingCalendarChangePresent: false,
     });
-    const selection = selectExecutiveToolPack(features);
 
     expect(features.calendarMutationIntent).toBe(true);
-    expect(selection.packId).toBe('calendar_mutation_pack');
   });
 
-  test('combined reminder and calendar mutation phrasing selects multiple packs', () => {
+  test('detects combined reminder and calendar mutation phrasing', () => {
     const input = buildInput({
       userRequest: 'remind me tomorrow at 9pm to submit the form and put it on my calendar',
     });
@@ -211,60 +183,9 @@ describe('Executive agent selector', () => {
       input,
       pendingCalendarChangePresent: false,
     });
-    const selection = selectExecutiveToolPack(features);
 
     expect(features.calendarMutationIntent).toBe(true);
     expect(features.reminderIntent).toBe(true);
-    expect(selection.packId).toBe('calendar_mutation_pack');
-    expect(selection.packIds).toEqual([
-      'calendar_mutation_pack',
-      'reminder_alert_pack',
-    ]);
-  });
-
-  test('short followup approval after calendar context routes to calendar_mutation_pack', () => {
-    const input = buildInput({
-      userRequest: 'yes',
-      classifierDecision: 'followup',
-      history: [
-        buildAssistantMessage({
-          createdAt: '2026-03-02T17:00:00.000Z',
-          content: 'You are free then. Want me to block it?',
-          metadata: {
-            toolResults: [
-              {
-                toolName: 'check_calendar',
-                result: { available: true },
-              },
-            ],
-          },
-        }),
-      ],
-    });
-    const features = extractExecutiveTurnFeatures({
-      input,
-      pendingCalendarChangePresent: false,
-    });
-    const selection = selectExecutiveToolPack(features);
-
-    expect(features.calendarMutationIntent).toBe(true);
-    expect(selection.packId).toBe('calendar_mutation_pack');
-  });
-
-  test('short approval without followup calendar context does not escalate', () => {
-    const input = buildInput({
-      userRequest: 'yes',
-      classifierDecision: 'followup',
-      history: [],
-    });
-    const features = extractExecutiveTurnFeatures({
-      input,
-      pendingCalendarChangePresent: false,
-    });
-    const selection = selectExecutiveToolPack(features);
-
-    expect(features.calendarMutationIntent).toBe(false);
-    expect(selection.packId).toBe('core_recall_pack');
   });
 
   test('safety guard downgrades unsafe email_send_pack', () => {
@@ -281,6 +202,81 @@ describe('Executive agent selector', () => {
     expect(
       enforcePackSafety('email_send_pack', features),
     ).toBe('inbox_context_pack');
+  });
+
+  test('bypasses the LLM for pending calendar confirmations', async () => {
+    vi.stubEnv('EA_SELECTOR_CEREBRAS_ENABLED', 'true');
+    vi.stubEnv('EA_SELECTOR_CEREBRAS_TWILIO', 'true');
+    vi.stubEnv('EA_SELECTOR_CEREBRAS_MODEL', 'llama3.1-8b');
+    vi.stubEnv('CEREBRAS_API_KEY', 'test-key');
+
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+
+    const input = buildInput({
+      userRequest: 'yes',
+    });
+    const features = extractExecutiveTurnFeatures({
+      input,
+      pendingCalendarChangePresent: true,
+    });
+    const selection = await selectExecutiveToolPackForTurn({
+      input,
+      features,
+    });
+
+    expect(features.pendingCalendarConfirmIntent).toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(selection.packIds).toEqual(['calendar_mutation_pack']);
+  });
+
+  test('treats plain "sure" as a calendar commit confirmation', () => {
+    const input = buildInput({
+      userRequest: 'sure',
+    });
+    const features = extractExecutiveTurnFeatures({
+      input,
+      pendingCalendarChangePresent: true,
+    });
+
+    expect(features.pendingCalendarConfirmIntent).toBe(true);
+  });
+
+  test('treats "ok" and "alright" as calendar commit confirmations', () => {
+    for (const phrase of ['ok', 'okay', 'alright', 'sounds good', 'perfect']) {
+      const input = buildInput({ userRequest: phrase });
+      const features = extractExecutiveTurnFeatures({ input, pendingCalendarChangePresent: true });
+      expect(features.pendingCalendarConfirmIntent).toBe(true);
+    }
+  });
+
+  test('commit_calendar_change stays available in calendar_mutation_pack when pending change exists even without detected confirmation intent', () => {
+    // User says something ambiguous while a pending change exists.
+    // The tool must still be available so the model can decide — its own
+    // decision param ("confirm" | "cancel") is the real safety gate.
+    const input = buildInput({ userRequest: 'what does the plan look like again?' });
+    const features = extractExecutiveTurnFeatures({
+      input,
+      pendingCalendarChangePresent: true,
+    });
+
+    expect(features.pendingCalendarConfirmIntent).toBe(false);
+    expect(features.pendingCalendarModifyIntent).toBe(false);
+
+    const allowlist = buildPackToolAllowlist('calendar_mutation_pack', features);
+    expect(allowlist).toContain('commit_calendar_change');
+  });
+
+  test('commit_calendar_change is removed from calendar_mutation_pack when user wants to modify the plan', () => {
+    const input = buildInput({ userRequest: 'actually change it to 3pm instead' });
+    const features = extractExecutiveTurnFeatures({
+      input,
+      pendingCalendarChangePresent: true,
+    });
+
+    expect(features.pendingCalendarModifyIntent).toBe(true);
+
+    const allowlist = buildPackToolAllowlist('calendar_mutation_pack', features);
+    expect(allowlist).not.toContain('commit_calendar_change');
   });
 
   test('calendar_mutation_pack is not downgraded by safety (LLM selector may detect intent from context)', () => {

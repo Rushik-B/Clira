@@ -42,6 +42,10 @@ export interface TelegramInboundMessage {
   imageFileId?: string;
   imageMimeType?: string;
   imageCaption?: string;
+  pdfFileId?: string;
+  pdfMimeType?: string;
+  pdfFilename?: string;
+  pdfCaption?: string;
   replyContext?: TelegramReplyContext;
 }
 
@@ -213,6 +217,26 @@ export function extractTelegramInboundMessage(ctx: Context): TelegramInboundMess
         imageCaption: typeof message.caption === 'string' ? message.caption : undefined,
       };
     }
+  }
+
+  const document = message.document as {
+    file_id?: string;
+    mime_type?: string;
+    file_name?: string;
+  } | undefined;
+  const documentMimeType = document?.mime_type?.toLowerCase();
+  const documentFilename = document?.file_name;
+  const isPdfDocument = documentMimeType === 'application/pdf'
+    || documentFilename?.toLowerCase().endsWith('.pdf') === true;
+  if (document?.file_id && isPdfDocument) {
+    return {
+      ...base,
+      text: '',
+      pdfFileId: document.file_id,
+      pdfMimeType: document.mime_type ?? 'application/pdf',
+      pdfFilename: document.file_name,
+      pdfCaption: typeof message.caption === 'string' ? message.caption : undefined,
+    };
   }
 
   return null;

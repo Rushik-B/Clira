@@ -189,7 +189,7 @@ export class ExecutiveAgent {
         draftCandidateReason: activeTurnFeatures.draftCandidateReason,
         pendingCalendarChangePresent: activeTurnFeatures.pendingCalendarChangePresent,
         hasRecentPendingCalendarPreview: activeTurnFeatures.hasRecentPendingCalendarPreview,
-        classifierDecision: activeTurnFeatures.classifierDecision,
+        classifierDecision: input.runContext?.classifierDecision ?? null,
         channel: activeTurnFeatures.channel,
       });
 
@@ -409,7 +409,11 @@ export class ExecutiveAgent {
 
       let response = (text || '').trim();
       if (!response) {
-        response = buildTerminalFallbackResponse(toolResults, steps);
+        response = buildTerminalFallbackResponse(toolResults, steps, {
+          selectedPack,
+          workingState: workingStateController?.getState() ?? null,
+          turnFeatures,
+        });
         logger.info(`[executiveAgent] Empty model text, using fallback: ${response}`);
       }
       const sanitizedResponse = stripInternalMetadataFromAssistantResponse(response);
@@ -418,7 +422,11 @@ export class ExecutiveAgent {
       }
       response = sanitizedResponse.response;
       if (!response) {
-        response = buildTerminalFallbackResponse(toolResults, steps);
+        response = buildTerminalFallbackResponse(toolResults, steps, {
+          selectedPack,
+          workingState: workingStateController?.getState() ?? null,
+          turnFeatures,
+        });
         logger.warn(`[executiveAgent] Sanitized response became empty, using fallback: ${response}`);
       }
       workingStateController.updateFromResponse(response);
@@ -491,7 +499,11 @@ export class ExecutiveAgent {
       return {
         response: isDeadline
           ? 'I hit a time limit. Should I check your inbox or your calendar?'
-          : "Hmm, something went wrong on my end. Can you try that again?",
+          : buildTerminalFallbackResponse([], [], {
+              selectedPack,
+              workingState: workingStateController?.getState() ?? null,
+              turnFeatures,
+            }),
         memoryStored,
         status: 'fallback',
         error: message,

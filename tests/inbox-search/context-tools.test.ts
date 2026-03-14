@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { EmailEvidencePackSchema } from '@/lib/ai/schemas/emailRetrievalSchemas';
 import { MESSAGING_INBOX_CALL_LIMITS } from '@/lib/ai/agents/executive-agent/constants';
+import type { ToolPackId } from '@/lib/ai/agents/executive-agent/types';
 
 const retrievalMocks = vi.hoisted(() => ({
   runEmailRetrieval: vi.fn(),
@@ -8,6 +9,10 @@ const retrievalMocks = vi.hoisted(() => ({
 
 const listInboxMocks = vi.hoisted(() => ({
   listInboxEmails: vi.fn(),
+}));
+
+const readPdfMocks = vi.hoisted(() => ({
+  readEmailPdfAttachment: vi.fn(),
 }));
 
 const helperMocks = vi.hoisted(() => ({
@@ -45,6 +50,7 @@ vi.mock('@/lib/ai/agents/emailRetrievalSubagent', () => ({
 
 vi.mock('@/lib/services/inbox-search', () => ({
   listInboxEmails: listInboxMocks.listInboxEmails,
+  readEmailPdfAttachment: readPdfMocks.readEmailPdfAttachment,
 }));
 
 vi.mock('@/lib/ai/agents/executive-agent/helpers', () => ({
@@ -226,6 +232,15 @@ function createMockToolResultCache() {
           set_ok: 0,
           set_skipped_non_cacheable: 0,
         },
+        read_email_pdf_attachment: {
+          history_hit: 0,
+          runtime_hit: 0,
+          miss_not_found: 0,
+          miss_expired: 0,
+          miss_invalidated: 0,
+          set_ok: 0,
+          set_skipped_non_cacheable: 0,
+        },
         check_calendar: {
           history_hit: 0,
           runtime_hit: 0,
@@ -262,29 +277,23 @@ function createContext(overrides: Record<string, unknown> = {}) {
     channel: 'whatsapp' as const,
     retrievalProfile: 'messaging' as const,
     selectedPack: 'inbox_context_pack' as const,
+    selectedPacks: ['inbox_context_pack'] as ToolPackId[],
     selectorReasons: ['test'],
     turnFeatures: {
       explicitSendApproval: false,
-      explicitSendDecline: false,
       draftCandidatePresent: false,
       draftCandidateReason: null,
       pendingCalendarChangePresent: false,
       calendarMutationIntent: false,
       calendarQueryIntent: false,
       workloadOverviewIntent: false,
-      emailIntent: true,
       reminderIntent: false,
       alertIntent: false,
-      recallIntent: false,
-      classifierDecision: null,
       channel: 'whatsapp' as const,
-      hasRecentSendSuccess: false,
       hasRecentPendingCalendarPreview: false,
       pendingCalendarConfirmIntent: false,
       pendingCalendarCancelIntent: false,
       pendingCalendarModifyIntent: false,
-      ambiguousCalendarLike: false,
-      ambiguousEmailLike: false,
     },
     userTimezone: 'America/Vancouver',
     currentTimeUtc: '2026-03-02T10:00:00.000Z',
@@ -328,6 +337,35 @@ describe('buildContextTools search_inbox_context', () => {
     );
     retrievalMocks.runEmailRetrieval.mockResolvedValue(createEvidencePack());
     listInboxMocks.listInboxEmails.mockResolvedValue(createListInboxEmailsResult());
+    readPdfMocks.readEmailPdfAttachment.mockResolvedValue({
+      ok: true,
+      status: 'ok',
+      message: {
+        messageId: 'message-1',
+        threadId: 'thread-1',
+        mailboxId: 'mailbox-1',
+        mailboxEmail: 'user@example.com',
+        subject: 'Invoice attached',
+        from: 'Alice <alice@example.com>',
+        sentAt: '2026-03-01T10:00:00.000Z',
+      },
+      mailboxResolutionSource: 'stored_email',
+      attachment: {
+        attachmentId: 'att-1',
+        filename: 'invoice.pdf',
+        mimeType: 'application/pdf',
+        sizeBytes: 2048,
+      },
+      availablePdfAttachments: [
+        {
+          attachmentId: 'att-1',
+          filename: 'invoice.pdf',
+          mimeType: 'application/pdf',
+          sizeBytes: 2048,
+        },
+      ],
+      extractedText: 'Invoice attached.\nTotal due: $400',
+    });
     supermemoryMocks.isSupermemoryConfigured.mockReturnValue(false);
     prismaMocks.mailboxFindMany.mockResolvedValue([]);
   });
@@ -612,5 +650,55 @@ describe('buildContextTools search_inbox_context', () => {
       recommendation: 'Invalid date format. Use ISO format like "2026-01-20".',
     });
     expect(calendarAnalysisMocks.runCalendarAnalysis).not.toHaveBeenCalled();
+  });
+
+  test('memoizes duplicate read_email_pdf_attachment calls within one run', async () => {
+    const nextSubagentCallIndex = vi.fn(() => 0);
+    const tools = buildContextTools({
+      context: createContext(),
+      nextSubagentCallIndex,
+    }) as Record<string, { execute: (args: Record<string, unknown>) => Promise<unknown> }>;
+
+    const first = await tools.read_email_pdf_attachment.execute({
+      messageId: 'message-1',
+      mailboxEmail: 'USER@example.com',
+      attachmentFilename: 'Invoice.PDF',
+    });
+    const second = await tools.read_email_pdf_attachment.execute({
+      messageId: 'message-1',
+      mailboxEmail: 'user@example.com',
+      attachmentFilename: 'invoice.pdf',
+    });
+
+    expect(readPdfMocks.readEmailPdfAttachment).toHaveBeenCalledTimes(1);
+    expect(helperMocks.runWithSubagentBudget).toHaveBeenCalledTimes(1);
+    expect(nextSubagentCallIndex).toHaveBeenCalledTimes(1);
+    expect((first as any).extractedText).toContain('Invoice attached.\nTotal due: $400');
+    expect((second as any).metadata?.cached).toBe(true);
+  });
+
+  test('returns an explicit validation result for invalid read_email_pdf_attachment arguments', async () => {
+    const tools = buildContextTools({
+      context: createContext(),
+      nextSubagentCallIndex: () => 0,
+    }) as Record<string, { execute: (args: Record<string, unknown>) => Promise<unknown> }>;
+
+    const result = await tools.read_email_pdf_attachment.execute({
+      messageId: '   ',
+    });
+
+    expect(readPdfMocks.readEmailPdfAttachment).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      ok: false,
+      status: 'invalid_request',
+      message: 'String must contain at least 1 character(s)',
+      retryable: false,
+      messageContext: {
+        messageId: '   ',
+      },
+      metadata: {
+        validationError: true,
+      },
+    });
   });
 });

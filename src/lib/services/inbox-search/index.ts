@@ -35,6 +35,7 @@ export {
 export { indexInboxSearchEmail } from '@/lib/services/inbox-search/indexer';
 export { searchInboxDocuments, buildInboxSearchPlan } from '@/lib/services/inbox-search/search';
 export { listInboxEmails } from '@/lib/services/inbox-search/list-emails';
+export { readEmailPdfAttachment } from '@/lib/services/inbox-search/read-email-pdf-attachment';
 export { fetchInboxThreadSlice } from '@/lib/services/inbox-search/thread-expansion';
 export {
   enqueueInboxBackfillForConnectedMailboxes,
@@ -77,6 +78,10 @@ export type {
   ListInboxEmailsSortBy,
   ListInboxEmailsToolArgs,
 } from '@/lib/services/inbox-search/types';
+export type {
+  EmailPdfAttachmentCandidate,
+  ReadEmailPdfAttachmentResult,
+} from '@/lib/services/inbox-search/read-email-pdf-attachment';
 export type {
   InboxIndexService,
   InboxSearchService,

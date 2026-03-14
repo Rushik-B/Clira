@@ -98,31 +98,25 @@ export interface ExecutiveWorkingState {
     pendingCalendarChangeId?: string;
     lastTool?: string;
     lastToolSummary?: string;
+    lastUserFacingText?: string;
     draftCandidatePresent?: boolean;
   };
 }
 
 export interface ExecutiveTurnFeatures {
   explicitSendApproval: boolean;
-  explicitSendDecline: boolean;
   draftCandidatePresent: boolean;
   pendingCalendarChangePresent: boolean;
   calendarMutationIntent: boolean;
   calendarQueryIntent: boolean;
   workloadOverviewIntent: boolean;
-  emailIntent: boolean;
   reminderIntent: boolean;
   alertIntent: boolean;
-  recallIntent: boolean;
-  classifierDecision: 'supersede' | 'followup' | 'ambiguous' | null;
   channel: ProgressUpdateChannel;
-  hasRecentSendSuccess: boolean;
   hasRecentPendingCalendarPreview: boolean;
   pendingCalendarConfirmIntent: boolean;
   pendingCalendarCancelIntent: boolean;
   pendingCalendarModifyIntent: boolean;
-  ambiguousCalendarLike: boolean;
-  ambiguousEmailLike: boolean;
   draftCandidateReason: string | null;
 }
 
@@ -161,6 +155,13 @@ export interface PromptContext {
 
 export type SearchInboxContextArgs = InboxSearchToolArgs;
 export type ListInboxEmailsArgs = ListInboxEmailsToolArgs;
+export type ReadEmailPdfAttachmentArgs = {
+  messageId: string;
+  mailboxId?: string;
+  mailboxEmail?: string;
+  attachmentId?: string;
+  attachmentFilename?: string;
+};
 
 export type RetrievalProfile = 'default' | 'messaging';
 

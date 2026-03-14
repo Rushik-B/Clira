@@ -231,6 +231,52 @@ describe('Executive tool result reuse cache', () => {
     expect(stats.list_inbox_emails.history_hit).toBe(1);
   });
 
+  test('reuses read_email_pdf_attachment history results with normalized mailbox and filename', () => {
+    vi.setSystemTime(new Date('2026-02-26T12:00:00.000Z'));
+
+    const history: ConversationMessageDTO[] = [
+      buildAssistantMessage({
+        createdAt: new Date('2026-02-26T11:58:30.000Z'),
+        metadata: {
+          toolCalls: [
+            {
+              toolName: 'read_email_pdf_attachment',
+              toolCallId: 'call-pdf',
+              args: {
+                messageId: 'message-1',
+                mailboxEmail: 'User@Example.com',
+                attachmentFilename: 'Invoice.PDF',
+              },
+            },
+          ],
+          toolResults: [
+            {
+              toolName: 'read_email_pdf_attachment',
+              toolCallId: 'call-pdf',
+              result: {
+                ok: true,
+                status: 'ok',
+                extractedText: 'Invoice attached.\nTotal due: $400',
+              },
+            },
+          ],
+        },
+      }),
+    ];
+
+    const cache = createExecutiveToolResultReuseCache({ conversationHistory: history });
+    const cached = cache.get<Record<string, unknown>>('read_email_pdf_attachment', {
+      messageId: 'message-1',
+      mailboxEmail: 'user@example.com',
+      attachmentFilename: 'invoice.pdf',
+    });
+
+    expect(cached).toBeTruthy();
+    expect(cached?.extractedText).toBe('Invoice attached.\nTotal due: $400');
+    expect((cached?._cache as { source?: string } | undefined)?.source).toBe('history');
+    expect(cache.getStats().read_email_pdf_attachment.history_hit).toBe(1);
+  });
+
   test('invalidates search_memory cache entries older than successful append_to_supermemory', () => {
     vi.setSystemTime(new Date('2026-02-26T12:00:00.000Z'));
 

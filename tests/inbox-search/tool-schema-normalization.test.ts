@@ -3,6 +3,9 @@ import {
   listInboxEmailsProviderSchema,
 } from '@/lib/ai/agents/executive-agent/list-inbox-emails-contract';
 import {
+  readEmailPdfAttachmentProviderSchema,
+} from '@/lib/ai/agents/executive-agent/read-email-pdf-attachment-contract';
+import {
   searchInboxContextProviderSchema,
 } from '@/lib/ai/agents/executive-agent/search-inbox-context-contract';
 import {
@@ -41,6 +44,10 @@ describe('normalizeExecutiveAgentToolSchema', () => {
         description: 'List inbox emails',
         providerInputSchema: listInboxEmailsProviderSchema,
       },
+      read_email_pdf_attachment: {
+        description: 'Read email PDF attachment',
+        providerInputSchema: readEmailPdfAttachmentProviderSchema,
+      },
     });
     const normalizedTool = tools.search_inbox_context as unknown as {
       inputSchema: {
@@ -48,6 +55,11 @@ describe('normalizeExecutiveAgentToolSchema', () => {
       };
     };
     const normalizedListTool = tools.list_inbox_emails as unknown as {
+      inputSchema: {
+        jsonSchema: Record<string, unknown>;
+      };
+    };
+    const normalizedPdfTool = tools.read_email_pdf_attachment as unknown as {
       inputSchema: {
         jsonSchema: Record<string, unknown>;
       };
@@ -72,6 +84,18 @@ describe('normalizeExecutiveAgentToolSchema', () => {
               type: 'boolean',
             },
           },
+        },
+      },
+    });
+    expect(normalizedPdfTool.inputSchema.jsonSchema).toMatchObject({
+      type: 'object',
+      required: ['messageId'],
+      properties: {
+        attachmentId: {
+          type: 'string',
+        },
+        messageId: {
+          type: 'string',
         },
       },
     });
