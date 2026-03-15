@@ -24,6 +24,22 @@ import {
 
 export const EXECUTIVE_AGENT_PROMPT_VERSION = 'ea-prompt-v6';
 
+export async function resolveUserCalendarTimezone(userId: string): Promise<string> {
+  let userTimezone = DEFAULT_CALENDAR_TIMEZONE;
+
+  try {
+    const userSettings = await prisma.userSettings.findUnique({
+      where: { userId },
+      select: { calendarTimezone: true },
+    });
+    userTimezone = userSettings?.calendarTimezone || DEFAULT_CALENDAR_TIMEZONE;
+  } catch (error) {
+    logger.debug('[executiveAgent] Failed to fetch user settings for timezone:', error);
+  }
+
+  return userTimezone;
+}
+
 function buildCurrentTurnMessage(params: {
   input: ExecutiveAgentInput;
   channel: ProgressUpdateChannel;
@@ -100,17 +116,7 @@ export async function buildExecutiveAgentPrompt(
 ): Promise<PromptContext> {
   const systemPrompt = readPromptFile('whatsapp/executiveAgentPrompt.md');
 
-  // Fetch user settings for timezone
-  let userTimezone = DEFAULT_CALENDAR_TIMEZONE;
-  try {
-    const userSettings = await prisma.userSettings.findUnique({
-      where: { userId: input.userId },
-      select: { calendarTimezone: true },
-    });
-    userTimezone = userSettings?.calendarTimezone || DEFAULT_CALENDAR_TIMEZONE;
-  } catch (error) {
-    logger.debug('[executiveAgent] Failed to fetch user settings for timezone:', error);
-  }
+  const userTimezone = await resolveUserCalendarTimezone(input.userId);
   const now = new Date();
   const currentTimeUtc = now.toISOString();
   let currentDateUserTzDateOnly = now.toISOString().split('T')[0]!;

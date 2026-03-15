@@ -43,6 +43,7 @@ import {
 import {
   buildExecutiveAgentPrompt,
   EXECUTIVE_AGENT_PROMPT_VERSION,
+  resolveUserCalendarTimezone,
 } from './prompt';
 import { runSteerableTextWithTools, type SteerRunContext } from './steerableLoop';
 import { buildExecutiveAgentTools } from './tools';
@@ -141,6 +142,7 @@ export class ExecutiveAgent {
     };
 
     try {
+      const resolvedUserTimezone = await resolveUserCalendarTimezone(input.userId);
       const pendingRecord = await prisma.pendingCalendarChange.findFirst({
         where: {
           userId: input.userId,
@@ -163,7 +165,7 @@ export class ExecutiveAgent {
       const pendingPayload = pendingRecord
         ? parsePendingCalendarChangeRecord(pendingRecord as PendingCalendarChangeRecord)
         : null;
-      const pendingTimezone = pendingRecord?.userTimezone || userTimezone;
+      const pendingTimezone = pendingRecord?.userTimezone || resolvedUserTimezone;
       const pendingCalendarInstruction = pendingRecord && pendingPayload
         ? `Active pending calendar change exists (pendingId=${pendingRecord.id}, action=${pendingPayload.plan.action}, expiresAt=${formatDateTimeInTimeZone(pendingRecord.expiresAt, pendingTimezone)}).`
         : pendingRecord
