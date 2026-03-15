@@ -22,7 +22,7 @@ import {
   formatReplyPipelineInstruction,
 } from './replyPipelineContext';
 
-export const EXECUTIVE_AGENT_PROMPT_VERSION = 'ea-prompt-v4';
+export const EXECUTIVE_AGENT_PROMPT_VERSION = 'ea-prompt-v6';
 
 function buildCurrentTurnMessage(params: {
   input: ExecutiveAgentInput;
