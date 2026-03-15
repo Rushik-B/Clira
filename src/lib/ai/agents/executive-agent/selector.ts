@@ -553,8 +553,8 @@ export function enforcePackSafety(
  */
 function formatRecentHistory(
   history: ConversationMessageDTO[],
-  maxMessages = 6,
-  staleCutoffMs = 30 * 60 * 1000, // 30 minutes
+  maxMessages = 8,
+  staleCutoffMs = 45 * 60 * 1000, // 45 minutes
 ): string {
   const now = Date.now();
   const recent = history
@@ -567,7 +567,7 @@ function formatRecentHistory(
     .map((msg) => {
       const role = msg.role === 'USER' ? 'User' : 'Assistant';
       const time = msg.createdAt.toISOString();
-      const content = (msg.content ?? '').slice(0, 300);
+      const content = (msg.content ?? '').slice(0, 500);
       return `[${time}] ${role}: ${content}`;
     })
     .join('\n');
@@ -586,12 +586,18 @@ function buildSelectorPrompt(params: {
     'Do not rely on exact wording. Infer the underlying job the assistant must do.',
     'Return multiple packs only when the same turn genuinely needs multiple tool families.',
     'Order matters: put the primary pack first.',
+    'Read the recent conversation carefully before routing.',
+    'Pay special attention to the latest 4-5 turns. Short follow-ups often depend on that immediate context.',
+    'If the current user message is short, ambiguous, or referential (for example: "?", "what about that?", "what is that?", "what does that mean?", "and this?"), resolve what it refers to from the recent conversation before choosing a pack.',
+    'If the recent conversation is about a specific email thread, quoted email text, reply draft, sender, or message detail, and the current user is asking about that detail, prefer inbox_context_pack over core_recall_pack.',
+    'Use core_recall_pack for durable personal memory and long-term facts about the user. Do not use it when the real job is interpreting a recent conversation artifact.',
     '',
     'Routing principles:',
     '- If the user wants to remember, inspect, or change standing reply behavior, choose settings_mutation_pack.',
     '- settings_mutation_pack covers BOTH reading saved reply rules and writing/updating them.',
     '- Use settings_mutation_pack for questions like "what preferences do you have saved", "show my style rules", "how do you reply to my mom", or "from now on keep replies shorter".',
     '- Use inbox_context_pack when the user wants email lookup, drafting, or to know what someone said.',
+    '- Use inbox_context_pack for follow-up questions about a recent email, draft, sender, quoted snippet, place, name, or phrase mentioned in the conversation, even when the latest user message does not explicitly say "email".',
     '- Use core_recall_pack for personal memory/facts recall when inbox lookup or drafting is not the main job.',
     '- Use calendar_query_pack for calendar lookup or availability/workload questions.',
     '- Use calendar_mutation_pack for creating, moving, cancelling, or changing calendar items.',
@@ -614,6 +620,8 @@ function buildSelectorPrompt(params: {
     '"put it in my cal too" → calendar_mutation_pack',
     '"what did alex say in his email?" → inbox_context_pack',
     '"draft a reply to sarah" → inbox_context_pack',
+    '"what does that place mean?" right after discussing a recent email thread → inbox_context_pack',
+    '"what is that?" right after an assistant quoted an email → inbox_context_pack',
     '"who is my manager?" → core_recall_pack',
     '"when was my whistler trip?" → core_recall_pack',
     '"remind me in an hour" → reminder_alert_pack',
@@ -627,7 +635,7 @@ function buildSelectorPrompt(params: {
     '',
     `State: draftCandidatePresent=${features.draftCandidatePresent}, explicitSendApproval=${features.explicitSendApproval}, pendingCalendarChangePresent=${features.pendingCalendarChangePresent}`,
     '',
-    'Recent conversation:',
+    'Recent conversation (newest at the bottom):',
     formatRecentHistory(conversationHistory),
     '',
     `User: ${userRequest}`,

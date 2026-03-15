@@ -469,6 +469,66 @@ describe('Executive agent selector', () => {
     expect(body.response_format.json_schema.schema.$schema).toBeUndefined();
   });
 
+  test('selector prompt emphasizes recent follow-up context for short ambiguous turns', async () => {
+    vi.stubEnv('EA_SELECTOR_CEREBRAS_ENABLED', 'true');
+    vi.stubEnv('EA_SELECTOR_CEREBRAS_TWILIO', 'true');
+    vi.stubEnv('EA_SELECTOR_CEREBRAS_MODEL', 'llama3.1-8b');
+    vi.stubEnv('CEREBRAS_API_KEY', 'test-key');
+
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                packIds: ['inbox_context_pack'],
+              }),
+            },
+          },
+        ],
+        id: 'resp-followup-context',
+      }),
+    } as Response);
+
+    const now = Date.now();
+    const input = buildInput({
+      userRequest: "what's big craft?",
+      history: [
+        buildAssistantMessage({
+          createdAt: new Date(now - 2 * 60 * 1000).toISOString(),
+          content:
+            "Heads up: Veetesh emailed about the co-op position. He's asking if you're free Wednesday at 7 PM to meet at BigCraft.",
+        }),
+        buildAssistantMessage({
+          createdAt: new Date(now - 60 * 1000).toISOString(),
+          content:
+            'Here is the exact text from Veetesh: "Are you available at 7pm Wednesday? We can meet at bigcraft."',
+        }),
+      ],
+    });
+
+    const features = extractExecutiveTurnFeatures({
+      input,
+      pendingCalendarChangePresent: false,
+    });
+
+    await selectExecutiveToolPackForTurn({
+      input,
+      features,
+    });
+
+    const [, init] = fetchMock.mock.calls[0] ?? [];
+    const body = JSON.parse(String(init?.body));
+    const selectorPrompt = body.messages?.[1]?.content as string;
+
+    expect(selectorPrompt).toContain('Pay special attention to the latest 4-5 turns.');
+    expect(selectorPrompt).toContain('If the current user message is short, ambiguous, or referential');
+    expect(selectorPrompt).toContain('prefer inbox_context_pack over core_recall_pack');
+    expect(selectorPrompt).toContain('Recent conversation (newest at the bottom):');
+    expect(selectorPrompt).toContain('Here is the exact text from Veetesh');
+  });
+
   test('exposes all packs when Cerebras returns 422', async () => {
     vi.stubEnv('EA_SELECTOR_CEREBRAS_ENABLED', 'true');
     vi.stubEnv('EA_SELECTOR_CEREBRAS_TWILIO', 'true');
