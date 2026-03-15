@@ -9,7 +9,7 @@ import type {
   McpToolExposure,
 } from '@/lib/services/mcp/types';
 
-const MAX_APPROVED_TOOLS = 20;
+const MAX_APPROVED_TOOLS = 50;
 
 function buildDecision(params: {
   channel: ProgressUpdateChannel;

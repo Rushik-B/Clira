@@ -289,57 +289,60 @@ export async function syncMcpConnectionRegistry(params: {
       normalized.manifests,
     );
 
-    await prisma.$transaction(async (tx) => {
-      await tx.mcpToolManifest.deleteMany({
-        where: {
-          connectionId: bundle.connection.id,
-          toolName: {
-            notIn: normalized.manifests.map((manifest) => manifest.toolName),
-          },
-        },
-      });
-
-      for (const manifest of normalized.manifests) {
-        await tx.mcpToolManifest.upsert({
+    await prisma.$transaction(
+      async (tx) => {
+        await tx.mcpToolManifest.deleteMany({
           where: {
-            McpToolManifest_connectionId_toolName_key: {
-              connectionId: bundle.connection.id,
-              toolName: manifest.toolName,
+            connectionId: bundle.connection.id,
+            toolName: {
+              notIn: normalized.manifests.map((manifest) => manifest.toolName),
             },
           },
-          create: {
-            connectionId: bundle.connection.id,
-            toolName: manifest.toolName,
-            toolSlug: manifest.toolSlug,
-            modelToolName: manifest.modelToolName,
-            displayTitle: manifest.displayTitle,
-            description: manifest.description,
-            inputSchema: manifest.inputSchema,
-            outputSchema: toPrismaNullableJsonValue(manifest.outputSchema),
-            annotations: toPrismaNullableJsonValue(manifest.annotations),
-            actionClass: toPrismaActionClass(manifest.actionClass),
-            latencyClass: toPrismaLatencyClass(manifest.latencyClass),
-            safeForAutoUse: manifest.safeForAutoUse,
-            syncDiagnostics: toPrismaNullableJsonValue(manifest.syncDiagnostics),
-            lastSyncedAt: syncedAt,
-          },
-          update: {
-            toolSlug: manifest.toolSlug,
-            modelToolName: manifest.modelToolName,
-            displayTitle: manifest.displayTitle,
-            description: manifest.description,
-            inputSchema: manifest.inputSchema,
-            outputSchema: toPrismaNullableJsonValue(manifest.outputSchema),
-            annotations: toPrismaNullableJsonValue(manifest.annotations),
-            actionClass: toPrismaActionClass(manifest.actionClass),
-            latencyClass: toPrismaLatencyClass(manifest.latencyClass),
-            safeForAutoUse: manifest.safeForAutoUse,
-            syncDiagnostics: toPrismaNullableJsonValue(manifest.syncDiagnostics),
-            lastSyncedAt: syncedAt,
-          },
         });
-      }
-    });
+
+        for (const manifest of normalized.manifests) {
+          await tx.mcpToolManifest.upsert({
+            where: {
+              McpToolManifest_connectionId_toolName_key: {
+                connectionId: bundle.connection.id,
+                toolName: manifest.toolName,
+              },
+            },
+            create: {
+              connectionId: bundle.connection.id,
+              toolName: manifest.toolName,
+              toolSlug: manifest.toolSlug,
+              modelToolName: manifest.modelToolName,
+              displayTitle: manifest.displayTitle,
+              description: manifest.description,
+              inputSchema: manifest.inputSchema,
+              outputSchema: toPrismaNullableJsonValue(manifest.outputSchema),
+              annotations: toPrismaNullableJsonValue(manifest.annotations),
+              actionClass: toPrismaActionClass(manifest.actionClass),
+              latencyClass: toPrismaLatencyClass(manifest.latencyClass),
+              safeForAutoUse: manifest.safeForAutoUse,
+              syncDiagnostics: toPrismaNullableJsonValue(manifest.syncDiagnostics),
+              lastSyncedAt: syncedAt,
+            },
+            update: {
+              toolSlug: manifest.toolSlug,
+              modelToolName: manifest.modelToolName,
+              displayTitle: manifest.displayTitle,
+              description: manifest.description,
+              inputSchema: manifest.inputSchema,
+              outputSchema: toPrismaNullableJsonValue(manifest.outputSchema),
+              annotations: toPrismaNullableJsonValue(manifest.annotations),
+              actionClass: toPrismaActionClass(manifest.actionClass),
+              latencyClass: toPrismaLatencyClass(manifest.latencyClass),
+              safeForAutoUse: manifest.safeForAutoUse,
+              syncDiagnostics: toPrismaNullableJsonValue(manifest.syncDiagnostics),
+              lastSyncedAt: syncedAt,
+            },
+          });
+        }
+      },
+      { timeout: 30_000 },
+    );
 
     await markMcpConnectionSyncSuccess({
       connectionId: bundle.connection.id,

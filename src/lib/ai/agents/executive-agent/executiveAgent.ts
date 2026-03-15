@@ -36,7 +36,6 @@ import {
   resolveProgressChannel,
   resolveRetrievalProfile,
   stripInternalMetadataFromAssistantResponse,
-  stripUndefined,
   stopWhenToolCalled,
   wrapToolsWithTimingMetadata,
 } from './helpers';
@@ -67,6 +66,12 @@ import {
   buildAiTraceMetadata,
   wrapToolsWithAiTracing,
 } from '@/lib/ai/tracing';
+import {
+  buildHarnessMetadata,
+  buildOrchestrationMetadata,
+  summarizeMcpServersForLogs,
+  summarizeToolInventoryForLogs,
+} from './diagnostics';
 import type {
   ExecutiveAgentInput,
   ExecutiveAgentOutput,
@@ -104,42 +109,6 @@ export class ExecutiveAgent {
     let mcpToolExposure: Awaited<ReturnType<typeof resolveMcpToolExposure>> | null = null;
     let workingStateController: ReturnType<typeof createWorkingStateController> | null = null;
     let steerMetadata: Prisma.InputJsonValue | null = null;
-
-    const buildHarnessMetadata = (): Prisma.InputJsonValue | undefined => {
-      if (!selectedPack || !workingStateController) {
-        return undefined;
-      }
-
-      return stripUndefined({
-          selectedPack,
-          selectedPacks,
-          mcpConnectionIds: mcpToolExposure?.selectedConnectionIds ?? [],
-          selectorReasons,
-          workingState: workingStateController.getState(),
-          promptVersion: EXECUTIVE_AGENT_PROMPT_VERSION,
-          packVersion: EXECUTIVE_AGENT_PACK_VERSION,
-        }) as unknown as Prisma.InputJsonValue;
-    };
-
-    const buildOrchestrationMetadata = (): Prisma.InputJsonValue | undefined => {
-      if (!input.runContext) {
-        return undefined;
-      }
-
-      return {
-        runId: input.runContext.runId,
-        burstId: input.runContext.burstId,
-        classifierDecision: input.runContext.classifierDecision ?? null,
-        queueOverflowSummary:
-          (input.runContext.droppedSummary ?? []).length > 0
-            ? {
-                droppedCount: (input.runContext.droppedSummary ?? []).length,
-                droppedMessages: input.runContext.droppedSummary ?? [],
-              }
-            : null,
-        steer: steerMetadata,
-      } as Prisma.InputJsonValue;
-    };
 
     try {
       const resolvedUserTimezone = await resolveUserCalendarTimezone(input.userId);
@@ -200,12 +169,16 @@ export class ExecutiveAgent {
         channel: resolvedChannel,
         selectedConnectionIds: selection.mcpConnectionIds,
       });
+      const mcpServersForLogs = summarizeMcpServersForLogs(
+        mcpToolExposure,
+        selection.mcpConnectionIds,
+      );
       const mcpPromptFragments = buildExecutiveMcpPromptFragments(mcpToolExposure);
 
       logger.info('[executiveAgent] harness.selection', {
         selectedPack,
-        selectedPacks,
-        mcpConnectionIds: selection.mcpConnectionIds,
+        nativePacks: selectedPacks,
+        mcpServers: mcpServersForLogs,
         selectorReasons,
         draftCandidatePresent: resolvedTurnFeatures.draftCandidatePresent,
         draftCandidateReason: resolvedTurnFeatures.draftCandidateReason,
@@ -288,15 +261,18 @@ export class ExecutiveAgent {
 
       logger.info('[executiveAgent] harness.pack_tools', {
         selectedPack,
-        toolCount: Object.keys(tools).length,
-        tools: Object.keys(tools),
+        nativePacks: selectedPacks,
+        ...summarizeToolInventoryForLogs({
+          tools,
+          mcpServers: mcpServersForLogs,
+        }),
       });
       const availableToolNames = Object.keys(tools);
 
       const activeToolBudgets = Object.fromEntries(
         Object.keys(tools).map((toolName) => [
           toolName,
-          MESSAGING_TOOL_BUDGETS_BASE[toolName] ?? 1,
+          MESSAGING_TOOL_BUDGETS_BASE[toolName] ?? 15, // Default to 15 to allow for MCP tools
         ]),
       );
 
@@ -523,11 +499,22 @@ export class ExecutiveAgent {
       if (toolResultCacheStats) {
         metadata.toolResultCacheStats = toolResultCacheStats as Prisma.InputJsonValue;
       }
-      const harnessMetadata = buildHarnessMetadata();
+      const harnessMetadata = buildHarnessMetadata({
+        selectedPack,
+        selectedPacks,
+        mcpConnectionIds: mcpToolExposure?.selectedConnectionIds ?? [],
+        selectorReasons,
+        workingState: workingStateController?.getState() ?? null,
+        promptVersion: EXECUTIVE_AGENT_PROMPT_VERSION,
+        packVersion: EXECUTIVE_AGENT_PACK_VERSION,
+      });
       if (harnessMetadata) {
         metadata.harness = harnessMetadata;
       }
-      const orchestrationMetadata = buildOrchestrationMetadata();
+      const orchestrationMetadata = buildOrchestrationMetadata({
+        runContext: input.runContext,
+        steerMetadata,
+      });
       if (orchestrationMetadata) {
         metadata.orchestration = orchestrationMetadata;
       }
@@ -559,11 +546,22 @@ export class ExecutiveAgent {
       workingStateController?.markFailed();
 
       const metadata: Record<string, Prisma.InputJsonValue> = {};
-      const harnessMetadata = buildHarnessMetadata();
+      const harnessMetadata = buildHarnessMetadata({
+        selectedPack,
+        selectedPacks,
+        mcpConnectionIds: mcpToolExposure?.selectedConnectionIds ?? [],
+        selectorReasons,
+        workingState: workingStateController?.getState() ?? null,
+        promptVersion: EXECUTIVE_AGENT_PROMPT_VERSION,
+        packVersion: EXECUTIVE_AGENT_PACK_VERSION,
+      });
       if (harnessMetadata) {
         metadata.harness = harnessMetadata;
       }
-      const orchestrationMetadata = buildOrchestrationMetadata();
+      const orchestrationMetadata = buildOrchestrationMetadata({
+        runContext: input.runContext,
+        steerMetadata,
+      });
       if (orchestrationMetadata) {
         metadata.orchestration = orchestrationMetadata;
       }
