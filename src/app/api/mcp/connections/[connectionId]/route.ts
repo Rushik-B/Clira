@@ -8,6 +8,7 @@ import {
   updateMcpConnection,
 } from '@/lib/services/mcp/connections/service';
 import { invalidateConnectionCaches } from '@/lib/services/mcp/registry/cache';
+import { loadMcpRegistrySnapshot } from '@/lib/services/mcp/registry/service';
 import { enqueueMcpSyncConnectionJob } from '@/lib/services/mcp/workers/queue';
 
 export async function GET(
@@ -25,9 +26,23 @@ export async function GET(
       );
     }
 
+    // Include tools from the registry snapshot for this connection
+    const snapshot = await loadMcpRegistrySnapshot(userId);
+    const entry = snapshot.connections.find((c) => c.connection.id === connectionId);
+    const tools = (entry?.tools ?? []).map((tool) => ({
+      id: tool.id,
+      toolName: tool.toolName,
+      displayTitle: tool.displayTitle,
+      description: tool.description,
+      actionClass: tool.actionClass,
+      capabilityId: tool.capabilityId,
+      safeForAutoUse: tool.safeForAutoUse,
+    }));
+
     return NextResponse.json({
       success: true,
       connection,
+      tools,
     });
   } catch (error) {
     if (isUnauthorizedError(error)) {
