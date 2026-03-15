@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth/auth';
 import { prisma } from '@/lib/prisma';
+import { getEmailMappingRuleValue } from '@/lib/services/utils/emailMappingRuleValue';
 import redis, { safeRedisOperation } from '@/lib/services/utils/redis';
 import crypto from 'crypto';
 
@@ -127,7 +128,7 @@ export async function GET(request: NextRequest) {
         rules: labelRules.map((rule) => ({
           id: rule.id,
           type: rule.mappingType,
-          value: getRuleValue(rule),
+          value: getEmailMappingRuleValue(rule),
           createdAt: rule.createdAt,
           updatedAt: rule.updatedAt,
         })),
@@ -148,23 +149,5 @@ export async function GET(request: NextRequest) {
   } catch (error) {
     console.error('[BULK RULES] Error fetching rules:', error);
     return NextResponse.json({ error: 'Failed to fetch rules' }, { status: 500 });
-  }
-}
-
-// Helper: mirror value selection from single-folder endpoint
-function getRuleValue(rule: any): string {
-  switch (rule.mappingType) {
-    case 'EMAIL':
-      return rule.emailAddress;
-    case 'DOMAIN':
-      return rule.domain || rule.emailAddress;
-    case 'SUBJECT':
-    case 'SUBJECT_CONTAINS':
-    case 'SUBJECT_STARTS_WITH':
-    case 'SUBJECT_ENDS_WITH':
-    case 'SUBJECT_REGEX':
-      return rule.subjectPattern || '';
-    default:
-      return rule.emailAddress || rule.domain || rule.subjectPattern || '';
   }
 }

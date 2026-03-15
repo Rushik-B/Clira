@@ -6,24 +6,7 @@ import { QueueItem } from '@/types';
 import { getBaseQueueEmails, mapEmailsToQueueItems, getProcessingEmails, mapEmailsToProcessingPlaceholders } from '@/lib/services/queue/queueHelpers';
 import { createGmailServiceForUser } from '@/lib/security/getUserGmailCredentials';
 import { getPrimaryMailboxId } from '@/lib/services/mailbox';
-
-// Helper function to get the appropriate value based on rule type
-function getRuleValue(rule: any): string {
-  switch (rule.mappingType) {
-    case 'EMAIL':
-      return rule.emailAddress;
-    case 'DOMAIN':
-      return rule.domain || rule.emailAddress;
-    case 'SUBJECT':
-    case 'SUBJECT_CONTAINS':
-    case 'SUBJECT_STARTS_WITH':
-    case 'SUBJECT_ENDS_WITH':
-    case 'SUBJECT_REGEX':
-      return rule.subjectPattern || '';
-    default:
-      return rule.emailAddress || rule.domain || rule.subjectPattern || '';
-  }
-}
+import { getEmailMappingRuleValue } from '@/lib/services/utils/emailMappingRuleValue';
 
 export async function GET(
   request: NextRequest,
@@ -152,7 +135,7 @@ export async function GET(
         rules: rules.map(rule => ({
           id: rule.id,
           type: rule.mappingType,
-          value: getRuleValue(rule),
+          value: getEmailMappingRuleValue(rule),
           createdAt: rule.createdAt,
           updatedAt: rule.updatedAt
         })),
@@ -336,7 +319,7 @@ export async function GET(
       rules: rules.map(rule => ({
         id: rule.id,
         type: rule.mappingType,
-        value: getRuleValue(rule),
+        value: getEmailMappingRuleValue(rule),
         createdAt: rule.createdAt,
         updatedAt: rule.updatedAt
       })),
