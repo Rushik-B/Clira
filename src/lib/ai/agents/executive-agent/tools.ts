@@ -14,14 +14,17 @@ import { buildExecutiveMcpTools } from './mcp/toolAdapter';
 
 const progressUpdateInputSchema = z.object({
   kind: z.enum(progressUpdateKinds).describe('Progress update category'),
-  text: z.string().min(1).max(200).describe('Short, one-sentence update in Clira voice'),
+  text: z.string().min(1).max(200).describe(
+    'Short, one-sentence update in natural Clira voice, only when the wait is noticeable',
+  ),
 });
 
 function buildUnavailableProgressUpdateTool(context: ExecutiveRuntimeContext) {
   return {
     description:
-      'Send a short, human progress update to the user. ' +
-      'Use for quick acknowledgments, deep-search updates, or long-running tasks.',
+      'Send a short, human progress update only when the user would otherwise be left waiting. ' +
+      'Use for genuinely long-running or multi-step work, or when escalating after a weak first result. ' +
+      'Do not use for quick single-lookups.',
     inputSchema: progressUpdateInputSchema,
     execute: async () => ({
       sent: false,
