@@ -5,6 +5,7 @@ import type {
 import {
   enforcePackSafety,
   extractExecutiveTurnFeatures,
+  resolveTurnFeaturesWithSelection,
   selectExecutiveToolPackForTurn,
 } from '@/lib/ai/agents/executive-agent/selector';
 import { buildPackToolAllowlist } from '@/lib/ai/agents/executive-agent/toolPacks';
@@ -306,6 +307,70 @@ describe('Executive agent selector', () => {
     expect(selection.packIds).toEqual(['calendar_mutation_pack']);
   });
 
+  test('uses the LLM selector for pending calendar draft revisions expressed indirectly', async () => {
+    vi.stubEnv('EA_SELECTOR_CEREBRAS_ENABLED', 'true');
+    vi.stubEnv('EA_SELECTOR_CEREBRAS_TWILIO', 'true');
+    vi.stubEnv('EA_SELECTOR_CEREBRAS_MODEL', 'llama3.1-8b');
+    vi.stubEnv('CEREBRAS_API_KEY', 'test-key');
+
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                packIds: ['calendar_mutation_pack'],
+              }),
+            },
+          },
+        ],
+        id: 'resp-pending-calendar-modify',
+      }),
+    } as Response);
+
+    const input = buildInput({
+      userRequest: 'add more 24 hrs and 12 hrs before too',
+      history: [
+        buildAssistantMessage({
+          createdAt: '2026-03-15T05:54:48.098Z',
+          content:
+            'Ready to add:\n\nMeeting with Veetesh (Co-op position)\nWednesday, March 18\n7:00 PM – 8:00 PM\nBierCraft\n\nI\'ve set notifications for 30 minutes and 1 hour before. Confirm and I\'ll put it on your calendar.',
+          metadata: {
+            toolResults: [
+              {
+                toolName: 'plan_calendar_change',
+                result: {
+                  ok: true,
+                  pendingChange: {
+                    pendingId: 'pending-1',
+                  },
+                },
+              },
+            ],
+          },
+        }),
+      ],
+    });
+    const features = extractExecutiveTurnFeatures({
+      input,
+      pendingCalendarChangePresent: true,
+    });
+
+    expect(features.pendingCalendarModifyIntent).toBe(false);
+
+    const selection = await selectExecutiveToolPackForTurn({
+      input,
+      features,
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(selection.packIds).toEqual(['calendar_mutation_pack']);
+    expect(selection.reminders).toContain(
+      'A pending calendar change exists; confirm, cancel, or explicitly modify it.',
+    );
+  });
+
   test('treats plain "sure" as a calendar commit confirmation', () => {
     const input = buildInput({
       userRequest: 'sure',
@@ -354,6 +419,66 @@ describe('Executive agent selector', () => {
 
     const allowlist = buildPackToolAllowlist('calendar_mutation_pack', features);
     expect(allowlist).not.toContain('commit_calendar_change');
+  });
+
+  test('LLM mutation-pack selection marks a pending calendar turn as modify for tool gating', () => {
+    const input = buildInput({ userRequest: 'add more 24 hrs and 12 hrs before too' });
+    const features = extractExecutiveTurnFeatures({
+      input,
+      pendingCalendarChangePresent: true,
+    });
+
+    const resolvedFeatures = resolveTurnFeaturesWithSelection({
+      features,
+      selection: {
+        packIds: ['calendar_mutation_pack'],
+        reasons: ['llm selector'],
+      },
+    });
+
+    expect(features.pendingCalendarModifyIntent).toBe(false);
+    expect(resolvedFeatures.pendingCalendarModifyIntent).toBe(true);
+
+    const allowlist = buildPackToolAllowlist('calendar_mutation_pack', resolvedFeatures);
+    expect(allowlist).not.toContain('commit_calendar_change');
+  });
+
+  test('successful LLM selection is authoritative over fallback pending-calendar modify regex', () => {
+    const input = buildInput({ userRequest: 'actually change it to 3pm instead' });
+    const features = extractExecutiveTurnFeatures({
+      input,
+      pendingCalendarChangePresent: true,
+    });
+
+    expect(features.pendingCalendarModifyIntent).toBe(true);
+
+    const resolvedFeatures = resolveTurnFeaturesWithSelection({
+      features,
+      selection: {
+        packIds: ['calendar_query_pack'],
+        reasons: ['llm selector'],
+      },
+    });
+
+    expect(resolvedFeatures.pendingCalendarModifyIntent).toBe(false);
+  });
+
+  test('selector fallback does not infer pending calendar modification from exposed all-packs mode', () => {
+    const input = buildInput({ userRequest: 'what does the plan look like again?' });
+    const features = extractExecutiveTurnFeatures({
+      input,
+      pendingCalendarChangePresent: true,
+    });
+
+    const resolvedFeatures = resolveTurnFeaturesWithSelection({
+      features,
+      selection: {
+        packIds: [...ALL_PACKS],
+        reasons: ['selector failed; exposed all packs'],
+      },
+    });
+
+    expect(resolvedFeatures.pendingCalendarModifyIntent).toBe(false);
   });
 
   test('calendar_mutation_pack is not downgraded by safety (LLM selector may detect intent from context)', () => {
@@ -525,6 +650,8 @@ describe('Executive agent selector', () => {
     expect(selectorPrompt).toContain('Pay special attention to the latest 4-5 turns.');
     expect(selectorPrompt).toContain('If the current user message is short, ambiguous, or referential');
     expect(selectorPrompt).toContain('prefer inbox_context_pack over core_recall_pack');
+    expect(selectorPrompt).toContain('If pendingCalendarChangePresent=true');
+    expect(selectorPrompt).toContain('Pending-draft revisions may be phrased indirectly');
     expect(selectorPrompt).toContain('Recent conversation (newest at the bottom):');
     expect(selectorPrompt).toContain('Here is the exact text from Veetesh');
   });

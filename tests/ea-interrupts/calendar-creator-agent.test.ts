@@ -112,6 +112,53 @@ describe('runCalendarCreatorAgent', () => {
     expect(result.userPreviewText).toContain('in Work');
   });
 
+  test('formats create previews using the draft timezone when dateTime has no offset', async () => {
+    llmMocks.callObject.mockResolvedValue({
+      object: {
+        action: 'create',
+        confidence: 92,
+        calendarId: 'Work',
+        createItems: [
+          {
+            summary: 'Meeting with Veetesh',
+            start: {
+              dateTime: '2026-03-18T19:00:00',
+              timeZone: 'America/Los_Angeles',
+            },
+            end: {
+              dateTime: '2026-03-18T20:00:00',
+              timeZone: 'America/Los_Angeles',
+            },
+          },
+        ],
+      },
+    });
+
+    const result = await runCalendarCreatorAgent(
+      {
+        request: 'add my meeting with Veetesh to the Work calendar',
+      },
+      {
+        currentTime: {
+          utcNow: '2026-03-13T21:00:00.000Z',
+          userTimezone: 'America/Los_Angeles',
+          userLocalNow: '2026-03-13T14:00:00',
+          dayOfWeek: 'Friday',
+        },
+        availableCalendars: [
+          {
+            id: 'work-cal',
+            summary: 'Work',
+            primary: false,
+            accessRole: 'writer',
+          },
+        ],
+      },
+    );
+
+    expect(result.userPreviewText).toContain('"Meeting with Veetesh" on Mar 18, 7 PM to Mar 18, 8 PM in Work');
+  });
+
   test('resolves pre-resolved update targets to event ids and generates a deterministic preview', async () => {
     llmMocks.callObject.mockResolvedValue({
       object: {

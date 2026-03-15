@@ -39,6 +39,25 @@ describe('calendar user-facing text', () => {
     );
   });
 
+  test('formats Google timed events using the event timezone when dateTime has no offset', () => {
+    const item = describeGoogleCalendarEvent(
+      {
+        summary: 'Meeting with Veetesh',
+        start: {
+          dateTime: '2026-03-18T19:00:00',
+          timeZone: 'America/Los_Angeles',
+        },
+        end: {
+          dateTime: '2026-03-18T20:00:00',
+          timeZone: 'America/Los_Angeles',
+        },
+      },
+      'UTC',
+    );
+
+    expect(item).toBe('"Meeting with Veetesh" on Wed, Mar 18 from 7 PM to 8 PM');
+  });
+
   test('builds a conversational completion message for multiple events', () => {
     const message = buildCalendarCompletionMessage({
       action: 'delete',

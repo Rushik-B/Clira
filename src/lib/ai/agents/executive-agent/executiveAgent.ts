@@ -48,6 +48,7 @@ import { runSteerableTextWithTools, type SteerRunContext } from './steerableLoop
 import { buildExecutiveAgentTools } from './tools';
 import {
   extractExecutiveTurnFeatures,
+  resolveTurnFeaturesWithSelection,
   selectExecutiveToolPackForTurn,
 } from './selector';
 import { buildExecutiveMcpPromptFragments } from './mcp/promptFragments';
@@ -173,7 +174,6 @@ export class ExecutiveAgent {
         input,
         pendingCalendarChangePresent: Boolean(pendingRecord),
       });
-      turnFeatures = activeTurnFeatures;
       // Pack selection uses the LLM selector when available. Safety-critical
       // flows can still bypass it deterministically, but selector outages now
       // expose every pack and rely on downstream tool gating.
@@ -181,6 +181,11 @@ export class ExecutiveAgent {
         input,
         features: activeTurnFeatures,
       });
+      const resolvedTurnFeatures = resolveTurnFeaturesWithSelection({
+        features: activeTurnFeatures,
+        selection,
+      });
+      turnFeatures = resolvedTurnFeatures;
       const activePack = selection.packId;
       const activePacks = selection.packIds;
       input.runContext?.setSelectedPack?.(activePack);
@@ -200,19 +205,20 @@ export class ExecutiveAgent {
         selectedPacks,
         capabilityIntents: selection.capabilityIntents,
         selectorReasons,
-        draftCandidatePresent: activeTurnFeatures.draftCandidatePresent,
-        draftCandidateReason: activeTurnFeatures.draftCandidateReason,
-        pendingCalendarChangePresent: activeTurnFeatures.pendingCalendarChangePresent,
-        hasRecentPendingCalendarPreview: activeTurnFeatures.hasRecentPendingCalendarPreview,
+        draftCandidatePresent: resolvedTurnFeatures.draftCandidatePresent,
+        draftCandidateReason: resolvedTurnFeatures.draftCandidateReason,
+        pendingCalendarChangePresent: resolvedTurnFeatures.pendingCalendarChangePresent,
+        hasRecentPendingCalendarPreview: resolvedTurnFeatures.hasRecentPendingCalendarPreview,
+        pendingCalendarModifyIntent: resolvedTurnFeatures.pendingCalendarModifyIntent,
         classifierDecision: input.runContext?.classifierDecision ?? null,
-        channel: activeTurnFeatures.channel,
+        channel: resolvedTurnFeatures.channel,
       });
 
       workingStateController = createWorkingStateController(
         createInitialWorkingState({
           goal: input.userRequest,
           selectedPack: activePack,
-          features: activeTurnFeatures,
+          features: resolvedTurnFeatures,
           pendingCalendarChangeId: pendingRecord?.id,
         }),
       );
@@ -256,7 +262,7 @@ export class ExecutiveAgent {
         selectedPack: activePack,
         selectedPacks: activePacks,
         selectorReasons,
-        turnFeatures: activeTurnFeatures,
+        turnFeatures: resolvedTurnFeatures,
         userTimezone,
         currentTimeUtc,
         currentTimeUserTz,

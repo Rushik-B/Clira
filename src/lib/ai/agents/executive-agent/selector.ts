@@ -439,6 +439,51 @@ function buildSelection(
   };
 }
 
+function addUniqueReminder(reminders: string[], reminder: string): string[] {
+  return reminders.includes(reminder) ? reminders : [...reminders, reminder];
+}
+
+function shouldInferPendingCalendarModifyFromLlmSelection(params: {
+  features: ExecutiveTurnFeatures;
+  selection: Pick<PackSelection, 'packIds' | 'reasons'>;
+}): boolean {
+  const { features, selection } = params;
+
+  if (!features.pendingCalendarChangePresent) return false;
+  if (features.pendingCalendarConfirmIntent || features.pendingCalendarCancelIntent) {
+    return false;
+  }
+
+  const selectionWasLlmDriven = selection.reasons.includes('llm selector');
+  if (!selectionWasLlmDriven) return false;
+
+  return selection.packIds.includes('calendar_mutation_pack');
+}
+
+export function resolveTurnFeaturesWithSelection(params: {
+  features: ExecutiveTurnFeatures;
+  selection: Pick<PackSelection, 'packIds' | 'reasons'>;
+}): ExecutiveTurnFeatures {
+  const selectionWasLlmDriven = params.selection.reasons.includes('llm selector');
+  const inferredPendingCalendarModifyIntent = selectionWasLlmDriven
+    ? shouldInferPendingCalendarModifyFromLlmSelection(params)
+    : params.features.pendingCalendarModifyIntent;
+
+  if (
+    inferredPendingCalendarModifyIntent === params.features.pendingCalendarModifyIntent &&
+    params.features.calendarMutationIntent
+  ) {
+    return params.features;
+  }
+
+  return {
+    ...params.features,
+    calendarMutationIntent:
+      params.features.calendarMutationIntent || inferredPendingCalendarModifyIntent,
+    pendingCalendarModifyIntent: inferredPendingCalendarModifyIntent,
+  };
+}
+
 const toolPackIdSchema = z.enum(TOOL_PACK_IDS);
 
 const selectorOutputSchema = z
@@ -601,6 +646,11 @@ function buildSelectorPrompt(params: {
     '- Use core_recall_pack for personal memory/facts recall when inbox lookup or drafting is not the main job.',
     '- Use calendar_query_pack for calendar lookup or availability/workload questions.',
     '- Use calendar_mutation_pack for creating, moving, cancelling, or changing calendar items.',
+    '- If pendingCalendarChangePresent=true, treat the latest user message as potentially referring to the staged calendar draft, even when the message is short or indirect.',
+    '- If pendingCalendarChangePresent=true and the user is revising the staged draft, choose calendar_mutation_pack.',
+    '- Pending-draft revisions include adding or removing reminders, changing the time, location, title, attendees, notes, or any other event detail.',
+    '- Pending-draft revisions may be phrased indirectly, like "add another reminder", "also 24 hrs before", "12 hrs too", "make it BierCraft", or "actually 8pm". Do not require words like "change" or "update".',
+    '- If pendingCalendarChangePresent=true and the user is explicitly approving or declining the staged change, choose calendar_mutation_pack so the runtime can resolve it safely.',
     '- Use reminder_alert_pack for reminders and email alerts.',
     '- Use email_send_pack only when there is an already-approved unsent draft and the user is clearly approving send.',
     '- If the user both changes reply preferences AND asks for a reminder/calendar action in the same turn, include both relevant packs.',
@@ -788,8 +838,7 @@ function selectDeterministicBypassSelection(
   if (
     features.pendingCalendarChangePresent &&
     (features.pendingCalendarConfirmIntent ||
-      features.pendingCalendarCancelIntent ||
-      features.pendingCalendarModifyIntent)
+      features.pendingCalendarCancelIntent)
   ) {
     const packIds: ToolPackId[] = ['calendar_mutation_pack'];
     if (features.reminderIntent || features.alertIntent) {
@@ -799,9 +848,7 @@ function selectDeterministicBypassSelection(
     return buildSelection({
       packIdOrPackIds: packIds,
       reasons: [
-        features.pendingCalendarModifyIntent
-          ? 'pending calendar change exists and latest turn explicitly modifies the plan'
-          : 'pending calendar change exists and latest turn resolves it',
+        'pending calendar change exists and latest turn resolves it',
       ],
       reminders: ['A pending calendar change exists; confirm, cancel, or explicitly modify it.'],
       userRequest,
@@ -853,13 +900,31 @@ export async function selectExecutiveToolPackForTurn(params: {
       });
     }
 
-    return buildSelection({
+    const selection = buildSelection({
       packIdOrPackIds: safePackIds,
       reasons: ['llm selector'],
       reminders: getDefaultPackRemindersForSelection(safePackIds),
       userRequest: params.input.userRequest,
       features: params.features,
     });
+
+    if (
+      shouldInferPendingCalendarModifyFromLlmSelection({
+        features: params.features,
+        selection,
+      })
+    ) {
+      return {
+        ...selection,
+        reasons: [...selection.reasons, 'llm selector inferred pending calendar draft modification'],
+        reminders: addUniqueReminder(
+          selection.reminders,
+          'A pending calendar change exists; confirm, cancel, or explicitly modify it.',
+        ),
+      };
+    }
+
+    return selection;
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     logger.warn('[executiveAgent] selector.llm_failed_expose_all_packs', {

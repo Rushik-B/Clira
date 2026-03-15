@@ -5,6 +5,7 @@ import {
   type CalendarCreatorPlanDTO,
   type CalendarTargetDTO,
 } from '@/lib/ai/schemas/calendarCreatorSchemas';
+import { normalizeIsoDateInputToUtc } from '@/lib/utils/timezone';
 import { buildCalendarPlanPreview } from './preview';
 import { findCalendarId, resolveCalendarId } from './context';
 import type {
@@ -21,32 +22,37 @@ function normalizeLookupText(value: string): string {
 function isResolvedEventWithinRange(
   event: ResolvedCalendarEvent,
   target: Extract<CalendarTargetDTO, { lookupQuery: string }>,
+  userTimezone: string,
 ): boolean {
   if (!target.lookupRange) {
     return true;
   }
 
-  const rangeStart = Date.parse(target.lookupRange.startDate);
-  const rangeEnd = Date.parse(target.lookupRange.endDate);
-  const eventStart = Date.parse(event.start);
-  const eventEnd = Date.parse(event.end);
+  try {
+    const rangeStart = normalizeIsoDateInputToUtc(
+      target.lookupRange.startDate,
+      userTimezone,
+      'start',
+    ).getTime();
+    const rangeEnd = normalizeIsoDateInputToUtc(
+      target.lookupRange.endDate,
+      userTimezone,
+      'end',
+    ).getTime();
+    const eventStart = normalizeIsoDateInputToUtc(event.start, userTimezone, 'start').getTime();
+    const eventEnd = normalizeIsoDateInputToUtc(event.end, userTimezone, 'start').getTime();
 
-  if (
-    Number.isNaN(rangeStart) ||
-    Number.isNaN(rangeEnd) ||
-    Number.isNaN(eventStart) ||
-    Number.isNaN(eventEnd)
-  ) {
+    return eventStart <= rangeEnd && eventEnd >= rangeStart;
+  } catch {
     return true;
   }
-
-  return eventStart <= rangeEnd && eventEnd >= rangeStart;
 }
 
 function resolveTargetFromPreResolvedEvents(
   target: CalendarTargetDTO,
   resolvedEvents: ResolvedCalendarEvent[] | undefined,
   fallbackCalendarId: string,
+  userTimezone: string,
 ): CalendarTargetDTO {
   if (!('lookupQuery' in target) || !resolvedEvents || resolvedEvents.length === 0) {
     return 'eventId' in target
@@ -60,7 +66,7 @@ function resolveTargetFromPreResolvedEvents(
   const normalizedQuery = normalizeLookupText(target.lookupQuery);
   const matches = resolvedEvents.filter(
     (event) =>
-      isResolvedEventWithinRange(event, target) &&
+      isResolvedEventWithinRange(event, target, userTimezone) &&
       (normalizeLookupText(event.name) === normalizedQuery ||
         normalizeLookupText(event.name).includes(normalizedQuery) ||
         normalizedQuery.includes(normalizeLookupText(event.name))),
@@ -189,6 +195,7 @@ export function mapLlmOutputToPlan(
         item.target,
         context.resolvedEvents,
         shared.calendarId,
+        context.currentTime.userTimezone,
       ),
       eventDraft: item.eventDraft,
       destinationCalendarId: item.destinationCalendarId
@@ -264,6 +271,7 @@ export function mapLlmOutputToPlan(
       target,
       context.resolvedEvents,
       shared.calendarId,
+      context.currentTime.userTimezone,
     ),
   );
 

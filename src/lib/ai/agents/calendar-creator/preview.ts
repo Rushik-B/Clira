@@ -12,10 +12,16 @@ import {
   buildCalendarPreviewMessage,
   describeResolvedCalendarEvent,
 } from '@/lib/ai/calendar-user-facing';
+import { normalizeIsoDateInputToUtc } from '@/lib/utils/timezone';
 import { getCalendarLabel } from './context';
 
 function formatDateTime(value: string, timeZone: string): string {
-  const date = new Date(value);
+  let date: Date;
+  try {
+    date = normalizeIsoDateInputToUtc(value, timeZone, 'start');
+  } catch {
+    return value;
+  }
   if (Number.isNaN(date.getTime())) {
     return value;
   }

@@ -10,7 +10,10 @@ import {
   CALENDAR_REMINDER_MAX_OVERRIDES,
   type CalendarEventDraftDTO,
 } from '@/lib/ai/schemas/calendarCreatorSchemas';
-import { formatDateTimeInTimeZone } from '@/lib/utils/timezone';
+import {
+  formatDateTimeInTimeZone,
+  normalizeIsoDateInputToUtc,
+} from '@/lib/utils/timezone';
 import type {
   ExecutivePromptMessage,
   ExecutiveTurnFeatures,
@@ -366,6 +369,18 @@ export function parseDateOnly(value: string): Date | null {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
+function parseTimedEventInstant(value: { dateTime: string; timeZone?: string | null }): Date | null {
+  try {
+    return normalizeIsoDateInputToUtc(
+      value.dateTime,
+      value.timeZone?.trim() || 'UTC',
+      'start',
+    );
+  } catch {
+    return null;
+  }
+}
+
 export function validateEventDraftTimes(
   draft: CalendarEventDraftDTO,
   action: 'create' | 'update',
@@ -389,8 +404,8 @@ export function validateEventDraftTimes(
 
     if (isDateTimeTime(timeValue)) {
       if (!timeValue.timeZone) return { ok: false, message: 'Timed events require a timezone.' };
-      const dt = new Date(timeValue.dateTime);
-      if (Number.isNaN(dt.getTime())) return { ok: false, message: 'Invalid dateTime format.' };
+      const dt = parseTimedEventInstant(timeValue);
+      if (!dt || Number.isNaN(dt.getTime())) return { ok: false, message: 'Invalid dateTime format.' };
       return { ok: true };
     }
 
@@ -416,9 +431,9 @@ export function validateEventDraftTimes(
       return { ok: false, message: 'Timed events require a timezone.' };
     }
 
-    const startDt = new Date(start.dateTime);
-    const endDt = new Date(end.dateTime);
-    if (Number.isNaN(startDt.getTime()) || Number.isNaN(endDt.getTime())) {
+    const startDt = parseTimedEventInstant(start);
+    const endDt = parseTimedEventInstant(end);
+    if (!startDt || !endDt || Number.isNaN(startDt.getTime()) || Number.isNaN(endDt.getTime())) {
       return { ok: false, message: 'Invalid dateTime format.' };
     }
 
@@ -462,9 +477,16 @@ export function addDaysDateOnly(value: string, days: number): string {
   return date.toISOString().slice(0, 10);
 }
 
-export function resolveGoogleEventTime(value: GoogleEventTime | null | undefined): { dateTime: string } | { date: string } | null {
+export function resolveGoogleEventTime(
+  value: GoogleEventTime | null | undefined,
+): { dateTime: string; timeZone?: string | null } | { date: string } | null {
   if (!value) return null;
-  if (typeof value.dateTime === 'string' && value.dateTime.trim()) return { dateTime: value.dateTime };
+  if (typeof value.dateTime === 'string' && value.dateTime.trim()) {
+    return {
+      dateTime: value.dateTime,
+      timeZone: value.timeZone,
+    };
+  }
   if (typeof value.date === 'string' && value.date.trim()) return { date: value.date };
   return null;
 }
@@ -500,9 +522,11 @@ export function normalizeUpdateDraftTimesForPatch({
           message: 'Cannot update a timed end time on an all-day event without specifying both start and end.',
         };
       }
-      const startMs = Date.parse(currentStart.dateTime);
-      const endMs = Date.parse(end.dateTime);
-      if (Number.isNaN(startMs) || Number.isNaN(endMs)) return { ok: false, message: 'Invalid dateTime format.' };
+      const startDt = parseTimedEventInstant(currentStart);
+      const endDt = parseTimedEventInstant(end);
+      if (!startDt || !endDt) return { ok: false, message: 'Invalid dateTime format.' };
+      const startMs = startDt.getTime();
+      const endMs = endDt.getTime();
       if (endMs <= startMs) return { ok: false, message: 'End time must be after the start time.' };
       return { ok: true, patch: draft };
     }
@@ -536,17 +560,20 @@ export function normalizeUpdateDraftTimesForPatch({
         };
       }
 
-      const currentStartMs = Date.parse(currentStart.dateTime);
-      const currentEndMs = Date.parse(currentEnd.dateTime);
-      if (Number.isNaN(currentStartMs) || Number.isNaN(currentEndMs)) {
+      const currentStartDt = parseTimedEventInstant(currentStart);
+      const currentEndDt = parseTimedEventInstant(currentEnd);
+      if (!currentStartDt || !currentEndDt) {
         return { ok: false, message: 'Current event has invalid dateTime values.' };
       }
+      const currentStartMs = currentStartDt.getTime();
+      const currentEndMs = currentEndDt.getTime();
 
       const durationMs = currentEndMs - currentStartMs;
       if (durationMs <= 0) return { ok: false, message: 'Current event duration is invalid.' };
 
-      const newStartMs = Date.parse(start.dateTime);
-      if (Number.isNaN(newStartMs)) return { ok: false, message: 'Invalid dateTime format.' };
+      const newStartDt = parseTimedEventInstant(start);
+      if (!newStartDt) return { ok: false, message: 'Invalid dateTime format.' };
+      const newStartMs = newStartDt.getTime();
 
       const newEndDateTime = new Date(newStartMs + durationMs).toISOString();
 
