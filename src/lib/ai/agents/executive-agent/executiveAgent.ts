@@ -22,6 +22,7 @@ import { prisma } from '@/lib/prisma';
 import {
   parsePendingCalendarChangeRecord,
 } from '@/lib/ai/agents/executiveCalendarMutationHelpers';
+import { formatDateTimeInTimeZone } from '@/lib/utils/timezone';
 import {
   MESSAGING_DEADLINE_MS,
   MESSAGING_MAX_STEPS,
@@ -161,8 +162,9 @@ export class ExecutiveAgent {
       const pendingPayload = pendingRecord
         ? parsePendingCalendarChangeRecord(pendingRecord as PendingCalendarChangeRecord)
         : null;
+      const pendingTimezone = pendingRecord?.userTimezone || userTimezone;
       const pendingCalendarInstruction = pendingRecord && pendingPayload
-        ? `Active pending calendar change exists (pendingId=${pendingRecord.id}, action=${pendingPayload.plan.action}, expiresAt=${pendingRecord.expiresAt.toISOString()}).`
+        ? `Active pending calendar change exists (pendingId=${pendingRecord.id}, action=${pendingPayload.plan.action}, expiresAt=${formatDateTimeInTimeZone(pendingRecord.expiresAt, pendingTimezone)}).`
         : pendingRecord
           ? `Active pending calendar change exists (pendingId=${pendingRecord.id}), but its details need to be re-planned before execution.`
           : 'No active pending calendar change exists.';

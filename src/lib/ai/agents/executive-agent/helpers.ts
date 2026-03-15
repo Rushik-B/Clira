@@ -10,6 +10,7 @@ import {
   CALENDAR_REMINDER_MAX_OVERRIDES,
   type CalendarEventDraftDTO,
 } from '@/lib/ai/schemas/calendarCreatorSchemas';
+import { formatDateTimeInTimeZone } from '@/lib/utils/timezone';
 import type {
   ExecutivePromptMessage,
   ExecutiveTurnFeatures,
@@ -297,7 +298,7 @@ export function buildTerminalFallbackResponse(
   return 'I did not finish that cleanly. Ask again and I\'ll retry it.';
 }
 
-const TIMESTAMP_METADATA_LINE_PATTERN = /^\[Timestamp\]\s+\d{4}-\d{2}-\d{2}T/i;
+const TIMESTAMP_METADATA_LINE_PATTERN = /^\[Timestamp\]\s+/i;
 const TOOL_HISTORY_METADATA_LINE_PATTERN = /^\[Tool history\]\s+/i;
 
 function normalizeAssistantResponseWhitespace(value: string): string {
@@ -652,8 +653,12 @@ export function isCalendarScopeError(error: unknown): boolean {
   );
 }
 
-function formatHistoryTimestamp(createdAt: Date): string {
-  return createdAt.toISOString();
+function formatHistoryTimestamp(createdAt: Date, userTimezone?: string): string {
+  if (!userTimezone) {
+    return createdAt.toISOString();
+  }
+
+  return formatDateTimeInTimeZone(createdAt, userTimezone);
 }
 
 /**
@@ -662,6 +667,7 @@ function formatHistoryTimestamp(createdAt: Date): string {
  */
 export function formatConversationHistoryAsMessages(
   history: ConversationMessageDTO[],
+  options?: { userTimezone?: string },
 ): ExecutivePromptMessage[] {
   if (!history || history.length === 0) {
     return [];
@@ -673,7 +679,7 @@ export function formatConversationHistoryAsMessages(
       const normalizedRole = msg.role === 'USER'
         ? 'user'
         : 'assistant';
-      const timestamp = formatHistoryTimestamp(new Date(msg.createdAt));
+      const timestamp = formatHistoryTimestamp(new Date(msg.createdAt), options?.userTimezone);
       const contentLines = [
         `[Timestamp] ${timestamp}`,
         truncate(msg.content, 500),

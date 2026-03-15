@@ -27,7 +27,6 @@ export const EXECUTIVE_AGENT_PROMPT_VERSION = 'ea-prompt-v4';
 function buildCurrentTurnMessage(params: {
   input: ExecutiveAgentInput;
   channel: ProgressUpdateChannel;
-  currentTimeUtc: string;
   currentTimeUserTz: string;
   dayOfWeek: string;
   currentDateUserTzDateOnly: string;
@@ -45,7 +44,6 @@ function buildCurrentTurnMessage(params: {
     '## Current Turn Context',
     `Current time (right now): ${params.currentTimeUserTz} (${params.dayOfWeek})`,
     `User-local date (YYYY-MM-DD): ${params.currentDateUserTzDateOnly}`,
-    `UTC: ${params.currentTimeUtc}`,
     `Timezone: ${params.userTimezone}`,
     `Messaging channel: ${params.channel}`,
     `User: ${params.input.userEmail}`,
@@ -115,9 +113,9 @@ export async function buildExecutiveAgentPrompt(
   }
   const now = new Date();
   const currentTimeUtc = now.toISOString();
-  let currentDateUserTzDateOnly = currentTimeUtc.split('T')[0]!;
+  let currentDateUserTzDateOnly = now.toISOString().split('T')[0]!;
 
-  let currentTimeUserTz = currentTimeUtc;
+  let currentTimeUserTz = now.toISOString();
   let dayOfWeek = '';
 
   try {
@@ -198,13 +196,14 @@ export async function buildExecutiveAgentPrompt(
   return {
     systemPrompt,
     messages: [
-      ...formatConversationHistoryAsMessages(input.conversationHistory),
+      ...formatConversationHistoryAsMessages(input.conversationHistory, {
+        userTimezone,
+      }),
       {
         role: 'user',
         content: buildCurrentTurnMessage({
           input,
           channel,
-          currentTimeUtc,
           currentTimeUserTz,
           dayOfWeek,
           currentDateUserTzDateOnly,

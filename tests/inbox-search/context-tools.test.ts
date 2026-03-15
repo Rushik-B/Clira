@@ -416,6 +416,7 @@ describe('buildContextTools search_inbox_context', () => {
     expect(helperMocks.runWithSubagentBudget).toHaveBeenCalledTimes(1);
     expect(nextSubagentCallIndex).toHaveBeenCalledTimes(1);
     expect((first as any).metadata).toBeUndefined();
+    expect((first as any).matches?.[0]?.date).toBe('Mar 1, 2026, 02:00 AM PST');
     expect((second as any).metadata?.cached).toBe(true);
     expect(EmailEvidencePackSchema.parse(second)).toBeTruthy();
   });
@@ -609,6 +610,7 @@ describe('buildContextTools search_inbox_context', () => {
     expect(helperMocks.runWithSubagentBudget).toHaveBeenCalledTimes(0);
     expect(nextSubagentCallIndex).toHaveBeenCalledTimes(0);
     expect((first as any).metadata).toBeUndefined();
+    expect((first as any).items?.[0]?.sentAt).toBe('Mar 1, 2026, 02:00 AM PST');
     expect((second as any).metadata?.cached).toBe(true);
   });
 
@@ -688,6 +690,7 @@ describe('buildContextTools search_inbox_context', () => {
     expect(helperMocks.runWithSubagentBudget).toHaveBeenCalledTimes(1);
     expect(nextSubagentCallIndex).toHaveBeenCalledTimes(1);
     expect((first as any).extractedText).toContain('Invoice attached.\nTotal due: $400');
+    expect((first as any).message?.sentAt).toBe('Mar 1, 2026, 02:00 AM PST');
     expect((second as any).metadata?.cached).toBe(true);
   });
 

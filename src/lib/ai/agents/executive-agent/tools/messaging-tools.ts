@@ -334,7 +334,7 @@ export function buildMessagingTools({
             alerts: alerts.map((alert) => ({
               id: alert.id,
               description: alert.description,
-              createdAt: alert.createdAt.toISOString(),
+              createdAt: formatDateTimeInTimeZone(alert.createdAt, userTimezone),
             })),
           };
         },

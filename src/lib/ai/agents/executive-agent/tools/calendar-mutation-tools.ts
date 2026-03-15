@@ -14,6 +14,7 @@ import {
   buildCalendarCompletionMessage,
   describeGoogleCalendarEvent,
 } from '@/lib/ai/calendar-user-facing';
+import { formatDateTimeInTimeZone } from '@/lib/utils/timezone';
 import {
   type CalendarMutationTarget,
   buildMutationCandidates,
@@ -162,8 +163,8 @@ export function buildCalendarMutationTools({
                 message: 'A calendar change is currently being processed. Please wait a moment.',
                 pendingChange: {
                   pendingId: existingPending.id,
-                  createdAt: existingPending.createdAt.toISOString(),
-                  expiresAt: existingPending.expiresAt.toISOString(),
+                  createdAt: formatDateTimeInTimeZone(existingPending.createdAt, userTimezone),
+                  expiresAt: formatDateTimeInTimeZone(existingPending.expiresAt, userTimezone),
                   status: existingPending.status,
                   action: pendingPayload?.plan.action,
                 },
@@ -191,8 +192,8 @@ export function buildCalendarMutationTools({
               previewText,
               pendingChange: {
                 pendingId: existingPending.id,
-                createdAt: existingPending.createdAt.toISOString(),
-                expiresAt: existingPending.expiresAt.toISOString(),
+                createdAt: formatDateTimeInTimeZone(existingPending.createdAt, userTimezone),
+                expiresAt: formatDateTimeInTimeZone(existingPending.expiresAt, userTimezone),
                 action: existingPlan?.action,
               },
               note:
@@ -776,7 +777,7 @@ export function buildCalendarMutationTools({
                   summary: resolvedPlan.eventDraft?.summary ?? null,
                   eventCount,
                   targetCount: resolvedTargets?.length ?? (resolvedTarget ? 1 : 0),
-                  expiresAt: expiresAt.toISOString(),
+                  expiresAt: formatDateTimeInTimeZone(expiresAt, userTimezone),
                 },
                 undoable: false,
                 metadata: {
@@ -795,8 +796,8 @@ export function buildCalendarMutationTools({
             previewText: resolvedPlan.userPreviewText,
             pendingChange: {
               pendingId: pendingRecord.id,
-              createdAt: pendingRecord.createdAt.toISOString(),
-              expiresAt: pendingRecord.expiresAt.toISOString(),
+              createdAt: formatDateTimeInTimeZone(pendingRecord.createdAt, userTimezone),
+              expiresAt: formatDateTimeInTimeZone(pendingRecord.expiresAt, userTimezone),
               action: resolvedPlan.action,
             },
           };

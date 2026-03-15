@@ -15,6 +15,7 @@ import {
   addDaysToDateOnly,
   endOfDayInTimezone,
   endOfTodayInTimezone,
+  formatDateTimeInTimeZone,
   getDateOnlyInTimezone,
   normalizeIsoDateInputToUtc,
   startOfDayInTimezone,
@@ -145,6 +146,109 @@ function buildInvalidReadEmailPdfAttachmentResult(messageId: string, message: st
       validationError: true,
     },
   };
+}
+
+function formatUserVisibleTimestamp(value: string | null | undefined, userTimezone: string): string | null {
+  if (!value) return value ?? null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+  return formatDateTimeInTimeZone(parsed, userTimezone);
+}
+
+function localizeEmailEvidencePackDates<T extends Record<string, unknown>>(result: T, userTimezone: string): T {
+  const nextResult: Record<string, unknown> = { ...result };
+
+  if (Array.isArray(result.matches)) {
+    nextResult.matches = result.matches.map((match) => {
+      if (!match || typeof match !== 'object') return match;
+      const typedMatch = match as Record<string, unknown>;
+      return {
+        ...typedMatch,
+        date:
+          typeof typedMatch.date === 'string'
+            ? formatUserVisibleTimestamp(typedMatch.date, userTimezone)
+            : typedMatch.date,
+      };
+    });
+  }
+
+  if (Array.isArray(result.expandedThreads)) {
+    nextResult.expandedThreads = result.expandedThreads.map((thread) => {
+      if (!thread || typeof thread !== 'object') return thread;
+      const typedThread = thread as Record<string, unknown>;
+      const messages = Array.isArray(typedThread.messages) ? typedThread.messages : [];
+      return {
+        ...typedThread,
+        messages: messages.map((message) => {
+          if (!message || typeof message !== 'object') return message;
+          const typedMessage = message as Record<string, unknown>;
+          return {
+            ...typedMessage,
+            date:
+              typeof typedMessage.date === 'string'
+                ? formatUserVisibleTimestamp(typedMessage.date, userTimezone)
+                : typedMessage.date,
+          };
+        }),
+      };
+    });
+  }
+
+  return nextResult as T;
+}
+
+function localizeListInboxEmailsDates<T extends { items?: Array<Record<string, unknown>> }>(
+  result: T,
+  userTimezone: string,
+): T {
+  if (!Array.isArray(result.items)) {
+    return result;
+  }
+
+  return {
+    ...result,
+    items: result.items.map((item) => ({
+      ...item,
+      sentAt:
+        typeof item.sentAt === 'string'
+          ? formatUserVisibleTimestamp(item.sentAt, userTimezone)
+          : item.sentAt,
+    })),
+  };
+}
+
+function localizePdfAttachmentDates<T extends Record<string, unknown>>(result: T, userTimezone: string): T {
+  const nextResult: Record<string, unknown> = { ...result };
+
+  if (result.message && typeof result.message === 'object' && !Array.isArray(result.message)) {
+    const message = result.message as Record<string, unknown>;
+    nextResult.message = {
+      ...message,
+      sentAt:
+        typeof message.sentAt === 'string'
+          ? formatUserVisibleTimestamp(message.sentAt, userTimezone)
+          : message.sentAt,
+    };
+  }
+
+  if (
+    result.messageContext &&
+    typeof result.messageContext === 'object' &&
+    !Array.isArray(result.messageContext)
+  ) {
+    const messageContext = result.messageContext as Record<string, unknown>;
+    nextResult.messageContext = {
+      ...messageContext,
+      sentAt:
+        typeof messageContext.sentAt === 'string'
+          ? formatUserVisibleTimestamp(messageContext.sentAt, userTimezone)
+          : messageContext.sentAt,
+    };
+  }
+
+  return nextResult as T;
 }
 
 export function buildContextTools({
@@ -305,8 +409,9 @@ export function buildContextTools({
                 },
               ),
           });
-          toolResultCache.set('search_inbox_context', cacheArgs, result);
-          return result;
+          const localizedResult = localizeEmailEvidencePackDates(result, userTimezone);
+          toolResultCache.set('search_inbox_context', cacheArgs, localizedResult);
+          return localizedResult;
         },
       },
 
@@ -349,8 +454,9 @@ export function buildContextTools({
           const result = await listInboxEmails(normalizedArgs, {
             userId: input.userId,
           });
-          toolResultCache.set('list_inbox_emails', normalizedArgs, result);
-          return result;
+          const localizedResult = localizeListInboxEmailsDates(result, userTimezone);
+          toolResultCache.set('list_inbox_emails', normalizedArgs, localizedResult);
+          return localizedResult;
         },
       },
 
@@ -413,8 +519,9 @@ export function buildContextTools({
               }),
           });
 
-          toolResultCache.set('read_email_pdf_attachment', normalizedArgs, result);
-          return result;
+          const localizedResult = localizePdfAttachmentDates(result, userTimezone);
+          toolResultCache.set('read_email_pdf_attachment', normalizedArgs, localizedResult);
+          return localizedResult;
         },
       },
 
