@@ -22,7 +22,7 @@ import {
   formatReplyPipelineInstruction,
 } from './replyPipelineContext';
 
-export const EXECUTIVE_AGENT_PROMPT_VERSION = 'ea-prompt-v6';
+export const EXECUTIVE_AGENT_PROMPT_VERSION = 'ea-prompt-v8';
 
 export async function resolveUserCalendarTimezone(userId: string): Promise<string> {
   let userTimezone = DEFAULT_CALENDAR_TIMEZONE;
