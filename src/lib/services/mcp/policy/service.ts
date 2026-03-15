@@ -3,21 +3,19 @@ import { isMcpChannelEnabled, isMcpEnabled } from '@/lib/services/mcp/config/fea
 import { loadMcpRegistrySnapshot } from '@/lib/services/mcp/registry/service';
 import { getLatestPendingMcpAction } from '@/lib/services/mcp/runtime/mutationFlow';
 import type {
-  McpCapabilityIntent,
   McpPolicyCandidate,
   McpPolicyDecision,
   McpRegistryConnection,
   McpToolExposure,
 } from '@/lib/services/mcp/types';
 
-const MAX_APPROVED_TOOLS = 6;
+const MAX_APPROVED_TOOLS = 20;
 
 function buildDecision(params: {
   channel: ProgressUpdateChannel;
   connection: McpRegistryConnection['connection'];
-  capabilityId: string;
   actionClass: string;
-  matchedIntent: boolean;
+  selected: boolean;
   safeForAutoUse: boolean;
 }): McpPolicyDecision {
   if (!isMcpEnabled()) {
@@ -38,12 +36,12 @@ function buildDecision(params: {
     };
   }
 
-  if (!params.matchedIntent) {
+  if (!params.selected) {
     return {
       visible: false,
       callable: false,
       requiresConfirmation: false,
-      reason: 'intent_mismatch',
+      reason: 'connection_not_selected',
     };
   }
 
@@ -93,15 +91,6 @@ function buildDecision(params: {
       };
     }
 
-    if (params.capabilityId !== 'calendar_external_mutation') {
-      return {
-        visible: true,
-        callable: false,
-        requiresConfirmation: false,
-        reason: 'mutation_capability_not_enabled',
-      };
-    }
-
     return {
       visible: true,
       callable: false,
@@ -126,8 +115,7 @@ function candidateRank(candidate: McpPolicyCandidate): number {
         ? 1
         : 2;
 
-  const capabilityWeight = candidate.tool.capabilityId === 'generic_read' ? 2 : 0;
-  return latencyWeight + capabilityWeight;
+  return latencyWeight;
 }
 
 function buildPromptSummary(params: {
@@ -135,22 +123,22 @@ function buildPromptSummary(params: {
   mutationTools: McpPolicyCandidate[];
   degradedTools: McpPolicyCandidate[];
 }): McpToolExposure['promptSummary'] {
-  const capabilityLines = [
+  const toolSummaryLines = [
     ...params.approvedTools.map((candidate) => {
-      return `${candidate.connection.displayName}: ${candidate.tool.capabilityId} via ${candidate.tool.displayTitle}`;
+      return `${candidate.connection.displayName}: ${candidate.tool.displayTitle} (${candidate.tool.actionClass})`;
     }),
     ...params.mutationTools.map((candidate) => {
-      return `${candidate.connection.displayName}: ${candidate.tool.capabilityId} via ${candidate.tool.displayTitle} (preview required)`;
+      return `${candidate.connection.displayName}: ${candidate.tool.displayTitle} (${candidate.tool.actionClass}, preview required)`;
     }),
   ];
 
   const degradedLines = params.degradedTools.map((candidate) => {
     const reason = candidate.connection.degradedReason ?? candidate.decision.reason;
-    return `${candidate.connection.displayName}: ${candidate.tool.capabilityId} unavailable (${reason})`;
+    return `${candidate.connection.displayName}: ${candidate.tool.displayTitle} unavailable (${reason})`;
   });
 
   return {
-    capabilityLines: Array.from(new Set(capabilityLines)).slice(0, MAX_APPROVED_TOOLS),
+    toolSummaryLines: Array.from(new Set(toolSummaryLines)).slice(0, MAX_APPROVED_TOOLS),
     degradedLines: Array.from(new Set(degradedLines)).slice(0, MAX_APPROVED_TOOLS),
   };
 }
@@ -159,17 +147,17 @@ export async function resolveMcpToolExposure(params: {
   userId: string;
   conversationId?: string;
   channel: ProgressUpdateChannel;
-  capabilityIntents: readonly McpCapabilityIntent[];
+  selectedConnectionIds: readonly string[];
 }): Promise<McpToolExposure> {
   if (!isMcpEnabled()) {
     return {
-      capabilityIntents: [...params.capabilityIntents],
+      selectedConnectionIds: [...params.selectedConnectionIds],
       approvedTools: [],
       mutationTools: [],
       degradedTools: [],
       pendingAction: null,
       promptSummary: {
-        capabilityLines: [],
+        toolSummaryLines: [],
         degradedLines: [],
       },
     };
@@ -182,33 +170,32 @@ export async function resolveMcpToolExposure(params: {
       })
     : null;
 
-  if (params.capabilityIntents.length === 0) {
+  if (params.selectedConnectionIds.length === 0) {
     return {
-      capabilityIntents: [...params.capabilityIntents],
+      selectedConnectionIds: [...params.selectedConnectionIds],
       approvedTools: [],
       mutationTools: [],
       degradedTools: [],
       pendingAction,
       promptSummary: {
-        capabilityLines: [],
+        toolSummaryLines: [],
         degradedLines: [],
       },
     };
   }
 
   const snapshot = await loadMcpRegistrySnapshot(params.userId);
-  const intentSet = new Set(params.capabilityIntents);
+  const connectionSet = new Set(params.selectedConnectionIds);
   const candidates: McpPolicyCandidate[] = [];
 
   for (const entry of snapshot.connections) {
     for (const tool of entry.tools) {
-      const matchedIntent = intentSet.has(tool.capabilityId);
+      const selected = connectionSet.has(entry.connection.id);
       const decision = buildDecision({
         channel: params.channel,
         connection: entry.connection,
-        capabilityId: tool.capabilityId,
         actionClass: tool.actionClass,
-        matchedIntent,
+        selected,
         safeForAutoUse: tool.safeForAutoUse,
       });
 
@@ -229,13 +216,19 @@ export async function resolveMcpToolExposure(params: {
     .sort((left, right) => {
       const rankDelta = candidateRank(left) - candidateRank(right);
       if (rankDelta !== 0) return rankDelta;
+      const titleDelta = left.tool.displayTitle.localeCompare(right.tool.displayTitle);
+      if (titleDelta !== 0) return titleDelta;
       return left.tool.modelToolName.localeCompare(right.tool.modelToolName);
     })
     .slice(0, MAX_APPROVED_TOOLS);
 
   const mutationTools = candidates
     .filter((candidate) => candidate.decision.requiresConfirmation)
-    .sort((left, right) => left.tool.modelToolName.localeCompare(right.tool.modelToolName))
+    .sort((left, right) => {
+      const titleDelta = left.tool.displayTitle.localeCompare(right.tool.displayTitle);
+      if (titleDelta !== 0) return titleDelta;
+      return left.tool.modelToolName.localeCompare(right.tool.modelToolName);
+    })
     .slice(0, MAX_APPROVED_TOOLS);
 
   const approvedNames = new Set([
@@ -247,7 +240,7 @@ export async function resolveMcpToolExposure(params: {
     .slice(0, MAX_APPROVED_TOOLS);
 
   return {
-    capabilityIntents: [...params.capabilityIntents],
+    selectedConnectionIds: [...params.selectedConnectionIds],
     approvedTools,
     mutationTools,
     degradedTools,

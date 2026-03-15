@@ -3,6 +3,7 @@ import { withConcurrency } from '@/lib/ai/concurrency';
 import { LlmError } from '@/lib/ai/errors';
 import { withRetry } from '@/lib/ai/retry';
 import { logger } from '@/lib/logger';
+import { listMcpConnectionsForUser } from '@/lib/services/mcp/connections/service';
 import type {
   ConversationMessageDTO,
 } from '@/lib/ai/schemas/executiveAgentSchemas';
@@ -12,7 +13,6 @@ import type {
   PackSelection,
   ToolPackId,
 } from './types';
-import { resolveExecutiveMcpCapabilityIntents } from './mcp/capabilityResolver';
 
 const TOOL_PACK_IDS = [
   'core_recall_pack',
@@ -24,18 +24,22 @@ const TOOL_PACK_IDS = [
   'email_send_pack',
 ] as const satisfies readonly ToolPackId[];
 
+type McpPackDescription = {
+  connectionId: string;
+  serverKey: string;
+  packDescription: string;
+};
+
 function buildAllPackSelection(params: {
   reasons: string[];
   reminders?: string[];
-  userRequest: string;
-  features: ExecutiveTurnFeatures;
+  mcpConnectionIds?: readonly string[];
 }): PackSelection {
   return buildSelection({
     packIdOrPackIds: [...TOOL_PACK_IDS],
     reasons: params.reasons,
     reminders: params.reminders,
-    userRequest: params.userRequest,
-    features: params.features,
+    mcpConnectionIds: params.mcpConnectionIds,
   });
 }
 
@@ -409,13 +413,40 @@ function uniquePackIds(packIds: readonly ToolPackId[]): ToolPackId[] {
   return ordered;
 }
 
+function uniqueConnectionIds(connectionIds: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const ordered: string[] = [];
+
+  for (const connectionId of connectionIds) {
+    if (!connectionId || seen.has(connectionId)) continue;
+    seen.add(connectionId);
+    ordered.push(connectionId);
+  }
+
+  return ordered;
+}
+
+async function loadMcpPackDescriptions(userId: string): Promise<McpPackDescription[]> {
+  const connections = await listMcpConnectionsForUser(userId);
+
+  return connections
+    .filter((connection) => connection.status === 'synced')
+    .map((connection) => ({
+      connectionId: connection.id,
+      serverKey: connection.serverKey,
+      packDescription:
+        connection.packDescription?.trim() ||
+        `${connection.displayName}: synced MCP server pack`,
+    }))
+    .sort((left, right) => left.serverKey.localeCompare(right.serverKey));
+}
+
 function buildSelection(
   params: {
     packIdOrPackIds: ToolPackId | readonly ToolPackId[];
     reasons: string[];
     reminders?: string[];
-    userRequest: string;
-    features: ExecutiveTurnFeatures;
+    mcpConnectionIds?: readonly string[];
   },
 ): PackSelection {
   const packIds = uniquePackIds(
@@ -429,11 +460,7 @@ function buildSelection(
   return {
     packId: normalizedPackIds[0],
     packIds: normalizedPackIds,
-    capabilityIntents: resolveExecutiveMcpCapabilityIntents({
-      packIds: normalizedPackIds,
-      userRequest: params.userRequest,
-      turnFeatures: params.features,
-    }),
+    mcpConnectionIds: uniqueConnectionIds(params.mcpConnectionIds ?? []),
     reasons: params.reasons,
     reminders: params.reminders ?? [],
   };
@@ -490,6 +517,7 @@ const selectorOutputSchema = z
   .object({
     packId: toolPackIdSchema.optional(),
     packIds: z.array(toolPackIdSchema).min(1).max(TOOL_PACK_IDS.length).optional(),
+    mcpServerKeys: z.array(z.string()).optional(),
   })
   .superRefine((value, ctx) => {
     const packCount =
@@ -522,6 +550,12 @@ const CEREBRAS_SELECTOR_RESPONSE_FORMAT = {
           items: {
             type: 'string',
             enum: [...TOOL_PACK_IDS],
+          },
+        },
+        mcpServerKeys: {
+          type: 'array',
+          items: {
+            type: 'string',
           },
         },
       },
@@ -622,8 +656,9 @@ function buildSelectorPrompt(params: {
   userRequest: string;
   features: ExecutiveTurnFeatures;
   conversationHistory: ConversationMessageDTO[];
+  mcpServerPacks: readonly McpPackDescription[];
 }): string {
-  const { userRequest, features, conversationHistory } = params;
+  const { userRequest, features, conversationHistory, mcpServerPacks } = params;
 
   return [
     'Pick one or more packIds for the user message.',
@@ -662,6 +697,19 @@ function buildSelectorPrompt(params: {
     'reminder_alert_pack — set/snooze/dismiss reminders or email alerts',
     'settings_mutation_pack — read or write standing reply preferences for planner/style behavior',
     'email_send_pack — send approved draft (only when draftCandidatePresent=true AND explicitSendApproval=true)',
+    ...(mcpServerPacks.length > 0
+      ? [
+          '',
+          'Dynamic MCP server packs:',
+          ...mcpServerPacks.map(
+            (pack) => `mcp_server:${pack.serverKey} — ${pack.packDescription}`,
+          ),
+          '',
+          'MCP routing principles:',
+          '- Use mcp_server:<serverKey> when the user request involves capabilities provided by that external server.',
+          '- You may select both a native pack and one or more MCP server packs in the same turn.',
+        ]
+      : []),
     '',
     'Intent examples:',
     '"when is my next meeting?" → calendar_query_pack',
@@ -690,7 +738,7 @@ function buildSelectorPrompt(params: {
     '',
     `User: ${userRequest}`,
     '',
-    'Return JSON: { "packIds": ["...", "..."] }',
+    'Return JSON: { "packIds": ["...", "..."], "mcpServerKeys": ["..."] }',
   ].join('\n');
 }
 
@@ -698,6 +746,7 @@ async function callCerebrasSelector(params: {
   userRequest: string;
   features: ExecutiveTurnFeatures;
   conversationHistory: ConversationMessageDTO[];
+  mcpServerPacks: readonly McpPackDescription[];
   abortSignal?: AbortSignal;
 }): Promise<z.infer<typeof selectorOutputSchema>> {
   const apiKey = process.env.CEREBRAS_API_KEY?.trim();
@@ -728,6 +777,7 @@ async function callCerebrasSelector(params: {
           userRequest: params.userRequest,
           features: params.features,
           conversationHistory: params.conversationHistory,
+          mcpServerPacks: params.mcpServerPacks,
         }),
       },
     ],
@@ -810,10 +860,9 @@ async function callCerebrasSelector(params: {
 function selectDeterministicBypassSelection(
   params: {
     features: ExecutiveTurnFeatures;
-    userRequest: string;
   },
 ): PackSelection | null {
-  const { features, userRequest } = params;
+  const { features } = params;
 
   if (features.explicitSendApproval && features.draftCandidatePresent) {
     const packIds: ToolPackId[] = ['email_send_pack'];
@@ -830,8 +879,6 @@ function selectDeterministicBypassSelection(
       packIdOrPackIds: packIds,
       reasons: ['explicit send approval with recent unsent draft candidate'],
       reminders: ['User approval is present; only send the already-shown draft.'],
-      userRequest,
-      features,
     });
   }
 
@@ -851,8 +898,6 @@ function selectDeterministicBypassSelection(
         'pending calendar change exists and latest turn resolves it',
       ],
       reminders: ['A pending calendar change exists; confirm, cancel, or explicitly modify it.'],
-      userRequest,
-      features,
     });
   }
 
@@ -863,17 +908,17 @@ export async function selectExecutiveToolPackForTurn(params: {
   input: ExecutiveAgentInput;
   features: ExecutiveTurnFeatures;
 }): Promise<PackSelection> {
+  const mcpServerPacks = await loadMcpPackDescriptions(params.input.userId);
+
   if (!isSelectorLlmEnabled(params.features.channel)) {
     return buildAllPackSelection({
       reasons: ['selector unavailable; exposed all packs'],
-      userRequest: params.input.userRequest,
-      features: params.features,
+      mcpConnectionIds: mcpServerPacks.map((pack) => pack.connectionId),
     });
   }
 
   const bypassSelection = selectDeterministicBypassSelection({
     features: params.features,
-    userRequest: params.input.userRequest,
   });
   if (bypassSelection) {
     return bypassSelection;
@@ -884,6 +929,7 @@ export async function selectExecutiveToolPackForTurn(params: {
       userRequest: params.input.userRequest,
       features: params.features,
       conversationHistory: params.input.conversationHistory,
+      mcpServerPacks,
       abortSignal: params.input.abortSignal,
     });
 
@@ -904,8 +950,11 @@ export async function selectExecutiveToolPackForTurn(params: {
       packIdOrPackIds: safePackIds,
       reasons: ['llm selector'],
       reminders: getDefaultPackRemindersForSelection(safePackIds),
-      userRequest: params.input.userRequest,
-      features: params.features,
+      mcpConnectionIds: (object.mcpServerKeys ?? [])
+        .map((serverKey) => {
+          return mcpServerPacks.find((pack) => pack.serverKey === serverKey)?.connectionId ?? null;
+        })
+        .filter((connectionId): connectionId is string => Boolean(connectionId)),
     });
 
     if (
@@ -932,8 +981,7 @@ export async function selectExecutiveToolPackForTurn(params: {
     });
     return buildAllPackSelection({
       reasons: ['selector failed; exposed all packs'],
-      userRequest: params.input.userRequest,
-      features: params.features,
+      mcpConnectionIds: mcpServerPacks.map((pack) => pack.connectionId),
     });
   }
 }

@@ -1,7 +1,6 @@
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type {
   McpActionClass,
-  McpCapabilityId,
   McpLatencyClass,
 } from '@/lib/services/mcp/types';
 
@@ -48,38 +47,6 @@ export function classifyMcpActionClass(tool: Tool): McpActionClass {
   }
 
   return 'side_effectful';
-}
-
-export function classifyMcpCapabilityId(tool: Tool, actionClass: McpActionClass): McpCapabilityId {
-  const text = combinedText(tool);
-
-  if (hasAny(text, ['calendar', 'event', 'availability', 'freebusy', 'schedule'])) {
-    return actionClass === 'read'
-      ? 'calendar_external_read'
-      : 'calendar_external_mutation';
-  }
-
-  if (actionClass !== 'read') {
-    return 'generic_mutation';
-  }
-
-  if (hasAny(text, ['crm', 'customer', 'contact', 'lead', 'account', 'opportunity', 'salesforce', 'hubspot', 'company'])) {
-    return 'crm_lookup';
-  }
-
-  if (hasAny(text, ['task', 'project', 'issue', 'ticket', 'linear', 'jira', 'todo'])) {
-    return 'project_tasks_read';
-  }
-
-  if (hasAny(text, ['file', 'folder', 'drive', 'storage', 'attachment', 'pdf', 'sheet', 'slide'])) {
-    return 'storage_read';
-  }
-
-  if (hasAny(text, ['doc', 'docs', 'notion', 'confluence', 'wiki', 'knowledge', 'page', 'manual', 'readme'])) {
-    return 'docs_read';
-  }
-
-  return 'generic_read';
 }
 
 export function classifyMcpLatencyClass(tool: Tool): McpLatencyClass {

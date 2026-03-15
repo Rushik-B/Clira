@@ -113,7 +113,7 @@ export class ExecutiveAgent {
       return stripUndefined({
           selectedPack,
           selectedPacks,
-          capabilityIntents: mcpToolExposure?.capabilityIntents ?? [],
+          mcpConnectionIds: mcpToolExposure?.selectedConnectionIds ?? [],
           selectorReasons,
           workingState: workingStateController.getState(),
           promptVersion: EXECUTIVE_AGENT_PROMPT_VERSION,
@@ -198,14 +198,14 @@ export class ExecutiveAgent {
         userId: input.userId,
         conversationId: input.conversationId,
         channel: resolvedChannel,
-        capabilityIntents: selection.capabilityIntents,
+        selectedConnectionIds: selection.mcpConnectionIds,
       });
       const mcpPromptFragments = buildExecutiveMcpPromptFragments(mcpToolExposure);
 
       logger.info('[executiveAgent] harness.selection', {
         selectedPack,
         selectedPacks,
-        capabilityIntents: selection.capabilityIntents,
+        mcpConnectionIds: selection.mcpConnectionIds,
         selectorReasons,
         draftCandidatePresent: resolvedTurnFeatures.draftCandidatePresent,
         draftCandidateReason: resolvedTurnFeatures.draftCandidateReason,
@@ -231,7 +231,7 @@ export class ExecutiveAgent {
           ...selection.reminders,
           ...mcpPromptFragments.reminderLines,
         ],
-        mcpCapabilitySummaryLines: mcpPromptFragments.capabilitySummaryLines,
+        mcpToolSummaryLines: mcpPromptFragments.toolSummaryLines,
         mcpDegradedSummaryLines: mcpPromptFragments.degradedSummaryLines,
       });
       const {

@@ -53,7 +53,7 @@ function buildCurrentTurnMessage(params: {
   pendingCalendarInstruction: string;
   replyPipelineInstruction: string;
   harnessReminders: string[];
-  mcpCapabilitySummaryLines: string[];
+  mcpToolSummaryLines: string[];
   mcpDegradedSummaryLines: string[];
 }): string {
   const sections = [
@@ -73,16 +73,16 @@ function buildCurrentTurnMessage(params: {
     '## Reply Pipeline Status',
     params.replyPipelineInstruction,
     '',
-    ...(params.mcpCapabilitySummaryLines.length > 0
+    ...(params.mcpToolSummaryLines.length > 0
       ? [
-          '## MCP Capabilities This Turn',
-          ...params.mcpCapabilitySummaryLines.map((line) => `- ${line}`),
+          '## MCP Tools This Turn',
+          ...params.mcpToolSummaryLines.map((line) => `- ${line}`),
           '',
         ]
       : []),
     ...(params.mcpDegradedSummaryLines.length > 0
       ? [
-          '## MCP Degraded Capabilities',
+          '## MCP Degraded Tools',
           ...params.mcpDegradedSummaryLines.map((line) => `- ${line}`),
           '',
         ]
@@ -110,7 +110,7 @@ export async function buildExecutiveAgentPrompt(
   options?: {
     pendingCalendarInstruction?: string;
     harnessReminders?: string[];
-    mcpCapabilitySummaryLines?: string[];
+    mcpToolSummaryLines?: string[];
     mcpDegradedSummaryLines?: string[];
   },
 ): Promise<PromptContext> {
@@ -221,7 +221,7 @@ export async function buildExecutiveAgentPrompt(
             options?.pendingCalendarInstruction ?? 'No active pending calendar change exists.',
           replyPipelineInstruction,
           harnessReminders: options?.harnessReminders ?? [],
-          mcpCapabilitySummaryLines: options?.mcpCapabilitySummaryLines ?? [],
+          mcpToolSummaryLines: options?.mcpToolSummaryLines ?? [],
           mcpDegradedSummaryLines: options?.mcpDegradedSummaryLines ?? [],
         }),
       },

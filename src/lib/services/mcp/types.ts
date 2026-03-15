@@ -1,15 +1,5 @@
 import type { ProgressUpdateChannel } from '@/lib/ai/progressTypes';
 
-export type McpCapabilityId =
-  | 'docs_read'
-  | 'storage_read'
-  | 'crm_lookup'
-  | 'project_tasks_read'
-  | 'calendar_external_read'
-  | 'calendar_external_mutation'
-  | 'generic_read'
-  | 'generic_mutation';
-
 export type McpActionClass = 'read' | 'write' | 'delete' | 'side_effectful';
 export type McpLatencyClass = 'fast' | 'standard' | 'slow';
 export type McpTransportKind = 'stdio' | 'streamable_http';
@@ -17,6 +7,7 @@ export type McpAuthMode = 'none' | 'bearer_token' | 'static_header';
 export type McpTrustClass = 'first_party' | 'user_configured' | 'third_party';
 export type McpConnectionStatus = 'pending' | 'synced' | 'degraded' | 'disabled';
 export type McpConnectionId = string;
+export type McpServerPackId = string;
 
 export type McpTransportConfig =
   | {
@@ -54,6 +45,7 @@ export type McpConnectionRecord = {
   userId: string;
   serverKey: string;
   displayName: string;
+  packDescription: string | null;
   transport: McpTransportConfig;
   authMode: McpAuthMode;
   status: McpConnectionStatus;
@@ -83,7 +75,6 @@ export type McpToolManifestRecord = {
   outputSchema: Record<string, unknown> | null;
   annotations: Record<string, unknown> | null;
   actionClass: McpActionClass;
-  capabilityId: McpCapabilityId;
   latencyClass: McpLatencyClass;
   safeForAutoUse: boolean;
   syncDiagnostics: unknown;
@@ -103,7 +94,9 @@ export type McpRegistrySnapshot = {
   connections: McpRegistryConnection[];
 };
 
-export type McpCapabilityIntent = McpCapabilityId;
+export type McpServerPackSelection = {
+  connectionIds: string[];
+};
 
 export type McpPolicyDecision = {
   visible: boolean;
@@ -133,7 +126,6 @@ export type McpPendingActionRecord = {
   toolName: string;
   modelToolName: string;
   displayTitle: string;
-  capabilityId: McpCapabilityId;
   actionClass: McpActionClass;
   trustClass: McpTrustClass;
   userRequest: string;
@@ -185,12 +177,12 @@ export type McpExecutionResult = {
 };
 
 export type McpPromptSummary = {
-  capabilityLines: string[];
+  toolSummaryLines: string[];
   degradedLines: string[];
 };
 
 export type McpToolExposure = {
-  capabilityIntents: McpCapabilityIntent[];
+  selectedConnectionIds: string[];
   approvedTools: McpPolicyCandidate[];
   mutationTools: McpPolicyCandidate[];
   degradedTools: McpPolicyCandidate[];
@@ -202,7 +194,7 @@ export type McpTurnContext = {
   userId: string;
   channel: ProgressUpdateChannel;
   packIds: readonly string[];
-  capabilityIntents: readonly McpCapabilityIntent[];
+  selectedConnectionIds: readonly string[];
 };
 
 export class McpServiceError extends Error {

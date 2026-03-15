@@ -39,7 +39,6 @@ export async function GET(
       displayTitle: tool.displayTitle,
       description: tool.description,
       actionClass: tool.actionClass,
-      capabilityId: tool.capabilityId,
       safeForAutoUse: tool.safeForAutoUse,
     }));
 

@@ -5,7 +5,7 @@ import type { McpToolExposure } from '@/lib/services/mcp/types';
 describe('Executive MCP prompt fragments', () => {
   test('keeps the prompt compact and includes trust-boundary reminders', () => {
     const exposure: McpToolExposure = {
-      capabilityIntents: ['docs_read'],
+      selectedConnectionIds: ['conn-1', 'conn-cal'],
       approvedTools: [
         {
           connection: {} as never,
@@ -50,7 +50,6 @@ describe('Executive MCP prompt fragments', () => {
         toolName: 'create_event',
         modelToolName: 'mcp__calendar__create_event',
         displayTitle: 'Create event',
-        capabilityId: 'calendar_external_mutation',
         actionClass: 'write',
         trustClass: 'user_configured',
         userRequest: 'Book the interview',
@@ -67,22 +66,22 @@ describe('Executive MCP prompt fragments', () => {
         updatedAt: new Date('2026-03-14T20:00:00.000Z'),
       },
       promptSummary: {
-        capabilityLines: [
-          'Docs Workspace: docs_read via Search docs',
-          'Work Calendar: calendar_external_mutation via Create event (preview required)',
+        toolSummaryLines: [
+          'Docs Workspace: Search docs (read)',
+          'Work Calendar: Create event (write, preview required)',
         ],
-        degradedLines: ['CRM Mirror: crm_lookup unavailable (auth expired)'],
+        degradedLines: ['CRM Mirror: Search CRM unavailable (auth expired)'],
       },
     };
 
     const fragments = buildExecutiveMcpPromptFragments(exposure);
 
-    expect(fragments.capabilitySummaryLines).toEqual([
-      'Docs Workspace: docs_read via Search docs',
-      'Work Calendar: calendar_external_mutation via Create event (preview required)',
+    expect(fragments.toolSummaryLines).toEqual([
+      'Docs Workspace: Search docs (read)',
+      'Work Calendar: Create event (write, preview required)',
     ]);
     expect(fragments.degradedSummaryLines).toEqual([
-      'CRM Mirror: crm_lookup unavailable (auth expired)',
+      'CRM Mirror: Search CRM unavailable (auth expired)',
     ]);
     expect(fragments.reminderLines).toEqual([
       'Only the MCP tools exposed this turn exist. Do not invent external capabilities beyond them.',
@@ -96,7 +95,7 @@ describe('Executive MCP prompt fragments', () => {
     const fragments = buildExecutiveMcpPromptFragments(null);
 
     expect(fragments).toEqual({
-      capabilitySummaryLines: [],
+      toolSummaryLines: [],
       degradedSummaryLines: [],
       reminderLines: [],
     });

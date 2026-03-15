@@ -47,17 +47,6 @@ const ACTION_CLASS_STYLES: Record<string, string> = {
   side_effectful: 'bg-purple-500/15 text-purple-300 border-purple-500/20',
 };
 
-const CAPABILITY_LABELS: Record<string, string> = {
-  docs_read: 'Docs',
-  storage_read: 'Storage',
-  crm_lookup: 'CRM',
-  project_tasks_read: 'Tasks',
-  calendar_external_read: 'Calendar',
-  calendar_external_mutation: 'Calendar Write',
-  generic_read: 'Read',
-  generic_mutation: 'Mutation',
-};
-
 // ---------------------------------------------------------------------------
 // Skeleton / Empty / Error states
 // ---------------------------------------------------------------------------
@@ -118,13 +107,13 @@ const StatusBadge: React.FC<{ status: ConnectionStatus }> = ({ status }) => {
 };
 
 // ---------------------------------------------------------------------------
-// Capability pill
+// Pack description
 // ---------------------------------------------------------------------------
 
-const CapabilityPill: React.FC<{ cap: string }> = ({ cap }) => (
-  <span className="text-[11px] px-2 py-0.5 rounded-md bg-white/5 border border-white/8 text-gray-400 font-medium">
-    {CAPABILITY_LABELS[cap] ?? cap}
-  </span>
+const PackDescription: React.FC<{ description: string | null }> = ({ description }) => (
+  <p className="max-w-sm text-[11px] leading-5 text-gray-400 line-clamp-2">
+    {description ?? 'Pack description will appear after the next successful sync.'}
+  </p>
 );
 
 // ---------------------------------------------------------------------------
@@ -240,14 +229,9 @@ const ConnectionCard: React.FC<{
           )}
         </div>
 
-        {/* Capabilities */}
-        <div className="hidden sm:flex items-center gap-1.5 shrink-0">
-          {conn.capabilities.slice(0, 3).map((cap) => (
-            <CapabilityPill key={cap} cap={cap} />
-          ))}
-          {conn.capabilities.length > 3 && (
-            <span className="text-[11px] text-gray-500">+{conn.capabilities.length - 3}</span>
-          )}
+        {/* Pack description */}
+        <div className="hidden max-w-sm shrink-0 sm:block">
+          <PackDescription description={conn.packDescription} />
         </div>
 
         {/* Actions */}

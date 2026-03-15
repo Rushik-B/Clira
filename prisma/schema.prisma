@@ -52,7 +52,6 @@ model PendingMcpAction {
   toolName       String
   modelToolName  String
   displayTitle   String
-  capabilityId   String
   actionClass    McpActionClass
   trustClass     McpTrustClass
   userRequest    String
@@ -469,6 +468,7 @@ model McpConnection {
   userId              String
   serverKey           String
   displayName         String
+  packDescription     String?
   transportType       McpTransportType
   transportConfig     Json
   authMode            McpAuthMode         @default(NONE)
@@ -508,7 +508,6 @@ model McpToolManifest {
   outputSchema    Json?
   annotations     Json?
   actionClass     McpActionClass
-  capabilityId    String
   latencyClass    McpLatencyClass @default(STANDARD)
   safeForAutoUse  Boolean         @default(false)
   syncDiagnostics Json?
@@ -519,7 +518,6 @@ model McpToolManifest {
 
   @@unique([connectionId, toolName], name: "McpToolManifest_connectionId_toolName_key")
   @@unique([connectionId, modelToolName], name: "McpToolManifest_connectionId_modelToolName_key")
-  @@index([connectionId, capabilityId], name: "McpToolManifest_connectionId_capabilityId_idx")
   @@index([connectionId, actionClass], name: "McpToolManifest_connectionId_actionClass_idx")
 }
 

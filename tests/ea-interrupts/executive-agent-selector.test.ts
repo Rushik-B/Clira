@@ -10,6 +10,15 @@ import {
 } from '@/lib/ai/agents/executive-agent/selector';
 import { buildPackToolAllowlist } from '@/lib/ai/agents/executive-agent/toolPacks';
 import type { ExecutiveAgentInput } from '@/lib/ai/agents/executive-agent/types';
+import type { McpConnectionRecord } from '@/lib/services/mcp/types';
+
+const { listMcpConnectionsForUserMock } = vi.hoisted(() => ({
+  listMcpConnectionsForUserMock: vi.fn(),
+}));
+
+vi.mock('@/lib/services/mcp/connections/service', () => ({
+  listMcpConnectionsForUser: listMcpConnectionsForUserMock,
+}));
 
 const ALL_PACKS = [
   'core_recall_pack',
@@ -62,9 +71,40 @@ function buildInput(params: {
   };
 }
 
+function buildMcpConnection(overrides?: Partial<McpConnectionRecord>): McpConnectionRecord {
+  return {
+    id: 'mcp-conn-1',
+    userId: 'user-1',
+    serverKey: 'notion',
+    displayName: 'Notion Workspace',
+    packDescription: 'Notion Workspace: 3 read tools (Search docs, Read page)',
+    transport: {
+      type: 'streamable_http',
+      endpoint: 'https://mcp.example.com',
+      headers: {},
+    },
+    authMode: 'none',
+    status: 'synced',
+    trustClass: 'user_configured',
+    degradedReason: null,
+    syncDiagnostics: null,
+    healthDiagnostics: null,
+    lastSyncedAt: new Date('2026-03-02T18:00:00.000Z'),
+    lastHealthCheckedAt: new Date('2026-03-02T18:00:00.000Z'),
+    consecutiveFailures: 0,
+    circuitOpenedAt: null,
+    circuitOpenUntil: null,
+    disabledAt: null,
+    createdAt: new Date('2026-03-02T17:00:00.000Z'),
+    updatedAt: new Date('2026-03-02T18:00:00.000Z'),
+    ...overrides,
+  };
+}
+
 describe('Executive agent selector', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    listMcpConnectionsForUserMock.mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -369,6 +409,58 @@ describe('Executive agent selector', () => {
     expect(selection.reminders).toContain(
       'A pending calendar change exists; confirm, cancel, or explicitly modify it.',
     );
+  });
+
+  test('maps MCP server keys from the selector to synced connection ids and injects server packs into the prompt', async () => {
+    vi.stubEnv('EA_SELECTOR_CEREBRAS_ENABLED', 'true');
+    vi.stubEnv('EA_SELECTOR_CEREBRAS_TWILIO', 'true');
+    vi.stubEnv('EA_SELECTOR_CEREBRAS_MODEL', 'llama3.1-8b');
+    vi.stubEnv('CEREBRAS_API_KEY', 'test-key');
+
+    listMcpConnectionsForUserMock.mockResolvedValue([
+      buildMcpConnection(),
+    ]);
+
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                packIds: ['inbox_context_pack'],
+                mcpServerKeys: ['notion'],
+              }),
+            },
+          },
+        ],
+        id: 'resp-mcp-pack',
+      }),
+    } as Response);
+
+    const input = buildInput({
+      userRequest: 'Find the notion spec for the onboarding flow',
+    });
+    const features = extractExecutiveTurnFeatures({
+      input,
+      pendingCalendarChangePresent: false,
+    });
+
+    const selection = await selectExecutiveToolPackForTurn({
+      input,
+      features,
+    });
+
+    expect(selection.packIds).toEqual(['inbox_context_pack']);
+    expect(selection.mcpConnectionIds).toEqual(['mcp-conn-1']);
+
+    const [, init] = fetchMock.mock.calls[0] ?? [];
+    const body = JSON.parse(String(init?.body));
+    const selectorPrompt = body.messages?.[1]?.content as string;
+
+    expect(selectorPrompt).toContain('Dynamic MCP server packs:');
+    expect(selectorPrompt).toContain('mcp_server:notion');
+    expect(selectorPrompt).toContain('You may select both a native pack and one or more MCP server packs');
   });
 
   test('treats plain "sure" as a calendar commit confirmation', () => {
@@ -782,6 +874,10 @@ describe('Executive agent selector', () => {
   });
 
   test('exposes all packs when selector is disabled', async () => {
+    listMcpConnectionsForUserMock.mockResolvedValue([
+      buildMcpConnection(),
+    ]);
+
     const input = buildInput({
       userRequest: 'dude',
       classifierDecision: 'followup',
@@ -812,6 +908,7 @@ describe('Executive agent selector', () => {
 
     expect(selection.packId).toBe('core_recall_pack');
     expect(selection.packIds).toEqual([...ALL_PACKS]);
+    expect(selection.mcpConnectionIds).toEqual(['mcp-conn-1']);
     expect(selection.reasons).toContain('selector unavailable; exposed all packs');
   });
 });

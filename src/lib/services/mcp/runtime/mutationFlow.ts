@@ -37,7 +37,6 @@ const PENDING_ACTION_SELECT = {
   toolName: true,
   modelToolName: true,
   displayTitle: true,
-  capabilityId: true,
   actionClass: true,
   trustClass: true,
   userRequest: true,
@@ -132,7 +131,6 @@ function toPendingActionRecord(row: PendingActionRow): McpPendingActionRecord {
     toolName: row.toolName,
     modelToolName: row.modelToolName,
     displayTitle: row.displayTitle,
-    capabilityId: row.capabilityId as McpPendingActionRecord['capabilityId'],
     actionClass: fromPrismaActionClass(row.actionClass),
     trustClass: fromPrismaTrustClass(row.trustClass),
     userRequest: row.userRequest,
@@ -324,14 +322,6 @@ export async function planMcpMutationAction(params: {
     };
   }
 
-  if (registryEntry.tool.capabilityId !== 'calendar_external_mutation') {
-    return {
-      ok: false,
-      error: 'unsupported_mutation_capability',
-      message: 'This external mutation is not enabled in Clira yet.',
-    };
-  }
-
   const validationIssues = validateMcpArgsAgainstSchema({
     args: params.args,
     schema: registryEntry.tool.inputSchema,
@@ -424,7 +414,6 @@ export async function planMcpMutationAction(params: {
       toolName: registryEntry.tool.toolName,
       modelToolName: registryEntry.tool.modelToolName,
       displayTitle: registryEntry.tool.displayTitle,
-      capabilityId: registryEntry.tool.capabilityId,
       actionClass: toPrismaActionClass(registryEntry.tool.actionClass),
       trustClass: toPrismaTrustClass(registryEntry.connection.trustClass),
       userRequest: params.userRequest,

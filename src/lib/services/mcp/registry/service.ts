@@ -20,7 +20,6 @@ import { createMcpTransportClient } from '@/lib/services/mcp/runtime/client';
 import {
   buildMcpDisplayTitle,
   classifyMcpActionClass,
-  classifyMcpCapabilityId,
   classifyMcpLatencyClass,
 } from '@/lib/services/mcp/manifests/classification';
 import {
@@ -55,7 +54,6 @@ type ManifestRow = Prisma.McpToolManifestGetPayload<{
     outputSchema: true;
     annotations: true;
     actionClass: true;
-    capabilityId: true;
     latencyClass: true;
     safeForAutoUse: true;
     syncDiagnostics: true;
@@ -77,7 +75,6 @@ const MANIFEST_SELECT = {
   outputSchema: true,
   annotations: true,
   actionClass: true,
-  capabilityId: true,
   latencyClass: true,
   safeForAutoUse: true,
   syncDiagnostics: true,
@@ -147,7 +144,6 @@ function toManifestRecord(row: ManifestRow): McpToolManifestRecord {
     outputSchema: row.outputSchema as Record<string, unknown> | null,
     annotations: row.annotations as Record<string, unknown> | null,
     actionClass: fromPrismaActionClass(row.actionClass),
-    capabilityId: row.capabilityId as McpToolManifestRecord['capabilityId'],
     latencyClass: fromPrismaLatencyClass(row.latencyClass),
     safeForAutoUse: row.safeForAutoUse,
     syncDiagnostics: row.syncDiagnostics,
@@ -167,11 +163,32 @@ type NormalizedManifest = {
   outputSchema: Prisma.InputJsonObject | null;
   annotations: Prisma.InputJsonValue | null;
   actionClass: McpActionClass;
-  capabilityId: McpToolManifestRecord['capabilityId'];
   latencyClass: McpToolManifestRecord['latencyClass'];
   safeForAutoUse: boolean;
   syncDiagnostics: Prisma.InputJsonObject | null;
 };
+
+function buildPackDescription(displayName: string, manifests: readonly NormalizedManifest[]): string {
+  if (manifests.length === 0) {
+    return `${displayName}: no tools synced yet`;
+  }
+
+  const readTools = manifests.filter((manifest) => manifest.actionClass === 'read');
+  const writeTools = manifests.filter((manifest) => manifest.actionClass !== 'read');
+  const toolNames = manifests.slice(0, 8).map((manifest) => manifest.displayTitle);
+  const parts = [`${displayName}:`];
+
+  if (readTools.length > 0) {
+    parts.push(`${readTools.length} read tools`);
+  }
+
+  if (writeTools.length > 0) {
+    parts.push(`${writeTools.length} mutation tools`);
+  }
+
+  parts.push(`(${toolNames.join(', ')}${manifests.length > 8 ? ', ...' : ''})`);
+  return parts.join(' ');
+}
 
 function normalizeToolManifests(connection: McpConnectionRecord, tools: Tool[]): {
   manifests: NormalizedManifest[];
@@ -198,7 +215,6 @@ function normalizeToolManifests(connection: McpConnectionRecord, tools: Tool[]):
     seenToolNames.add(toolName);
 
     const actionClass = classifyMcpActionClass(tool);
-    const capabilityId = classifyMcpCapabilityId(tool, actionClass);
     const latencyClass = classifyMcpLatencyClass(tool);
     const toolSlugBase = slugifyMcpSegment(toolName);
     const normalizedOutputSchema = normalizeMcpOutputSchema(tool.outputSchema);
@@ -225,7 +241,6 @@ function normalizeToolManifests(connection: McpConnectionRecord, tools: Tool[]):
         : null,
       annotations: tool.annotations ? toPrismaJsonValue(tool.annotations) : null,
       actionClass,
-      capabilityId,
       latencyClass,
       safeForAutoUse: actionClass === 'read',
       syncDiagnostics:
@@ -269,6 +284,10 @@ export async function syncMcpConnectionRegistry(params: {
     const listedTools = await client.listTools();
     const normalized = normalizeToolManifests(bundle.connection, listedTools);
     const syncedAt = new Date();
+    const packDescription = buildPackDescription(
+      bundle.connection.displayName,
+      normalized.manifests,
+    );
 
     await prisma.$transaction(async (tx) => {
       await tx.mcpToolManifest.deleteMany({
@@ -299,7 +318,6 @@ export async function syncMcpConnectionRegistry(params: {
             outputSchema: toPrismaNullableJsonValue(manifest.outputSchema),
             annotations: toPrismaNullableJsonValue(manifest.annotations),
             actionClass: toPrismaActionClass(manifest.actionClass),
-            capabilityId: manifest.capabilityId,
             latencyClass: toPrismaLatencyClass(manifest.latencyClass),
             safeForAutoUse: manifest.safeForAutoUse,
             syncDiagnostics: toPrismaNullableJsonValue(manifest.syncDiagnostics),
@@ -314,7 +332,6 @@ export async function syncMcpConnectionRegistry(params: {
             outputSchema: toPrismaNullableJsonValue(manifest.outputSchema),
             annotations: toPrismaNullableJsonValue(manifest.annotations),
             actionClass: toPrismaActionClass(manifest.actionClass),
-            capabilityId: manifest.capabilityId,
             latencyClass: toPrismaLatencyClass(manifest.latencyClass),
             safeForAutoUse: manifest.safeForAutoUse,
             syncDiagnostics: toPrismaNullableJsonValue(manifest.syncDiagnostics),
@@ -327,6 +344,7 @@ export async function syncMcpConnectionRegistry(params: {
     await markMcpConnectionSyncSuccess({
       connectionId: bundle.connection.id,
       syncedAt,
+      packDescription,
       diagnostics: toPrismaJsonObject({
         toolsDiscovered: normalized.manifests.length,
         diagnostics: normalized.diagnostics,

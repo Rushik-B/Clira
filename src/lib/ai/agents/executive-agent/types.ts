@@ -20,7 +20,6 @@ import type {
 } from './toolResultReuseCache';
 import type { AiTraceContext } from '@/lib/ai/tracing';
 import type {
-  McpCapabilityIntent,
   McpToolExposure,
 } from '@/lib/services/mcp/types';
 
@@ -131,7 +130,7 @@ export interface ExecutiveTurnFeatures {
 export interface PackSelection {
   packId: ToolPackId;
   packIds: ToolPackId[];
-  capabilityIntents: McpCapabilityIntent[];
+  mcpConnectionIds: string[];
   reasons: string[];
   reminders: string[];
 }

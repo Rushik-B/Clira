@@ -3,13 +3,13 @@ import type { McpToolExposure } from '@/lib/services/mcp/types';
 export function buildExecutiveMcpPromptFragments(
   exposure: McpToolExposure | null,
 ): {
-  capabilitySummaryLines: string[];
+  toolSummaryLines: string[];
   degradedSummaryLines: string[];
   reminderLines: string[];
 } {
   if (!exposure) {
     return {
-      capabilitySummaryLines: [],
+      toolSummaryLines: [],
       degradedSummaryLines: [],
       reminderLines: [],
     };
@@ -31,7 +31,7 @@ export function buildExecutiveMcpPromptFragments(
       : [];
 
   return {
-    capabilitySummaryLines: exposure.promptSummary.capabilityLines,
+    toolSummaryLines: exposure.promptSummary.toolSummaryLines,
     degradedSummaryLines: exposure.promptSummary.degradedLines,
     reminderLines,
   };

@@ -6,11 +6,11 @@ export interface McpConnectionSummary {
   id: string;
   serverKey: string;
   displayName: string;
+  packDescription: string | null;
   status: ConnectionStatus;
   transport: { type: TransportType };
   degradedReason: string | null;
   toolCount: number;
-  capabilities: string[];
   healthy: boolean;
   lastSyncedAt: string | null;
   createdAt: string;
@@ -23,7 +23,6 @@ export interface McpToolSummary {
   displayTitle: string;
   description: string | null;
   actionClass: string;
-  capabilityId: string;
   safeForAutoUse: boolean;
 }
 

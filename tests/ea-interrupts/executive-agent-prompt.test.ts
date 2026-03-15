@@ -42,8 +42,8 @@ describe('Executive agent prompt', () => {
     const prompt = await buildExecutiveAgentPrompt(input, 'twilio', {
       pendingCalendarInstruction: 'Active pending calendar change exists (pendingId=pc-1).',
       harnessReminders: ['User approval is present; only send the already-shown draft.'],
-      mcpCapabilitySummaryLines: ['Notion Workspace: docs_read via Search docs'],
-      mcpDegradedSummaryLines: ['CRM Mirror: crm_lookup unavailable (auth expired)'],
+      mcpToolSummaryLines: ['Notion Workspace: Search docs (read)'],
+      mcpDegradedSummaryLines: ['CRM Mirror: Search CRM unavailable (auth expired)'],
     });
 
     expect(prompt.systemPrompt).toBe(readPromptFile('whatsapp/executiveAgentPrompt.md'));
@@ -52,9 +52,9 @@ describe('Executive agent prompt', () => {
     expect(prompt.messages[0]?.content).toContain('pendingId=pc-1');
     expect(prompt.messages[0]?.content).toContain('## Harness Reminders');
     expect(prompt.messages[0]?.content).toContain('only send the already-shown draft');
-    expect(prompt.messages[0]?.content).toContain('## MCP Capabilities This Turn');
+    expect(prompt.messages[0]?.content).toContain('## MCP Tools This Turn');
     expect(prompt.messages[0]?.content).toContain('Search docs');
-    expect(prompt.messages[0]?.content).toContain('## MCP Degraded Capabilities');
+    expect(prompt.messages[0]?.content).toContain('## MCP Degraded Tools');
     expect(prompt.messages[0]?.content).toContain('auth expired');
     expect(prompt.messages[0]?.content).toContain('## Current User Request');
     expect(prompt.messages[0]?.content).toContain('send it');
@@ -65,7 +65,7 @@ describe('Executive agent prompt', () => {
     const { prisma } = await import('@/lib/prisma');
     vi.mocked(prisma.userSettings.findUnique).mockResolvedValue({
       calendarTimezone: 'America/Los_Angeles',
-    });
+    } as never);
 
     const input: ExecutiveAgentInput = {
       userId: 'user-1',
@@ -75,7 +75,9 @@ describe('Executive agent prompt', () => {
       channel: 'telegram',
       conversationHistory: [
         {
+          id: 'msg-1',
           role: 'ASSISTANT',
+          direction: 'OUTBOUND',
           content: 'Sent. See you at BierCraft on Wednesday!',
           metadata: null,
           createdAt: new Date('2026-03-15T02:53:37.903Z'),

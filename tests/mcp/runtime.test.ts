@@ -55,6 +55,7 @@ function buildConnection(overrides?: Partial<McpConnectionRecord>): McpConnectio
     userId: 'user-1',
     serverKey: 'docs',
     displayName: 'Docs Workspace',
+    packDescription: null,
     transport: {
       type: 'streamable_http',
       endpoint: 'https://mcp.example.com',
@@ -91,7 +92,6 @@ function buildTool(overrides?: Partial<McpToolManifestRecord>): McpToolManifestR
     outputSchema: null,
     annotations: null,
     actionClass: 'read',
-    capabilityId: 'docs_read',
     latencyClass: 'fast',
     safeForAutoUse: true,
     syncDiagnostics: null,
@@ -220,7 +220,6 @@ describe('MCP runtime executor', () => {
       modelToolName: 'mcp__calendar__create_event',
       displayTitle: 'Create event',
       actionClass: 'write',
-      capabilityId: 'calendar_external_mutation',
       safeForAutoUse: false,
     });
 
@@ -255,7 +254,6 @@ describe('MCP runtime executor', () => {
       modelToolName: 'mcp__calendar__create_event',
       displayTitle: 'Create event',
       actionClass: 'write',
-      capabilityId: 'calendar_external_mutation',
       safeForAutoUse: false,
     });
     const closeMock = vi.fn().mockResolvedValue(undefined);

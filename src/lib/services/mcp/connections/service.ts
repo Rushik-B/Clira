@@ -41,7 +41,6 @@ export type UpdateMcpConnectionInput = {
 
 export type McpConnectionListItem = McpConnectionRecord & {
   toolCount: number;
-  capabilities: string[];
   healthy: boolean;
 };
 
@@ -51,6 +50,7 @@ type McpConnectionRow = Prisma.McpConnectionGetPayload<{
     userId: true;
     serverKey: true;
     displayName: true;
+    packDescription: true;
     transportType: true;
     transportConfig: true;
     authMode: true;
@@ -76,6 +76,7 @@ const CONNECTION_SELECT = {
   userId: true,
   serverKey: true,
   displayName: true,
+  packDescription: true,
   transportType: true,
   transportConfig: true,
   authMode: true,
@@ -235,6 +236,7 @@ function toConnectionRecord(row: McpConnectionRow): McpConnectionRecord {
     userId: row.userId,
     serverKey: row.serverKey,
     displayName: row.displayName,
+    packDescription: row.packDescription,
     transport: parseTransportConfig(row.transportType, row.transportConfig),
     authMode: fromPrismaAuthMode(row.authMode),
     status: fromPrismaConnectionStatus(row.status),
@@ -294,48 +296,25 @@ export async function listMcpConnectionsForUser(userId: string): Promise<McpConn
 export async function listMcpConnectionListItemsForUser(
   userId: string,
 ): Promise<McpConnectionListItem[]> {
-  const [rows, capabilityRows] = await Promise.all([
-    prisma.mcpConnection.findMany({
-      where: { userId },
-      select: {
-        ...CONNECTION_SELECT,
-        _count: {
-          select: {
-            toolManifests: true,
-          },
+  const rows = await prisma.mcpConnection.findMany({
+    where: { userId },
+    select: {
+      ...CONNECTION_SELECT,
+      _count: {
+        select: {
+          toolManifests: true,
         },
       },
-      orderBy: [{ updatedAt: 'desc' }, { createdAt: 'desc' }],
-    }),
-    prisma.mcpToolManifest.findMany({
-      where: {
-        connection: {
-          userId,
-        },
-      },
-      select: {
-        connectionId: true,
-        capabilityId: true,
-      },
-      distinct: ['connectionId', 'capabilityId'],
-    }),
-  ]);
-
-  const capabilitiesByConnectionId = new Map<string, string[]>();
-  for (const row of capabilityRows) {
-    const current = capabilitiesByConnectionId.get(row.connectionId) ?? [];
-    current.push(row.capabilityId);
-    capabilitiesByConnectionId.set(row.connectionId, current);
-  }
+    },
+    orderBy: [{ updatedAt: 'desc' }, { createdAt: 'desc' }],
+  });
 
   return rows.map((row) => {
     const connection = toConnectionRecord(row);
-    const capabilities = (capabilitiesByConnectionId.get(row.id) ?? []).sort();
 
     return {
       ...connection,
       toolCount: row._count.toolManifests,
-      capabilities,
       healthy:
         connection.status === 'synced' &&
         (!connection.circuitOpenUntil || connection.circuitOpenUntil.getTime() <= Date.now()),
@@ -389,6 +368,7 @@ export async function createMcpConnection(input: CreateMcpConnectionInput): Prom
       userId: input.userId,
       serverKey,
       displayName: input.displayName.trim(),
+      packDescription: null,
       transportType: toPrismaTransportType(input.transport.type),
       transportConfig: serializeTransportConfig(input.transport),
       authMode: toPrismaAuthMode(input.secrets.authMode),
@@ -425,6 +405,7 @@ export async function updateMcpConnection(input: UpdateMcpConnectionInput): Prom
     data: {
       displayName: input.displayName?.trim() ?? existing.connection.displayName,
       serverKey: nextServerKey,
+      packDescription: null,
       transportType: toPrismaTransportType(nextTransport.type),
       transportConfig: serializeTransportConfig(nextTransport),
       authMode: toPrismaAuthMode(nextSecrets.authMode),
@@ -471,12 +452,14 @@ export async function markMcpConnectionSyncSuccess(params: {
   connectionId: string;
   syncedAt: Date;
   diagnostics?: Prisma.InputJsonValue;
+  packDescription?: string | null;
 }): Promise<void> {
   await prisma.mcpConnection.update({
     where: { id: params.connectionId },
     data: {
       status: 'SYNCED',
       degradedReason: null,
+      packDescription: params.packDescription ?? null,
       syncDiagnostics: toPrismaNullableJsonValue(params.diagnostics),
       lastSyncedAt: params.syncedAt,
       circuitOpenedAt: null,

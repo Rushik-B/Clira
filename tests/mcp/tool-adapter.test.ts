@@ -163,6 +163,7 @@ function buildConnection(overrides?: Partial<McpConnectionRecord>): McpConnectio
     userId: 'user-1',
     serverKey: 'docs',
     displayName: 'Docs Workspace',
+    packDescription: null,
     transport: {
       type: 'streamable_http',
       endpoint: 'https://mcp.example.com',
@@ -199,7 +200,6 @@ function buildTool(overrides?: Partial<McpToolManifestRecord>): McpToolManifestR
     outputSchema: null,
     annotations: null,
     actionClass: 'read',
-    capabilityId: 'docs_read',
     latencyClass: 'fast',
     safeForAutoUse: true,
     syncDiagnostics: null,
@@ -213,7 +213,7 @@ function buildTool(overrides?: Partial<McpToolManifestRecord>): McpToolManifestR
 describe('Executive MCP tool adapter', () => {
   test('returns bounded summaries to the model instead of raw MCP payloads', async () => {
     const exposure: McpToolExposure = {
-      capabilityIntents: ['docs_read'],
+      selectedConnectionIds: ['conn-1'],
       approvedTools: [
         {
           connection: buildConnection(),
@@ -230,7 +230,7 @@ describe('Executive MCP tool adapter', () => {
       degradedTools: [],
       pendingAction: null,
       promptSummary: {
-        capabilityLines: ['Docs Workspace: docs_read via Search docs'],
+        toolSummaryLines: ['Docs Workspace: Search docs (read)'],
         degradedLines: [],
       },
     };

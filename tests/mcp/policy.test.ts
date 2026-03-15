@@ -38,6 +38,7 @@ function buildConnection(overrides?: Partial<McpConnectionRecord>): McpConnectio
     userId: 'user-1',
     serverKey: 'docs',
     displayName: 'Docs Workspace',
+    packDescription: null,
     transport: {
       type: 'streamable_http',
       endpoint: 'https://mcp.example.com',
@@ -74,7 +75,6 @@ function buildTool(overrides?: Partial<McpToolManifestRecord>): McpToolManifestR
     outputSchema: null,
     annotations: null,
     actionClass: 'read',
-    capabilityId: 'docs_read',
     latencyClass: 'fast',
     safeForAutoUse: true,
     syncDiagnostics: null,
@@ -118,7 +118,6 @@ describe('MCP policy service', () => {
               toolSlug: 'search_crm',
               modelToolName: 'mcp__crm__search_crm',
               displayTitle: 'Search CRM',
-              capabilityId: 'docs_read',
             }),
           ],
         },
@@ -137,7 +136,6 @@ describe('MCP policy service', () => {
               modelToolName: 'mcp__writer__lookup_docs',
               displayTitle: 'Lookup docs',
               safeForAutoUse: false,
-              capabilityId: 'docs_read',
             }),
           ],
         },
@@ -149,7 +147,7 @@ describe('MCP policy service', () => {
       userId: 'user-1',
       conversationId: 'conv-1',
       channel: 'twilio',
-      capabilityIntents: ['docs_read'],
+      selectedConnectionIds: ['conn-1', 'conn-2', 'conn-3'],
     });
 
     expect(exposure.approvedTools.map((candidate) => candidate.tool.modelToolName)).toEqual([
@@ -164,12 +162,12 @@ describe('MCP policy service', () => {
       'connection_not_ready',
       'read_only_phase',
     ]);
-    expect(exposure.promptSummary.capabilityLines).toEqual([
-      'Docs Workspace: docs_read via Search docs',
+    expect(exposure.promptSummary.toolSummaryLines).toEqual([
+      'Docs Workspace: Search docs (read)',
     ]);
     expect(exposure.promptSummary.degradedLines).toEqual([
-      'CRM Mirror: docs_read unavailable (auth expired)',
-      'Writer: docs_read unavailable (read_only_phase)',
+      'CRM Mirror: Search CRM unavailable (auth expired)',
+      'Writer: Lookup docs unavailable (read_only_phase)',
     ]);
   });
 
@@ -193,7 +191,6 @@ describe('MCP policy service', () => {
               modelToolName: 'mcp__calendar__create_event',
               displayTitle: 'Create event',
               actionClass: 'write',
-              capabilityId: 'calendar_external_mutation',
               safeForAutoUse: false,
             }),
           ],
@@ -209,7 +206,6 @@ describe('MCP policy service', () => {
       toolName: 'create_event',
       modelToolName: 'mcp__calendar__create_event',
       displayTitle: 'Create event',
-      capabilityId: 'calendar_external_mutation',
       actionClass: 'write',
       trustClass: 'user_configured',
       userRequest: 'Book time',
@@ -230,7 +226,7 @@ describe('MCP policy service', () => {
       userId: 'user-1',
       conversationId: 'conv-1',
       channel: 'twilio',
-      capabilityIntents: ['calendar_external_mutation'],
+      selectedConnectionIds: ['conn-cal'],
     });
 
     expect(exposure.approvedTools).toEqual([]);
@@ -239,8 +235,8 @@ describe('MCP policy service', () => {
     ]);
     expect(exposure.mutationTools[0]?.decision.reason).toBe('preview_required');
     expect(exposure.pendingAction?.id).toBe('pending-1');
-    expect(exposure.promptSummary.capabilityLines).toEqual([
-      'Work Calendar: calendar_external_mutation via Create event (preview required)',
+    expect(exposure.promptSummary.toolSummaryLines).toEqual([
+      'Work Calendar: Create event (write, preview required)',
     ]);
   });
 
@@ -265,7 +261,6 @@ describe('MCP policy service', () => {
               modelToolName: 'mcp__calendar__create_event',
               displayTitle: 'Create event',
               actionClass: 'write',
-              capabilityId: 'calendar_external_mutation',
               safeForAutoUse: false,
             }),
           ],
@@ -278,13 +273,13 @@ describe('MCP policy service', () => {
       userId: 'user-1',
       conversationId: 'conv-1',
       channel: 'twilio',
-      capabilityIntents: ['calendar_external_mutation'],
+      selectedConnectionIds: ['conn-third'],
     });
 
     expect(exposure.mutationTools).toEqual([]);
     expect(exposure.degradedTools[0]?.decision.reason).toBe('third_party_mutation_blocked');
     expect(exposure.promptSummary.degradedLines).toEqual([
-      'Vendor Calendar: calendar_external_mutation unavailable (third_party_mutation_blocked)',
+      'Vendor Calendar: Create event unavailable (third_party_mutation_blocked)',
     ]);
   });
 
@@ -295,7 +290,7 @@ describe('MCP policy service', () => {
       userId: 'user-1',
       conversationId: 'conv-1',
       channel: 'twilio',
-      capabilityIntents: ['docs_read'],
+      selectedConnectionIds: ['conn-1'],
     });
 
     expect(loadMcpRegistrySnapshotMock).not.toHaveBeenCalled();
@@ -304,7 +299,7 @@ describe('MCP policy service', () => {
     expect(exposure.degradedTools).toEqual([]);
     expect(exposure.pendingAction).toBeNull();
     expect(exposure.promptSummary).toEqual({
-      capabilityLines: [],
+      toolSummaryLines: [],
       degradedLines: [],
     });
   });

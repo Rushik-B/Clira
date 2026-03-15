@@ -157,6 +157,7 @@ function buildMcpConnection(overrides?: Partial<McpConnectionRecord>): McpConnec
     userId: 'user-1',
     serverKey: 'docs',
     displayName: 'Docs Workspace',
+    packDescription: null,
     transport: {
       type: 'streamable_http',
       endpoint: 'https://mcp.example.com',
@@ -199,7 +200,6 @@ function buildMcpTool(overrides?: Partial<McpToolManifestRecord>): McpToolManife
     outputSchema: null,
     annotations: null,
     actionClass: 'read',
-    capabilityId: 'docs_read',
     latencyClass: 'fast',
     safeForAutoUse: true,
     syncDiagnostics: null,
@@ -342,7 +342,7 @@ describe('Executive agent tool packs', () => {
     });
 
     context.mcpToolExposure = {
-      capabilityIntents: ['docs_read'],
+      selectedConnectionIds: ['mcp-conn-1'],
       approvedTools: [
         {
           connection: buildMcpConnection(),
@@ -359,7 +359,7 @@ describe('Executive agent tool packs', () => {
       degradedTools: [],
       pendingAction: null,
       promptSummary: {
-        capabilityLines: ['Docs Workspace: docs_read via Search docs'],
+        toolSummaryLines: ['Docs Workspace: Search docs (read)'],
         degradedLines: [],
       },
     };
@@ -378,7 +378,7 @@ describe('Executive agent tool packs', () => {
     });
 
     context.mcpToolExposure = {
-      capabilityIntents: ['calendar_external_mutation'],
+      selectedConnectionIds: ['mcp-conn-cal'],
       approvedTools: [],
       mutationTools: [
         {
@@ -395,7 +395,6 @@ describe('Executive agent tool packs', () => {
             modelToolName: 'mcp__calendar__create_event',
             displayTitle: 'Create event',
             actionClass: 'write',
-            capabilityId: 'calendar_external_mutation',
             safeForAutoUse: false,
           }),
           decision: {
@@ -415,7 +414,6 @@ describe('Executive agent tool packs', () => {
         toolName: 'create_event',
         modelToolName: 'mcp__calendar__create_event',
         displayTitle: 'Create event',
-        capabilityId: 'calendar_external_mutation',
         actionClass: 'write',
         trustClass: 'user_configured',
         userRequest: 'put the interview on my external work calendar',
@@ -432,8 +430,8 @@ describe('Executive agent tool packs', () => {
         updatedAt: new Date('2026-03-02T18:00:00.000Z'),
       },
       promptSummary: {
-        capabilityLines: [
-          'Work Calendar: calendar_external_mutation via Create event (preview required)',
+        toolSummaryLines: [
+          'Work Calendar: Create event (write, preview required)',
         ],
         degradedLines: [],
       },
