@@ -39,6 +39,12 @@ export type UpdateMcpConnectionInput = {
   disabled?: boolean;
 };
 
+export type McpConnectionListItem = McpConnectionRecord & {
+  toolCount: number;
+  capabilities: string[];
+  healthy: boolean;
+};
+
 type McpConnectionRow = Prisma.McpConnectionGetPayload<{
   select: {
     id: true;
@@ -283,6 +289,58 @@ export async function listMcpConnectionsForUser(userId: string): Promise<McpConn
   });
 
   return rows.map(toConnectionRecord);
+}
+
+export async function listMcpConnectionListItemsForUser(
+  userId: string,
+): Promise<McpConnectionListItem[]> {
+  const [rows, capabilityRows] = await Promise.all([
+    prisma.mcpConnection.findMany({
+      where: { userId },
+      select: {
+        ...CONNECTION_SELECT,
+        _count: {
+          select: {
+            toolManifests: true,
+          },
+        },
+      },
+      orderBy: [{ updatedAt: 'desc' }, { createdAt: 'desc' }],
+    }),
+    prisma.mcpToolManifest.findMany({
+      where: {
+        connection: {
+          userId,
+        },
+      },
+      select: {
+        connectionId: true,
+        capabilityId: true,
+      },
+      distinct: ['connectionId', 'capabilityId'],
+    }),
+  ]);
+
+  const capabilitiesByConnectionId = new Map<string, string[]>();
+  for (const row of capabilityRows) {
+    const current = capabilitiesByConnectionId.get(row.connectionId) ?? [];
+    current.push(row.capabilityId);
+    capabilitiesByConnectionId.set(row.connectionId, current);
+  }
+
+  return rows.map((row) => {
+    const connection = toConnectionRecord(row);
+    const capabilities = (capabilitiesByConnectionId.get(row.id) ?? []).sort();
+
+    return {
+      ...connection,
+      toolCount: row._count.toolManifests,
+      capabilities,
+      healthy:
+        connection.status === 'synced' &&
+        (!connection.circuitOpenUntil || connection.circuitOpenUntil.getTime() <= Date.now()),
+    };
+  });
 }
 
 export async function getMcpConnectionForUser(params: {

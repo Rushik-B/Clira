@@ -11,6 +11,10 @@ import { invalidateConnectionCaches } from '@/lib/services/mcp/registry/cache';
 import { loadMcpRegistrySnapshot } from '@/lib/services/mcp/registry/service';
 import { enqueueMcpSyncConnectionJob } from '@/lib/services/mcp/workers/queue';
 
+const NO_STORE_HEADERS = {
+  'Cache-Control': 'no-store, no-cache, max-age=0, must-revalidate',
+};
+
 export async function GET(
   _request: NextRequest,
   context: { params: Promise<{ connectionId: string }> },
@@ -43,7 +47,7 @@ export async function GET(
       success: true,
       connection,
       tools,
-    });
+    }, { headers: NO_STORE_HEADERS });
   } catch (error) {
     if (isUnauthorizedError(error)) {
       return unauthorizedResponse();

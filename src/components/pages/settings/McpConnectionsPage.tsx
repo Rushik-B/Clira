@@ -12,48 +12,22 @@ import {
   RefreshCw,
   Trash2,
   Wrench,
-  X,
 } from 'lucide-react';
+import { useMcpConnections } from '@/hooks/useMcpConnections';
+import {
+  buildConnectionSnapshotVersion,
+  parseEnvironmentVariables,
+  parseTransportHeaders,
+  type AuthMode,
+  type ConnectionStatus,
+  type McpConnectionSummary,
+  type McpHeaderEntry,
+  type McpToolSummary,
+  type TransportType,
+} from '@/lib/services/mcp/ui';
 import { Button } from '@/components/ui/sidebar/button';
 import { Input } from '@/components/ui/sidebar/input';
 import { SettingsShell, SettingsSectionCard } from './SettingsShell';
-
-// ---------------------------------------------------------------------------
-// Types (only what the UI needs — keeps the component self-contained)
-// ---------------------------------------------------------------------------
-
-type ConnectionStatus = 'pending' | 'synced' | 'degraded' | 'disabled';
-type TransportType = 'stdio' | 'streamable_http';
-type AuthMode = 'none' | 'bearer_token' | 'static_header';
-
-interface McpConnectionSummary {
-  id: string;
-  serverKey: string;
-  displayName: string;
-  status: ConnectionStatus;
-  transport: { type: TransportType };
-  degradedReason: string | null;
-  toolCount: number;
-  capabilities: string[];
-  healthy: boolean;
-  lastSyncedAt: string | null;
-  createdAt: string;
-}
-
-interface McpToolSummary {
-  id: string;
-  toolName: string;
-  displayTitle: string;
-  description: string | null;
-  actionClass: string;
-  capabilityId: string;
-  safeForAutoUse: boolean;
-}
-
-interface ConnectionDetail {
-  connection: McpConnectionSummary;
-  tools: McpToolSummary[];
-}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -188,37 +162,45 @@ const ToolRow: React.FC<{ tool: McpToolSummary }> = ({ tool }) => {
 
 const ConnectionCard: React.FC<{
   conn: McpConnectionSummary;
-  onSync: (id: string) => void;
+  onSync: (id: string) => Promise<void>;
   onDelete: (id: string) => void;
   syncing: boolean;
 }> = ({ conn, onSync, onDelete, syncing }) => {
   const [expanded, setExpanded] = useState(false);
   const [tools, setTools] = useState<McpToolSummary[] | null>(null);
   const [loadingTools, setLoadingTools] = useState(false);
+  const snapshotVersion = buildConnectionSnapshotVersion(conn);
 
-  const toggleExpand = useCallback(async () => {
-    if (expanded) {
-      setExpanded(false);
-      return;
-    }
-    setExpanded(true);
-    if (tools !== null) return;
-
+  const loadTools = useCallback(async () => {
     setLoadingTools(true);
     try {
-      const res = await fetch(`/api/mcp/connections/${conn.id}`);
+      const res = await fetch(`/api/mcp/connections/${conn.id}`, {
+        cache: 'no-store',
+      });
       const data = await res.json();
-      if (data.success && data.connection) {
-        // The detail endpoint returns the connection; tools come from registry
-        // Fall back to empty if tools aren't included
+      if (data.success) {
         setTools(data.tools ?? []);
       }
     } catch {
-      // silently degrade — tools section stays empty
+      setTools([]);
     } finally {
       setLoadingTools(false);
     }
-  }, [expanded, tools, conn.id]);
+  }, [conn.id]);
+
+  useEffect(() => {
+    setTools(null);
+  }, [snapshotVersion]);
+
+  useEffect(() => {
+    if (expanded && tools === null && !loadingTools) {
+      void loadTools();
+    }
+  }, [expanded, loadingTools, loadTools, tools]);
+
+  const toggleExpand = useCallback(() => {
+    setExpanded((currentExpanded) => !currentExpanded);
+  }, []);
 
   const lastSynced = conn.lastSyncedAt
     ? new Date(conn.lastSyncedAt).toLocaleString(undefined, {
@@ -271,7 +253,9 @@ const ConnectionCard: React.FC<{
         {/* Actions */}
         <div className="flex items-center gap-1 shrink-0">
           <button
-            onClick={() => onSync(conn.id)}
+            onClick={() => {
+              void onSync(conn.id);
+            }}
             disabled={syncing}
             className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-400 hover:text-white hover:bg-white/5 transition-all disabled:opacity-40 cursor-pointer"
             title="Sync manifest"
@@ -333,6 +317,7 @@ interface AddFormState {
   command: string;
   args: string;
   endpoint: string;
+  transportHeaders: McpHeaderEntry[];
   authMode: AuthMode;
   bearerToken: string;
   headerName: string;
@@ -340,24 +325,38 @@ interface AddFormState {
   envVars: string;
 }
 
-const INITIAL_FORM: AddFormState = {
-  displayName: '',
-  serverKey: '',
-  transportType: 'stdio',
-  command: '',
-  args: '',
-  endpoint: '',
-  authMode: 'none',
-  bearerToken: '',
-  headerName: '',
-  headerValue: '',
-  envVars: '',
-};
+let transportHeaderId = 0;
+
+function createTransportHeader(name = '', value = ''): McpHeaderEntry {
+  transportHeaderId += 1;
+  return {
+    id: `transport-header-${transportHeaderId}`,
+    name,
+    value,
+  };
+}
+
+function createInitialFormState(): AddFormState {
+  return {
+    displayName: '',
+    serverKey: '',
+    transportType: 'stdio',
+    command: '',
+    args: '',
+    endpoint: '',
+    transportHeaders: [createTransportHeader()],
+    authMode: 'none',
+    bearerToken: '',
+    headerName: '',
+    headerValue: '',
+    envVars: '',
+  };
+}
 
 const AddConnectionForm: React.FC<{
-  onCreated: () => void;
+  onCreated: () => Promise<void>;
 }> = ({ onCreated }) => {
-  const [form, setForm] = useState<AddFormState>(INITIAL_FORM);
+  const [form, setForm] = useState<AddFormState>(() => createInitialFormState());
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
@@ -367,6 +366,36 @@ const AddConnectionForm: React.FC<{
       setForm((prev) => ({ ...prev, [key]: value })),
     [],
   );
+
+  const updateTransportHeader = useCallback(
+    (headerId: string, next: Partial<Pick<McpHeaderEntry, 'name' | 'value'>>) => {
+      setForm((prev) => ({
+        ...prev,
+        transportHeaders: prev.transportHeaders.map((header) =>
+          header.id === headerId ? { ...header, ...next } : header,
+        ),
+      }));
+    },
+    [],
+  );
+
+  const addTransportHeader = useCallback(() => {
+    setForm((prev) => ({
+      ...prev,
+      transportHeaders: [...prev.transportHeaders, createTransportHeader()],
+    }));
+  }, []);
+
+  const removeTransportHeader = useCallback((headerId: string) => {
+    setForm((prev) => {
+      const remainingHeaders = prev.transportHeaders.filter((header) => header.id !== headerId);
+      return {
+        ...prev,
+        transportHeaders:
+          remainingHeaders.length > 0 ? remainingHeaders : [createTransportHeader()],
+      };
+    });
+  }, []);
 
   const handleSubmit = useCallback(
     async (e: React.FormEvent) => {
@@ -387,6 +416,32 @@ const AddConnectionForm: React.FC<{
         setError('Endpoint URL is required for HTTP transport.');
         return;
       }
+      if (form.authMode === 'bearer_token' && !form.bearerToken.trim()) {
+        setError('Bearer token is required.');
+        return;
+      }
+      if (form.authMode === 'static_header') {
+        if (!form.headerName.trim()) {
+          setError('Secret header name is required.');
+          return;
+        }
+        if (!form.headerValue.trim()) {
+          setError('Secret header value is required.');
+          return;
+        }
+      }
+
+      const { env, error: envError } = parseEnvironmentVariables(form.envVars);
+      if (envError) {
+        setError(envError);
+        return;
+      }
+
+      const { headers, error: headersError } = parseTransportHeaders(form.transportHeaders);
+      if (headersError) {
+        setError(headersError);
+        return;
+      }
 
       // Build payload
       const transport =
@@ -402,29 +457,17 @@ const AddConnectionForm: React.FC<{
           : {
               type: 'streamable_http' as const,
               endpoint: form.endpoint.trim(),
+              headers,
             };
-
-      // Parse env vars (KEY=VALUE per line)
-      const envEntries = form.envVars
-        .split('\n')
-        .map((line) => line.trim())
-        .filter(Boolean)
-        .map((line) => {
-          const eqIdx = line.indexOf('=');
-          if (eqIdx === -1) return null;
-          return [line.slice(0, eqIdx), line.slice(eqIdx + 1)] as [string, string];
-        })
-        .filter((entry): entry is [string, string] => entry !== null);
-      const env = envEntries.length > 0 ? Object.fromEntries(envEntries) : undefined;
 
       let secrets: Record<string, unknown>;
       if (form.authMode === 'bearer_token') {
-        secrets = { authMode: 'bearer_token', bearerToken: form.bearerToken, env };
+        secrets = { authMode: 'bearer_token', bearerToken: form.bearerToken.trim(), env };
       } else if (form.authMode === 'static_header') {
         secrets = {
           authMode: 'static_header',
-          headerName: form.headerName,
-          headerValue: form.headerValue,
+          headerName: form.headerName.trim(),
+          headerValue: form.headerValue.trim(),
           env,
         };
       } else {
@@ -451,8 +494,8 @@ const AddConnectionForm: React.FC<{
           return;
         }
         setSuccess(`${form.displayName} connected — sync started.`);
-        setForm(INITIAL_FORM);
-        onCreated();
+        setForm(createInitialFormState());
+        await onCreated();
       } catch {
         setError('Network error. Please try again.');
       } finally {
@@ -534,14 +577,63 @@ const AddConnectionForm: React.FC<{
           </div>
         </div>
       ) : (
-        <div>
-          <label className="block text-xs font-medium text-gray-400 mb-1.5">Endpoint URL</label>
-          <Input
-            value={form.endpoint}
-            onChange={(e) => set('endpoint', e.target.value)}
-            placeholder="https://your-server.com/mcp"
-            className="bg-gray-900/70 border-gray-800 text-white placeholder:text-gray-600 font-mono text-sm"
-          />
+        <div className="space-y-4">
+          <div>
+            <label className="block text-xs font-medium text-gray-400 mb-1.5">Endpoint URL</label>
+            <Input
+              value={form.endpoint}
+              onChange={(e) => set('endpoint', e.target.value)}
+              placeholder="https://your-server.com/mcp"
+              className="bg-gray-900/70 border-gray-800 text-white placeholder:text-gray-600 font-mono text-sm"
+            />
+          </div>
+
+          <div className="rounded-xl border border-gray-800/70 bg-black/20 p-4">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <label className="block text-xs font-medium text-gray-400">Transport Headers</label>
+                <p className="text-[11px] text-gray-600 mt-1">
+                  Send multiple non-secret HTTP headers with the transport. Use secret auth below for
+                  sensitive values.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={addTransportHeader}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-gray-800 px-3 py-1.5 text-xs font-medium text-gray-300 transition-colors hover:border-gray-700 hover:text-white"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                Add Header
+              </button>
+            </div>
+
+            <div className="mt-4 space-y-3">
+              {form.transportHeaders.map((header, index) => (
+                <div key={header.id} className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
+                  <Input
+                    value={header.name}
+                    onChange={(e) => updateTransportHeader(header.id, { name: e.target.value })}
+                    placeholder={index === 0 ? 'X-Workspace' : 'Header name'}
+                    className="bg-gray-900/70 border-gray-800 text-white placeholder:text-gray-600 font-mono text-sm"
+                  />
+                  <Input
+                    value={header.value}
+                    onChange={(e) => updateTransportHeader(header.id, { value: e.target.value })}
+                    placeholder={index === 0 ? 'production' : 'Header value'}
+                    className="bg-gray-900/70 border-gray-800 text-white placeholder:text-gray-600 font-mono text-sm"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => removeTransportHeader(header.id)}
+                    className="inline-flex h-10 items-center justify-center rounded-lg border border-gray-800 px-3 text-xs font-medium text-gray-400 transition-colors hover:border-red-500/40 hover:text-red-300"
+                    title="Remove header"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       )}
 
@@ -552,7 +644,7 @@ const AddConnectionForm: React.FC<{
           {([
             ['none', 'None'],
             ['bearer_token', 'Bearer Token'],
-            ['static_header', 'Custom Header'],
+            ['static_header', 'Secret Header'],
           ] as const).map(([mode, label]) => (
             <button
               key={mode}
@@ -585,26 +677,32 @@ const AddConnectionForm: React.FC<{
       )}
 
       {form.authMode === 'static_header' && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <div>
-            <label className="block text-xs font-medium text-gray-400 mb-1.5">Header Name</label>
-            <Input
-              value={form.headerName}
-              onChange={(e) => set('headerName', e.target.value)}
-              placeholder="X-API-Key"
-              className="bg-gray-900/70 border-gray-800 text-white placeholder:text-gray-600 font-mono text-sm"
-            />
+        <div className="space-y-2">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-medium text-gray-400 mb-1.5">Header Name</label>
+              <Input
+                value={form.headerName}
+                onChange={(e) => set('headerName', e.target.value)}
+                placeholder="X-API-Key"
+                className="bg-gray-900/70 border-gray-800 text-white placeholder:text-gray-600 font-mono text-sm"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-400 mb-1.5">Header Value</label>
+              <Input
+                type="password"
+                value={form.headerValue}
+                onChange={(e) => set('headerValue', e.target.value)}
+                placeholder="your-api-key"
+                className="bg-gray-900/70 border-gray-800 text-white placeholder:text-gray-600 font-mono text-sm"
+              />
+            </div>
           </div>
-          <div>
-            <label className="block text-xs font-medium text-gray-400 mb-1.5">Header Value</label>
-            <Input
-              type="password"
-              value={form.headerValue}
-              onChange={(e) => set('headerValue', e.target.value)}
-              placeholder="your-api-key"
-              className="bg-gray-900/70 border-gray-800 text-white placeholder:text-gray-600 font-mono text-sm"
-            />
-          </div>
+          <p className="text-[11px] text-gray-600">
+            Use this for a single sensitive header value. For multiple non-secret transport headers, use
+            the HTTP transport header list above.
+          </p>
         </div>
       )}
 
@@ -708,76 +806,56 @@ const DeleteConfirmation: React.FC<{
 // ---------------------------------------------------------------------------
 
 export const McpConnectionsPage: React.FC = () => {
-  const [connections, setConnections] = useState<McpConnectionSummary[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-  const [syncingIds, setSyncingIds] = useState<Set<string>>(new Set());
+  const {
+    connections,
+    error,
+    loading,
+    manualRefreshing,
+    syncingIds,
+    refreshConnections,
+    requestSync,
+  } = useMcpConnections();
   const [deleteTarget, setDeleteTarget] = useState<McpConnectionSummary | null>(null);
   const [deleting, setDeleting] = useState(false);
-
-  const fetchConnections = useCallback(async () => {
-    try {
-      setError('');
-      const res = await fetch('/api/mcp/connections');
-      const data = await res.json();
-      if (data.success) {
-        setConnections(data.connections ?? []);
-      } else {
-        setError(data.error ?? 'Failed to load connections.');
-      }
-    } catch {
-      setError('Network error loading connections.');
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    fetchConnections();
-  }, [fetchConnections]);
-
-  const handleSync = useCallback(async (connectionId: string) => {
-    setSyncingIds((prev) => new Set(prev).add(connectionId));
-    try {
-      await fetch('/api/mcp/sync', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ connectionId }),
-      });
-      // Wait a moment for sync to process, then refresh
-      setTimeout(() => {
-        fetchConnections();
-        setSyncingIds((prev) => {
-          const next = new Set(prev);
-          next.delete(connectionId);
-          return next;
-        });
-      }, 2000);
-    } catch {
-      setSyncingIds((prev) => {
-        const next = new Set(prev);
-        next.delete(connectionId);
-        return next;
-      });
-    }
-  }, [fetchConnections]);
 
   const handleDelete = useCallback(async () => {
     if (!deleteTarget) return;
     setDeleting(true);
     try {
-      const res = await fetch(`/api/mcp/connections/${deleteTarget.id}`, { method: 'DELETE' });
+      const res = await fetch(`/api/mcp/connections/${deleteTarget.id}`, {
+        method: 'DELETE',
+      });
       const data = await res.json();
       if (data.success) {
         setDeleteTarget(null);
-        fetchConnections();
+        await refreshConnections();
       }
     } catch {
       // silent — user can retry
     } finally {
       setDeleting(false);
     }
-  }, [deleteTarget, fetchConnections]);
+  }, [deleteTarget, refreshConnections]);
+
+  const handleSync = useCallback(async (connectionId: string) => {
+    await requestSync(connectionId);
+  }, [requestSync]);
+
+  const renderRefreshButton = () => (
+    <Button
+      type="button"
+      onClick={() => {
+        void refreshConnections({ manual: true });
+      }}
+      disabled={loading || manualRefreshing}
+      className="bg-white/10 hover:bg-white/15 text-white border border-white/10 rounded-xl px-4 py-2 text-sm font-medium transition-all disabled:opacity-40 cursor-pointer"
+    >
+      <span className="inline-flex items-center gap-2">
+        <RefreshCw className={`w-4 h-4 ${manualRefreshing ? 'animate-spin' : ''}`} />
+        Refresh
+      </span>
+    </Button>
+  );
 
   return (
     <SettingsShell
@@ -785,7 +863,16 @@ export const McpConnectionsPage: React.FC = () => {
       subtitle="Connect external tools and services via Model Context Protocol"
       icon={Plug2}
       iconColor="text-violet-400"
+      mobileActions={renderRefreshButton()}
     >
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="text-sm text-gray-500">
+          Auto-refresh stays active while syncs are in flight and revalidates again when the tab regains
+          focus.
+        </p>
+        {renderRefreshButton()}
+      </div>
+
       {/* Delete confirmation banner */}
       {deleteTarget && (
         <DeleteConfirmation
@@ -808,7 +895,12 @@ export const McpConnectionsPage: React.FC = () => {
             <ConnectionSkeleton />
           </div>
         ) : error ? (
-          <ErrorBanner message={error} onRetry={fetchConnections} />
+          <ErrorBanner
+            message={error}
+            onRetry={() => {
+              void refreshConnections({ manual: true });
+            }}
+          />
         ) : connections.length === 0 ? (
           <EmptyState />
         ) : (
@@ -835,7 +927,7 @@ export const McpConnectionsPage: React.FC = () => {
         description="Connect a new MCP-compatible server"
         icon={<Plus className="w-5 h-5" />}
       >
-        <AddConnectionForm onCreated={fetchConnections} />
+        <AddConnectionForm onCreated={refreshConnections} />
       </SettingsSectionCard>
     </SettingsShell>
   );

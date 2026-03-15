@@ -85,5 +85,12 @@ export function resolveExecutiveMcpCapabilityIntents(params: {
     intents.add('project_tasks_read');
   }
 
+  // Generic read: catch-all for MCP tools that don't fit narrow buckets (docs, storage, crm,
+  // project_tasks, calendar). When gathering general context, expose any read-capable tools.
+  // Policy ranks generic_read lower, so we don't flood; we just make them available.
+  if (params.packIds.includes('inbox_context_pack')) {
+    intents.add('generic_read');
+  }
+
   return [...intents].sort();
 }

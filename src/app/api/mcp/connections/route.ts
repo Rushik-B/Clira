@@ -4,27 +4,25 @@ import {
   createMcpConnectionSchema,
 } from '@/lib/ai/schemas/mcpSchemas';
 import { isUnauthorizedError, requireUserId, unauthorizedResponse } from '@/app/api/user/settings/shared';
-import { createMcpConnection } from '@/lib/services/mcp/connections/service';
-import { loadMcpRegistrySnapshot } from '@/lib/services/mcp/registry/service';
+import {
+  createMcpConnection,
+  listMcpConnectionListItemsForUser,
+} from '@/lib/services/mcp/connections/service';
 import { enqueueMcpSyncConnectionJob } from '@/lib/services/mcp/workers/queue';
+
+const NO_STORE_HEADERS = {
+  'Cache-Control': 'no-store, no-cache, max-age=0, must-revalidate',
+};
 
 export async function GET() {
   try {
     const userId = await requireUserId();
-    const snapshot = await loadMcpRegistrySnapshot(userId);
+    const connections = await listMcpConnectionListItemsForUser(userId);
 
     return NextResponse.json({
       success: true,
-      connections: snapshot.connections.map((entry) => ({
-        ...entry.connection,
-        toolCount: entry.tools.length,
-        capabilities: Array.from(new Set(entry.tools.map((tool) => tool.capabilityId))).sort(),
-        healthy:
-          entry.connection.status === 'synced' &&
-          (!entry.connection.circuitOpenUntil ||
-            entry.connection.circuitOpenUntil.getTime() <= Date.now()),
-      })),
-    });
+      connections,
+    }, { headers: NO_STORE_HEADERS });
   } catch (error) {
     if (isUnauthorizedError(error)) {
       return unauthorizedResponse();
