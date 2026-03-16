@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useRef } from 'react';
 import { LiquidButton, LIQUID_BUTTON_BASE_CLASS } from '@/components/ui/buttons';
 import { PaperPlane } from '@/components/icons/icons';
 import { Paperclip, X, FileText, Image as ImageIcon, File } from 'lucide-react';
@@ -10,8 +10,10 @@ import type { FileAttachment } from './types';
 interface AIChatInputProps {
   value: string;
   isSending: boolean;
+  attachments: FileAttachment[];
   onChange: (value: string) => void;
-  onSend: () => void;
+  onAttachmentsChange: (attachments: FileAttachment[]) => void;
+  onSend: () => Promise<void> | void;
 }
 
 // Helper to format file size
@@ -31,10 +33,11 @@ function getFileIcon(type: string) {
 export const AIChatInput: React.FC<AIChatInputProps> = ({
   value,
   isSending,
+  attachments,
   onChange,
+  onAttachmentsChange,
   onSend,
 }) => {
-  const [attachments, setAttachments] = useState<FileAttachment[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const canSend = (value.trim().length > 0 || attachments.length > 0) && !isSending;
@@ -47,7 +50,7 @@ export const AIChatInput: React.FC<AIChatInputProps> = ({
   };
 
   const handleAttachClick = useCallback(() => {
-    alert('Sorry, still figuring this one out :(');
+    fileInputRef.current?.click();
   }, []);
 
   const handleFileSelect = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
@@ -62,17 +65,17 @@ export const AIChatInput: React.FC<AIChatInputProps> = ({
       file,
     }));
 
-    setAttachments((prev) => [...prev, ...newAttachments]);
+    onAttachmentsChange([...attachments, ...newAttachments]);
 
     // Reset the input so the same file can be selected again
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
-  }, []);
+  }, [attachments, onAttachmentsChange]);
 
   const handleRemoveAttachment = useCallback((id: string) => {
-    setAttachments((prev) => prev.filter((a) => a.id !== id));
-  }, []);
+    onAttachmentsChange(attachments.filter((attachment) => attachment.id !== id));
+  }, [attachments, onAttachmentsChange]);
 
   return (
     <div className="border-t border-white/5 px-5 py-4">
@@ -144,7 +147,9 @@ export const AIChatInput: React.FC<AIChatInputProps> = ({
           </div>
 
           <LiquidButton
-            onClick={onSend}
+              onClick={() => {
+                void onSend();
+              }}
             minWidth="none"
             size="sm"
             variant="default"

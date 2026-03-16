@@ -42,6 +42,7 @@ import {
 import {
   buildInlineBufferProvenance,
   extractContentFromBuffer,
+  ingestWebChatUploads,
   formatMessagingMediaForAgent,
   renderContentExtractionForLegacyText,
 } from '@/lib/services/content-ingestion';
@@ -948,13 +949,23 @@ export async function processWebChatMessage(
   userId: string,
   userEmail: string,
   message: string,
-  options?: { onProgress?: (event: ProgressUpdateEvent) => Promise<void> | void; requestId?: string },
+  options?: {
+    onProgress?: (event: ProgressUpdateEvent) => Promise<void> | void;
+    requestId?: string;
+    uploads?: Array<{
+      filename?: string | null;
+      mediaType?: string | null;
+      url: string;
+    }>;
+  },
 ): Promise<ProcessMessageResult> {
   const conversationManager = getConversationManager();
 
   // Use a synthetic waId for web chat conversations
   const webWaId = 'web-test';
   let activeConversationId = '';
+  let effectiveText = message;
+  let inboundMetadata: Prisma.InputJsonObject | undefined;
 
   const adapter: ChannelAdapter = {
     channel: 'web',
@@ -965,9 +976,10 @@ export async function processWebChatMessage(
         throw new Error('web_inbound_persist_missing_conversation_id');
       }
       await conversationManager.addMessage(activeConversationId, {
-        content: message,
+        content: effectiveText,
         role: 'USER',
         direction: 'INBOUND',
+        ...(inboundMetadata ? { metadata: inboundMetadata } : {}),
       });
     },
     sendFinal: async () => ({}),
@@ -980,10 +992,28 @@ export async function processWebChatMessage(
   const conversation = await conversationManager.getOrCreateConversation(userId, webWaId);
   activeConversationId = conversation.id;
 
+  if ((options?.uploads?.length ?? 0) > 0) {
+    const uploadIngestion = await ingestWebChatUploads({
+      userId,
+      conversationId: conversation.id,
+      runId: options?.requestId ?? 'web-chat-upload',
+      uploads: options?.uploads ?? [],
+    });
+
+    effectiveText = [message.trim(), uploadIngestion.appendedText]
+      .filter(Boolean)
+      .join('\n\n');
+    inboundMetadata = {
+      uploadedFiles: uploadIngestion.uploadMetadata,
+      uploadCount: options?.uploads?.length ?? 0,
+      contentRefIds: uploadIngestion.contentRefs.map((reference) => reference.contentRefId),
+    };
+  }
+
   // Add user message to the conversation
   await adapter.persistInbound();
 
-  let activeCommand: Command = detectCommand(message);
+  let activeCommand: Command = detectCommand(effectiveText);
   if (activeCommand) {
     logger.info(`[messageProcessor] Detected command: ${activeCommand}`);
   }
@@ -991,7 +1021,7 @@ export async function processWebChatMessage(
   const orchestrator = getMessagingOrchestrator();
   const orchestrationDecision = await orchestrator.prepareRunWithAdapter({
     adapter,
-    userRequest: message,
+    userRequest: effectiveText,
     isCommand: Boolean(activeCommand),
   });
 

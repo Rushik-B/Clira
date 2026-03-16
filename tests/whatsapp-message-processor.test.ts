@@ -32,6 +32,7 @@ vi.mock('@/lib/prisma', () => ({
 
 const contentIngestionMocks = vi.hoisted(() => ({
   extractContentFromBuffer: vi.fn(),
+  ingestWebChatUploads: vi.fn(),
 }));
 
 vi.mock('@/lib/services/content-ingestion', async () => {
@@ -42,6 +43,7 @@ vi.mock('@/lib/services/content-ingestion', async () => {
   return {
     ...actual,
     extractContentFromBuffer: contentIngestionMocks.extractContentFromBuffer,
+    ingestWebChatUploads: contentIngestionMocks.ingestWebChatUploads,
   };
 });
 
@@ -75,7 +77,7 @@ vi.mock('@/lib/services/messaging-orchestration', () => ({
 
 import { prisma } from '@/lib/prisma';
 import { extractContentFromBuffer } from '@/lib/services/content-ingestion';
-import { processWhatsAppMessage } from '@/lib/services/whatsapp/messageProcessor';
+import { processWebChatMessage, processWhatsAppMessage } from '@/lib/services/whatsapp/messageProcessor';
 
 function createExtractionResult(extractedText: string) {
   return {
@@ -152,6 +154,19 @@ describe('processWhatsAppMessage', () => {
         ].join('\n'),
       ),
     );
+    contentIngestionMocks.ingestWebChatUploads.mockResolvedValue({
+      appendedText: 'User uploaded a file in web chat.\n\nFilename: brief.pdf\n\nReadable content:\n\nQuarterly targets',
+      contentRefs: [{ contentRefId: 'upload-ref-1' }],
+      uploadMetadata: [
+        {
+          filename: 'brief.pdf',
+          mediaType: 'application/pdf',
+          contentRefId: 'upload-ref-1',
+          status: 'ok',
+          error: null,
+        },
+      ],
+    });
   });
 
   test('formats pdf content into the agent request through shared content ingestion', async () => {
@@ -218,6 +233,49 @@ describe('processWhatsAppMessage', () => {
         userRequest: expect.stringContaining(
           'Raw PDF text:\n\nInvoice for March\nAccount: ACME Co.\nTotal due: $400',
         ),
+      }),
+    );
+  });
+
+  test('routes web chat uploads through shared content references before invoking the agent', async () => {
+    mockConversationManager.getOrCreateConversation.mockResolvedValue({ id: 'conv-web-1' });
+
+    await processWebChatMessage('user-1', 'user@example.com', 'Summarize this', {
+      requestId: 'web-run-1',
+      uploads: [
+        {
+          filename: 'brief.pdf',
+          mediaType: 'application/pdf',
+          url: 'data:application/pdf;base64,ZmFrZQ==',
+        },
+      ],
+    });
+
+    expect(contentIngestionMocks.ingestWebChatUploads).toHaveBeenCalledWith({
+      userId: 'user-1',
+      conversationId: 'conv-web-1',
+      runId: 'web-run-1',
+      uploads: [
+        {
+          filename: 'brief.pdf',
+          mediaType: 'application/pdf',
+          url: 'data:application/pdf;base64,ZmFrZQ==',
+        },
+      ],
+    });
+    expect(mockConversationManager.addMessage).toHaveBeenCalledWith(
+      'conv-web-1',
+      expect.objectContaining({
+        content: expect.stringContaining('User uploaded a file in web chat.'),
+        metadata: expect.objectContaining({
+          uploadCount: 1,
+          contentRefIds: ['upload-ref-1'],
+        }),
+      }),
+    );
+    expect(mockPrepareRunWithAdapter).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userRequest: expect.stringContaining('Quarterly targets'),
       }),
     );
   });

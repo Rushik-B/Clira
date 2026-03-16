@@ -2,7 +2,7 @@
 
 import React, { useCallback, useMemo, useState } from 'react';
 import { useChat } from '@ai-sdk/react';
-import { DefaultChatTransport } from 'ai';
+import { DefaultChatTransport, type FileUIPart } from 'ai';
 import { MODAL_SURFACE_CLASS } from '@/components/ui/queue-page/queueModalStyles';
 import { cn } from '@/lib/utils';
 import { Suggestion, Suggestions } from '@/components/ai-elements/suggestion';
@@ -10,7 +10,7 @@ import type { AIChatUIMessage } from '@/lib/ai/chatUiTypes';
 import { AIChatHeader } from './AIChatHeader';
 import { AIChatInput } from './AIChatInput';
 import { AIChatMessages } from './AIChatMessages';
-import type { AIChatMessage } from './types';
+import type { AIChatMessage, FileAttachment } from './types';
 import { toUIMessage } from './types';
 
 interface AIChatPopupProps {
@@ -32,6 +32,7 @@ export const AIChatPopup: React.FC<AIChatPopupProps> = ({
 }) => {
   const [isClearing, setIsClearing] = useState(false);
   const [input, setInput] = useState('');
+  const [attachments, setAttachments] = useState<FileAttachment[]>([]);
 
   const initialUIMessages = useMemo<AIChatUIMessage[]>(
     () => initialMessages.map(toUIMessage),
@@ -91,11 +92,48 @@ export const AIChatPopup: React.FC<AIChatPopupProps> = ({
 
   const isSending = status === 'streaming' || status === 'submitted';
 
-  const handleSendMessage = useCallback(() => {
-    if (!input.trim() || isSending) return;
-    sendMessage({ text: input });
-    setInput('');
-  }, [sendMessage, input, isSending]);
+  const handleSendMessage = useCallback(async () => {
+    if ((input.trim().length === 0 && attachments.length === 0) || isSending) {
+      return;
+    }
+
+    try {
+      const fileParts: FileUIPart[] = await Promise.all(
+        attachments.map(async (attachment) => ({
+          type: 'file' as const,
+          filename: attachment.name,
+          mediaType: attachment.type || 'application/octet-stream',
+          url: await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => {
+              if (typeof reader.result === 'string') {
+                resolve(reader.result);
+                return;
+              }
+
+              reject(new Error('web_chat_attachment_read_failed'));
+            };
+            reader.onerror = () =>
+              reject(reader.error ?? new Error('web_chat_attachment_read_failed'));
+            reader.readAsDataURL(attachment.file);
+          }),
+        })),
+      );
+
+      await sendMessage({
+        parts: [
+          ...(input.trim()
+            ? [{ type: 'text' as const, text: input.trim() }]
+            : []),
+          ...fileParts,
+        ],
+      });
+      setInput('');
+      setAttachments([]);
+    } catch (error) {
+      console.error('Failed to send message with attachments', error);
+    }
+  }, [attachments, input, isSending, sendMessage]);
 
   const handleSuggestionClick = useCallback(
     (suggestion: string) => {
@@ -227,7 +265,9 @@ export const AIChatPopup: React.FC<AIChatPopupProps> = ({
             <AIChatInput
               value={input}
               isSending={isSending}
+              attachments={attachments}
               onChange={setInput}
+              onAttachmentsChange={setAttachments}
               onSend={handleSendMessage}
             />
           </div>
