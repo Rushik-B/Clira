@@ -310,13 +310,14 @@ function normalizeAssistantResponseWhitespace(value: string): string {
 
 export function stripInternalMetadataFromAssistantResponse(
   response: string,
-): { response: string; stripped: boolean } {
+): { response: string; stripped: boolean; claimedToolHistoryNames: string[] } {
   if (!response) {
-    return { response: '', stripped: false };
+    return { response: '', stripped: false, claimedToolHistoryNames: [] };
   }
 
   const cleanedLines: string[] = [];
   const timestampBlockPayloadLines: string[] = [];
+  const claimedToolHistoryNames: string[] = [];
   let stripped = false;
   let insideTimestampBlock = false;
 
@@ -331,6 +332,10 @@ export function stripInternalMetadataFromAssistantResponse(
 
     if (TOOL_HISTORY_METADATA_LINE_PATTERN.test(trimmed)) {
       stripped = true;
+      const toolsPart = trimmed.replace(TOOL_HISTORY_METADATA_LINE_PATTERN, '');
+      for (const name of toolsPart.split(/[,\s]+/).map((s) => s.trim()).filter(Boolean)) {
+        claimedToolHistoryNames.push(name);
+      }
       continue;
     }
 
@@ -352,7 +357,7 @@ export function stripInternalMetadataFromAssistantResponse(
     cleanedResponse = normalizeAssistantResponseWhitespace(timestampBlockPayloadLines.join('\n'));
   }
 
-  return { response: cleanedResponse, stripped };
+  return { response: cleanedResponse, stripped, claimedToolHistoryNames };
 }
 
 export function isDateTimeTime(value: CalendarEventDraftDTO['start']): value is { dateTime: string; timeZone: string } {

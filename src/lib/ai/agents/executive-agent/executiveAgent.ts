@@ -34,6 +34,7 @@ import {
   buildTerminalFallbackResponse,
   collectExecutedToolNames,
   collectOutOfPackToolNames,
+  collectToolNamesFromExecution,
   resolveProgressChannel,
   resolveRetrievalProfile,
   stripInternalMetadataFromAssistantResponse,
@@ -468,6 +469,21 @@ export class ExecutiveAgent {
       const sanitizedResponse = stripInternalMetadataFromAssistantResponse(response);
       if (sanitizedResponse.stripped) {
         logger.warn('[executiveAgent] Stripped leaked internal metadata from assistant response');
+      }
+      if (sanitizedResponse.claimedToolHistoryNames.length > 0) {
+        const actualToolNames = collectToolNamesFromExecution({ toolCalls, toolResults, steps });
+        const fabricated = sanitizedResponse.claimedToolHistoryNames.filter(
+          (name) => !actualToolNames.has(name),
+        );
+        if (fabricated.length > 0) {
+          logger.error('[executiveAgent] FABRICATED_TOOL_HISTORY: model claimed tool usage that did not occur', {
+            fabricatedToolNames: fabricated,
+            claimedToolHistory: sanitizedResponse.claimedToolHistoryNames,
+            actualToolNames: Array.from(actualToolNames),
+            selectedPack,
+            selectedPacks,
+          });
+        }
       }
       response = sanitizedResponse.response;
       if (!response) {
