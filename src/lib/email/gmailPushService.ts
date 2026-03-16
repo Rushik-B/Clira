@@ -2,7 +2,7 @@ import { prisma } from '../prisma';
 import { GmailService } from './gmail';
 import { ReplyGeneratorService } from '../services/core/replyGenerator';
 import { emitQueueEvent } from '@/lib/events/queueEvents';
-import { EmailFilterService, EmailMessage } from './emailFilterService';
+import { EmailFilterService, EmailMessage, isHardSkipFilterResult } from './emailFilterService';
 import { ReplyRouterAgent } from '@/lib/ai/agents/replyRouterAgent';
 import { createGmailServiceForUser } from '@/lib/security/getUserGmailCredentials';
 import { encryptEmailContent, encryptThreadContent, decryptEmailContent, decryptEmails, decryptThreadContent } from '@/lib/security/emailCrypto';
@@ -44,18 +44,6 @@ export class GmailPushService {
     this.gmailService = null;
     this.gmailContextUserId = null;
     this.gmail = null;
-  }
-
-  private isHardSkipFilterResult(filterResult: { shouldReply: boolean; reason: string }): boolean {
-    if (filterResult.shouldReply) return false;
-
-    return (
-      filterResult.reason === 'Own message/draft - skip' ||
-      filterResult.reason === 'Invalid or empty sender' ||
-      filterResult.reason === 'Empty subject line' ||
-      filterResult.reason.startsWith('Blocked by Gmail category:') ||
-      filterResult.reason.startsWith('Blocked sender pattern:')
-    );
   }
 
   private async prepareGmailClient({
@@ -741,7 +729,7 @@ export class GmailPushService {
               
               console.log(`🔬 DEBUG: Filter result - shouldReply: ${filterResult.shouldReply}, reason: ${filterResult.reason}`);
 
-              if (!filterResult.shouldReply && this.isHardSkipFilterResult(filterResult)) {
+              if (!filterResult.shouldReply && isHardSkipFilterResult(filterResult)) {
                 console.log(`🚫 Email filtered: ${filterResult.reason}`);
                 
                 // Store filter reason in action history for transparency
