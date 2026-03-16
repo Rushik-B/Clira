@@ -11,8 +11,7 @@ export function resolveExecAgentThinkingLevel(): ExecAgentThinkingLevel {
 }
 
 export const MESSAGING_DEADLINE_MS = 180_000;
-export const MESSAGING_TOOL_RESPONSE_BUFF
-ER_MS = 3_500;
+export const MESSAGING_TOOL_RESPONSE_BUFFER_MS = 3_500;
 export const MESSAGING_FIRST_TOOL_MAX_BUDGET_MS = 30_000;
 export const MESSAGING_SUBSEQUENT_TOOL_RESERVE_MS = 15_000;
 export const MESSAGING_MIN_SUBAGENT_BUDGET_MS = 8_000;
