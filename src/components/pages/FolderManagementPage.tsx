@@ -475,8 +475,8 @@ export const FolderManagementPage: React.FC = () => {
     }) => {
       setSortStatus({
         state: 'processing',
-        message: `Reorganizing emails into ${folderName}`,
-        details: 'We will refresh your folders as soon as this completes.',
+        message: `Queueing background reorganization for ${folderName}`,
+        details: 'Recent inbox mail will be re-evaluated using your latest folder rules.',
       });
 
       try {
@@ -491,35 +491,18 @@ export const FolderManagementPage: React.FC = () => {
 
         const payload = await response.json().catch(() => null);
 
-        if (!response.ok || !payload) {
+        if (!response.ok || !payload?.success) {
           throw new Error(
             payload?.error || `Reorganization request failed with status ${response.status}`
           );
         }
 
-        const emailChanges = Array.isArray(payload?.data?.emailChanges)
-          ? payload.data.emailChanges
-          : [];
-
-        const emailsMoved = emailChanges.reduce((total: number, change: any) => {
-          const emails = Array.isArray(change?.emails) ? change.emails.length : 0;
-          return total + emails;
-        }, 0);
-
         setSortStatus({
           state: 'success',
-          message:
-            emailsMoved > 0
-              ? `Reorganized ${emailsMoved} email${emailsMoved === 1 ? '' : 's'} into ${folderName}`
-              : `No recent emails matched ${folderName}`,
+          message: payload?.message || `Queued background reorganization for ${folderName}`,
           details:
-            emailsMoved > 0
-              ? 'Folder counts have been refreshed.'
-              : 'Everything was already organized.',
-          emailsProcessed: emailsMoved > 0 ? emailsMoved : undefined,
+            'Sorting will continue in the background. Refresh shortly to see updated folder counts.',
         });
-
-        await fetchFolderData({ skipFolderSpinner: true });
       } catch (error) {
         setSortStatus({
           state: 'error',
@@ -528,7 +511,7 @@ export const FolderManagementPage: React.FC = () => {
         });
       }
     },
-    [fetchFolderData]
+    []
   );
 
   useAutoReset(
