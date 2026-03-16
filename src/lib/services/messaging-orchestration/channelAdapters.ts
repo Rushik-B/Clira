@@ -28,3 +28,11 @@ export async function isDuplicateInboundFromAdapter(
   const isDuplicate = await hasSeenMessageId(messageId);
   return { isDuplicate, messageId };
 }
+
+export async function getDuplicateInboundMessageIdFromAdapter(
+  adapter: Pick<ChannelAdapter, 'messageIdForDedupe'>,
+  hasSeenMessageId: (messageId: string) => Promise<boolean>,
+): Promise<string | null> {
+  const dedupe = await isDuplicateInboundFromAdapter(adapter, hasSeenMessageId);
+  return dedupe.isDuplicate ? dedupe.messageId : null;
+}

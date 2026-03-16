@@ -33,7 +33,7 @@ import {
   buildOrchestrationMessageMetadata,
   emitOrchestratorEvent,
   getMessagingOrchestrator,
-  isDuplicateInboundFromAdapter,
+  getDuplicateInboundMessageIdFromAdapter,
   type ChannelAdapter,
   type RunContext,
 } from '@/lib/services/messaging-orchestration';
@@ -366,14 +366,14 @@ export async function processTelegramMessage(
     return { success: true, response: '' };
   }
 
-  const dedupe = await isDuplicateInboundFromAdapter(
+  const duplicateMessageId = await getDuplicateInboundMessageIdFromAdapter(
     adapter,
     (id) => conversationManager.hasInboundMessageWithTelegramMessageId(id),
   );
-  if (dedupe.isDuplicate) {
+  if (duplicateMessageId) {
     logger.info('[telegramProcessor] Duplicate inbound Telegram message ID detected, skipping', {
       chatId,
-      messageId: dedupe.messageId,
+      messageId: duplicateMessageId,
     });
     return { success: true, response: '' };
   }

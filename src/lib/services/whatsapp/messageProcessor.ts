@@ -35,7 +35,7 @@ import {
   buildOrchestrationMessageMetadata,
   emitOrchestratorEvent,
   getMessagingOrchestrator,
-  isDuplicateInboundFromAdapter,
+  getDuplicateInboundMessageIdFromAdapter,
   type ChannelAdapter,
   type RunContext,
 } from '@/lib/services/messaging-orchestration';
@@ -343,14 +343,14 @@ export async function processWhatsAppMessage(
     }`,
   );
 
-  const dedupe = await isDuplicateInboundFromAdapter(
+  const duplicateMessageId = await getDuplicateInboundMessageIdFromAdapter(
     adapter,
     (id) => conversationManager.hasInboundMessageWithWaMessageId(id),
   );
-  if (dedupe.isDuplicate) {
+  if (duplicateMessageId) {
     logger.info('[messageProcessor] Duplicate inbound WhatsApp message detected, skipping', {
       waId: `${waId.slice(0, 4)}****`,
-      messageId: dedupe.messageId,
+      messageId: duplicateMessageId,
     });
     return { success: true, response: '' };
   }

@@ -73,10 +73,7 @@ vi.mock('@/lib/services/messaging-orchestration', () => ({
   getMessagingOrchestrator: () => ({
     prepareRunWithAdapter: mockPrepareRunWithAdapter,
   }),
-  isDuplicateInboundFromAdapter: vi.fn(async () => ({
-    isDuplicate: false,
-    messageId: null,
-  })),
+  getDuplicateInboundMessageIdFromAdapter: vi.fn(async () => null),
 }));
 
 import { prisma } from '@/lib/prisma';
