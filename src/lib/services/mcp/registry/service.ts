@@ -131,7 +131,29 @@ function toPrismaLatencyClass(value: McpToolManifestRecord['latencyClass']): Pri
   }
 }
 
+function buildToolForClassification(row: ManifestRow): Tool {
+  return {
+    name: row.toolName,
+    description: row.description ?? undefined,
+    inputSchema: row.inputSchema as Tool['inputSchema'],
+    outputSchema: row.outputSchema as Tool['outputSchema'],
+    annotations:
+      row.annotations && typeof row.annotations === 'object' && !Array.isArray(row.annotations)
+        ? (row.annotations as Tool['annotations'])
+        : undefined,
+  };
+}
+
+function resolveStoredActionClass(row: ManifestRow): McpActionClass {
+  const classified = classifyMcpActionClass(buildToolForClassification(row));
+  const persisted = fromPrismaActionClass(row.actionClass);
+
+  return classified === persisted ? persisted : classified;
+}
+
 function toManifestRecord(row: ManifestRow): McpToolManifestRecord {
+  const actionClass = resolveStoredActionClass(row);
+
   return {
     id: row.id,
     connectionId: row.connectionId,
@@ -143,9 +165,9 @@ function toManifestRecord(row: ManifestRow): McpToolManifestRecord {
     inputSchema: row.inputSchema as Record<string, unknown>,
     outputSchema: row.outputSchema as Record<string, unknown> | null,
     annotations: row.annotations as Record<string, unknown> | null,
-    actionClass: fromPrismaActionClass(row.actionClass),
+    actionClass,
     latencyClass: fromPrismaLatencyClass(row.latencyClass),
-    safeForAutoUse: row.safeForAutoUse,
+    safeForAutoUse: row.safeForAutoUse || actionClass === 'read',
     syncDiagnostics: row.syncDiagnostics,
     lastSyncedAt: row.lastSyncedAt,
     createdAt: row.createdAt,

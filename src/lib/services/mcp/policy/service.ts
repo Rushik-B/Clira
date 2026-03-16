@@ -16,7 +16,6 @@ function buildDecision(params: {
   connection: McpRegistryConnection['connection'];
   actionClass: string;
   selected: boolean;
-  safeForAutoUse: boolean;
 }): McpPolicyDecision {
   if (!isMcpEnabled()) {
     return {
@@ -51,15 +50,6 @@ function buildDecision(params: {
       callable: false,
       requiresConfirmation: false,
       reason: 'connection_disabled',
-    };
-  }
-
-  if (params.actionClass === 'read' && !params.safeForAutoUse) {
-    return {
-      visible: true,
-      callable: false,
-      requiresConfirmation: false,
-      reason: 'read_only_phase',
     };
   }
 
@@ -196,7 +186,6 @@ export async function resolveMcpToolExposure(params: {
         connection: entry.connection,
         actionClass: tool.actionClass,
         selected,
-        safeForAutoUse: tool.safeForAutoUse,
       });
 
       if (!decision.visible) {

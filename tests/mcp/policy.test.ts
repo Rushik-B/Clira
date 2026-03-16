@@ -135,7 +135,6 @@ describe('MCP policy service', () => {
               toolSlug: 'lookup_docs',
               modelToolName: 'mcp__writer__lookup_docs',
               displayTitle: 'Lookup docs',
-              safeForAutoUse: false,
             }),
           ],
         },
@@ -151,23 +150,66 @@ describe('MCP policy service', () => {
     });
 
     expect(exposure.approvedTools.map((candidate) => candidate.tool.modelToolName)).toEqual([
+      'mcp__writer__lookup_docs',
       'mcp__docs__search_docs',
     ]);
     expect(exposure.mutationTools).toEqual([]);
     expect(exposure.degradedTools.map((candidate) => candidate.tool.modelToolName)).toEqual([
       'mcp__crm__search_crm',
-      'mcp__writer__lookup_docs',
     ]);
     expect(exposure.degradedTools.map((candidate) => candidate.decision.reason)).toEqual([
       'connection_not_ready',
-      'read_only_phase',
     ]);
     expect(exposure.promptSummary.toolSummaryLines).toEqual([
+      'Writer: Lookup docs (read)',
       'Docs Workspace: Search docs (read)',
     ]);
     expect(exposure.promptSummary.degradedLines).toEqual([
       'CRM Mirror: Search CRM unavailable (auth expired)',
-      'Writer: Lookup docs unavailable (read_only_phase)',
+    ]);
+  });
+
+  test('approves correctly classified read tools even when safeForAutoUse is false', async () => {
+    const snapshot: McpRegistrySnapshot = {
+      userId: 'user-1',
+      fetchedAt: new Date('2026-03-02T18:05:00.000Z'),
+      connections: [
+        {
+          connection: buildConnection({
+            id: 'conn-lookup',
+            serverKey: 'writer',
+            displayName: 'Writer',
+          }),
+          tools: [
+            buildTool({
+              id: 'tool-lookup',
+              connectionId: 'conn-lookup',
+              toolName: 'lookup_docs',
+              toolSlug: 'lookup_docs',
+              modelToolName: 'mcp__writer__lookup_docs',
+              displayTitle: 'Lookup docs',
+              safeForAutoUse: false,
+            }),
+          ],
+        },
+      ],
+    };
+    loadMcpRegistrySnapshotMock.mockResolvedValue(snapshot);
+
+    const exposure = await resolveMcpToolExposure({
+      userId: 'user-1',
+      conversationId: 'conv-1',
+      channel: 'twilio',
+      selectedConnectionIds: ['conn-lookup'],
+    });
+
+    expect(exposure.approvedTools.map((candidate) => candidate.tool.modelToolName)).toEqual([
+      'mcp__writer__lookup_docs',
+    ]);
+    expect(exposure.approvedTools[0]?.decision.reason).toBe('approved');
+    expect(exposure.degradedTools).toEqual([]);
+    expect(exposure.promptSummary.toolSummaryLines).toEqual([
+      'Writer: Lookup docs (read)',
     ]);
   });
 

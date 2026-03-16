@@ -162,16 +162,34 @@ describe('MCP mutation flow', () => {
   });
 
   test('claims, commits, and replays a consumed mutation without re-executing it', async () => {
+    const summarizedResult = {
+      ok: true,
+      toolName: 'create_event',
+      modelToolName: 'mcp__calendar__create_event',
+      displayName: 'Work Calendar',
+      degraded: false,
+      errorClass: null,
+      freshness: {
+        cacheTtlMs: 90_000,
+        cachedAt: '2026-03-14T18:05:00.000Z',
+        connectionLastSyncedAt: '2026-03-14T18:00:00.000Z',
+      },
+      userFacingDegradedReason: null,
+      snippets: ['Event created for Interview.'],
+      structuredSummary: {
+        eventId: 'evt-123',
+      },
+      status: 'consumed',
+      message: 'Create event completed via Work Calendar.',
+    };
+
     pendingFindFirstMock
       .mockResolvedValueOnce(buildPendingRow())
       .mockResolvedValueOnce(
         buildPendingRow({
           status: 'CONSUMED',
           consumedAt: new Date('2026-03-14T18:05:00.000Z'),
-          resultSummary: {
-            ok: true,
-            message: 'Create event completed via Work Calendar.',
-          },
+          resultSummary: summarizedResult,
         }),
       );
     pendingUpdateManyMock.mockResolvedValue({ count: 1 });
@@ -181,15 +199,19 @@ describe('MCP mutation flow', () => {
       modelToolName: 'mcp__calendar__create_event',
       connectionId: 'conn-1',
       displayName: 'Work Calendar',
-      content: [],
+      content: [
+        {
+          type: 'text',
+          text: 'Event created for Interview.',
+        },
+      ],
+      structuredContent: {
+        eventId: 'evt-123',
+      },
       degraded: false,
       latencyMs: 12,
       cache: 'miss',
-      freshness: {
-        cacheTtlMs: 90_000,
-        cachedAt: '2026-03-14T18:05:00.000Z',
-        connectionLastSyncedAt: '2026-03-14T18:00:00.000Z',
-      },
+      freshness: summarizedResult.freshness,
     });
 
     const first = await commitPendingMcpAction({
@@ -209,7 +231,23 @@ describe('MCP mutation flow', () => {
       ok: true,
       status: 'consumed',
       message: 'Create event completed via Work Calendar.',
+      snippets: ['Event created for Interview.'],
+      structuredSummary: {
+        eventId: 'evt-123',
+      },
     });
+    expect(pendingUpdateMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          resultSummary: expect.objectContaining({
+            snippets: ['Event created for Interview.'],
+            structuredSummary: {
+              eventId: 'evt-123',
+            },
+          }),
+        }),
+      }),
+    );
     expect(executeMcpToolMock).toHaveBeenCalledTimes(1);
     expect(executeMcpToolMock.mock.calls[0]?.[0]).toMatchObject({
       idempotencyKey: 'idem-1',
@@ -220,6 +258,10 @@ describe('MCP mutation flow', () => {
       status: 'consumed',
       replayed: true,
       message: 'Create event completed via Work Calendar.',
+      snippets: ['Event created for Interview.'],
+      structuredSummary: {
+        eventId: 'evt-123',
+      },
     });
   });
 

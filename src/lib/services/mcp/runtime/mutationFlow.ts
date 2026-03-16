@@ -7,6 +7,7 @@ import {
 import { prisma } from '@/lib/prisma';
 import { getMcpManifestByModelToolName } from '@/lib/services/mcp/registry/service';
 import { executeMcpTool } from '@/lib/services/mcp/runtime/executor';
+import { summarizeMcpExecutionResultForModel } from '@/lib/services/mcp/runtime/resultSummaries';
 import {
   sanitizeMcpInlineText,
   stringifySanitizedMcpJson,
@@ -232,6 +233,31 @@ function buildStoredResultMessage(
     : fallback;
 }
 
+function getStoredResultSummary(record: McpPendingActionRecord): Record<string, unknown> {
+  if (!record.resultSummary || Array.isArray(record.resultSummary)) {
+    return {};
+  }
+
+  return { ...record.resultSummary };
+}
+
+function buildStoredPendingActionResponse(params: {
+  record: McpPendingActionRecord;
+  status: 'consumed' | 'cancelled';
+  fallbackMessage: string;
+}): Record<string, unknown> {
+  const storedResult = getStoredResultSummary(params.record);
+
+  return {
+    ...storedResult,
+    ok: typeof storedResult.ok === 'boolean' ? storedResult.ok : true,
+    status: params.status,
+    replayed: true,
+    message: buildStoredResultMessage(params.record, params.fallbackMessage),
+    pendingAction: buildPendingActionEnvelope(params.record),
+  };
+}
+
 async function getLatestPendingAction(params: {
   userId: string;
   conversationId: string;
@@ -454,29 +480,19 @@ export async function commitPendingMcpAction(params: {
   }
 
   if (latestPending.status === 'consumed') {
-    return {
-      ok: true,
+    return buildStoredPendingActionResponse({
+      record: latestPending,
       status: 'consumed',
-      replayed: true,
-      message: buildStoredResultMessage(
-        latestPending,
-        'That external action already completed.',
-      ),
-      pendingAction: buildPendingActionEnvelope(latestPending),
-    };
+      fallbackMessage: 'That external action already completed.',
+    });
   }
 
   if (latestPending.status === 'cancelled') {
-    return {
-      ok: true,
+    return buildStoredPendingActionResponse({
+      record: latestPending,
       status: 'cancelled',
-      replayed: true,
-      message: buildStoredResultMessage(
-        latestPending,
-        'That external action was already cancelled.',
-      ),
-      pendingAction: buildPendingActionEnvelope(latestPending),
-    };
+      fallbackMessage: 'That external action was already cancelled.',
+    });
   }
 
   if (Date.now() > latestPending.expiresAt.getTime()) {
@@ -528,7 +544,7 @@ export async function commitPendingMcpAction(params: {
     };
   }
 
-  const releasePending = async (resultSummary: Prisma.InputJsonObject) => {
+  const releasePending = async (resultSummary: Record<string, unknown>) => {
     await prisma.pendingMcpAction.update({
       where: { id: latestPending.id },
       data: {
@@ -538,7 +554,7 @@ export async function commitPendingMcpAction(params: {
     });
   };
 
-  const cancelPending = async (resultSummary: Prisma.InputJsonObject) => {
+  const cancelPending = async (resultSummary: Record<string, unknown>) => {
     await prisma.pendingMcpAction.update({
       where: { id: latestPending.id },
       data: {
@@ -549,7 +565,7 @@ export async function commitPendingMcpAction(params: {
     });
   };
 
-  const consumePending = async (resultSummary: Prisma.InputJsonObject) => {
+  const consumePending = async (resultSummary: Record<string, unknown>) => {
     await prisma.pendingMcpAction.update({
       where: { id: latestPending.id },
       data: {
@@ -609,17 +625,15 @@ export async function commitPendingMcpAction(params: {
     220,
   );
   const resultSummary = {
-    ok: true,
-    message: successMessage,
-    displayName: executionResult.displayName,
-    toolName: latestPending.modelToolName,
-  } satisfies Prisma.InputJsonObject;
-  await consumePending(resultSummary);
-
-  return {
+    ...summarizeMcpExecutionResultForModel(executionResult),
     ok: true,
     status: 'consumed',
     message: successMessage,
+  } satisfies Record<string, unknown>;
+  await consumePending(resultSummary);
+
+  return {
+    ...resultSummary,
     pendingAction: buildPendingActionEnvelope(latestPending),
   };
 }
