@@ -181,24 +181,21 @@ export class EmailMappingService {
     mailboxId?: string
   ): Promise<EmailMappingSearchResult> {
     try {
-      // Build mailbox-aware where clause
-      const mailboxWhere = mailboxId
-        ? { mailboxId }
-        : {}; // Legacy fallback: user-global (will be deprecated)
-
       if (!mailboxId) {
         console.warn(`[EMAIL MAPPING] findMappingForEmail called without mailboxId for ${emailAddress} - using user-global lookup (deprecated)`);
       }
 
-      // First, try exact email address match
-      const exactMapping = await prisma.emailMapping.findFirst({
+      const findFirstMapping = async (
         where: {
-          userId,
-          ...mailboxWhere,
-          emailAddress: { equals: emailAddress, mode: 'insensitive' },
-          isActive: true,
-          mappingType: 'EMAIL'
-        },
+          userId: string;
+          mailboxId?: string | null;
+          emailAddress?: { equals: string; mode: 'insensitive' };
+          domain?: { equals: string; mode: 'insensitive' };
+          isActive: boolean;
+          mappingType: 'EMAIL' | 'DOMAIN';
+        }
+      ) => prisma.emailMapping.findFirst({
+        where,
         include: {
           label: {
             select: {
@@ -215,76 +212,69 @@ export class EmailMappingService {
         }
       });
 
-      if (exactMapping) {
-        return {
-          mapping: {
-            id: exactMapping.id,
-            userId: exactMapping.userId,
-            mailboxId: exactMapping.mailboxId || undefined,
-            mailboxEmail: exactMapping.mailbox?.emailAddress,
-            labelId: exactMapping.labelId,
-            labelName: exactMapping.label.name,
-            labelColor: exactMapping.label.color || undefined,
-            emailAddress: exactMapping.emailAddress,
-            domain: exactMapping.domain || undefined,
-            isActive: exactMapping.isActive,
-            mappingType: exactMapping.mappingType,
-            confidence: exactMapping.confidence || undefined,
-            createdAt: exactMapping.createdAt,
-            updatedAt: exactMapping.updatedAt
-          },
-          matchType: 'exact'
-        };
+      const toSearchResult = (
+        mapping: NonNullable<Awaited<ReturnType<typeof findFirstMapping>>>,
+        matchType: 'exact' | 'domain'
+      ): EmailMappingSearchResult => ({
+        mapping: {
+          id: mapping.id,
+          userId: mapping.userId,
+          mailboxId: mapping.mailboxId || undefined,
+          mailboxEmail: mapping.mailbox?.emailAddress,
+          labelId: mapping.labelId,
+          labelName: mapping.label.name,
+          labelColor: mapping.label.color || undefined,
+          emailAddress: mapping.emailAddress,
+          domain: mapping.domain || undefined,
+          isActive: mapping.isActive,
+          mappingType: mapping.mappingType,
+          confidence: mapping.confidence || undefined,
+          createdAt: mapping.createdAt,
+          updatedAt: mapping.updatedAt
+        },
+        matchType
+      });
+
+      const exactWhere = {
+        userId,
+        emailAddress: { equals: emailAddress, mode: 'insensitive' as const },
+        isActive: true,
+        mappingType: 'EMAIL' as const
+      };
+
+      // Prefer mailbox-scoped mappings, then fall back to legacy user-global mappings.
+      const exactLookupScopes = mailboxId ? [mailboxId, null] : [undefined];
+      for (const scopeMailboxId of exactLookupScopes) {
+        const exactMapping = await findFirstMapping({
+          ...exactWhere,
+          ...(scopeMailboxId === undefined ? {} : { mailboxId: scopeMailboxId })
+        });
+
+        if (exactMapping) {
+          return toSearchResult(exactMapping, 'exact');
+        }
       }
 
-      // If no exact match, try domain matching
       if (emailAddress.includes('@')) {
         const domain = '@' + emailAddress.split('@')[1];
 
-        const domainMapping = await prisma.emailMapping.findFirst({
-          where: {
-            userId,
-            ...mailboxWhere,
-            domain: { equals: domain, mode: 'insensitive' },
-            isActive: true,
-            mappingType: 'DOMAIN'
-          },
-          include: {
-            label: {
-              select: {
-                name: true,
-                color: true,
-                mailboxId: true
-              }
-            },
-            mailbox: {
-              select: {
-                emailAddress: true
-              }
-            }
-          }
-        });
+        const domainWhere = {
+          userId,
+          domain: { equals: domain, mode: 'insensitive' as const },
+          isActive: true,
+          mappingType: 'DOMAIN' as const
+        };
+        const domainLookupScopes = mailboxId ? [mailboxId, null] : [undefined];
 
-        if (domainMapping) {
-          return {
-            mapping: {
-              id: domainMapping.id,
-              userId: domainMapping.userId,
-              mailboxId: domainMapping.mailboxId || undefined,
-              mailboxEmail: domainMapping.mailbox?.emailAddress,
-              labelId: domainMapping.labelId,
-              labelName: domainMapping.label.name,
-              labelColor: domainMapping.label.color || undefined,
-              emailAddress: domainMapping.emailAddress,
-              domain: domainMapping.domain || undefined,
-              isActive: domainMapping.isActive,
-              mappingType: domainMapping.mappingType,
-              confidence: domainMapping.confidence || undefined,
-              createdAt: domainMapping.createdAt,
-              updatedAt: domainMapping.updatedAt
-            },
-            matchType: 'domain'
-          };
+        for (const scopeMailboxId of domainLookupScopes) {
+          const domainMapping = await findFirstMapping({
+            ...domainWhere,
+            ...(scopeMailboxId === undefined ? {} : { mailboxId: scopeMailboxId })
+          });
+
+          if (domainMapping) {
+            return toSearchResult(domainMapping, 'domain');
+          }
         }
       }
 
