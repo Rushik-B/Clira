@@ -2,10 +2,8 @@ import { prisma } from '../prisma';
 import { GmailService } from './gmail';
 import { ReplyGeneratorService } from '../services/core/replyGenerator';
 import { emitQueueEvent } from '@/lib/events/queueEvents';
-import { EmailRoutingService } from '@/lib/services/emailRoutingService';
 import { EmailFilterService, EmailMessage } from './emailFilterService';
 import { ReplyRouterAgent } from '@/lib/ai/agents/replyRouterAgent';
-import { FeatureFlags } from '@/lib/services/utils/featureFlags';
 import { createGmailServiceForUser } from '@/lib/security/getUserGmailCredentials';
 import { encryptEmailContent, encryptThreadContent, decryptEmailContent, decryptEmails, decryptThreadContent } from '@/lib/security/emailCrypto';
 import { triggerAlertNotification } from '@/lib/services/alertNotificationService';
@@ -46,6 +44,18 @@ export class GmailPushService {
     this.gmailService = null;
     this.gmailContextUserId = null;
     this.gmail = null;
+  }
+
+  private isHardSkipFilterResult(filterResult: { shouldReply: boolean; reason: string }): boolean {
+    if (filterResult.shouldReply) return false;
+
+    return (
+      filterResult.reason === 'Own message/draft - skip' ||
+      filterResult.reason === 'Invalid or empty sender' ||
+      filterResult.reason === 'Empty subject line' ||
+      filterResult.reason.startsWith('Blocked by Gmail category:') ||
+      filterResult.reason.startsWith('Blocked sender pattern:')
+    );
   }
 
   private async prepareGmailClient({
@@ -695,37 +705,6 @@ export class GmailPushService {
               
               console.log(`🔒 Marked email ${savedEmail.id} as processing`);
               
-              // Predict label (for UI scoping) — used if we emit events later
-              let predictedLabelId: string | undefined;
-              let predictedLabelName: string | undefined;
-              let predictedLabelColor: string | undefined;
-              let predictedGmailLabelId: string | undefined;
-              try {
-                const router = new EmailRoutingService();
-                const route = await router.routeEmail(user.id, {
-                  from: emailData.from,
-                  subject: emailData.subject,
-                  to: emailData.to || [],
-                  cc: emailData.cc || [],
-                });
-                if (route?.labelId) {
-                  const label = await prisma.label.findFirst({
-                    where: { id: route.labelId, userId: user.id },
-                    select: { id: true, name: true, color: true, gmailLabelId: true },
-                  });
-                  if (label) {
-                    predictedLabelId = label.id;
-                    predictedLabelName = label.name;
-                    predictedLabelColor = label.color || '#6B7280';
-                    predictedGmailLabelId = label.gmailLabelId || undefined;
-                  }
-                }
-              } catch (e) {
-                console.warn(`⚠️ Label prediction failed for email ${savedEmail.id}:`, e);
-              }
-
-              const queueLabelId = predictedLabelId;
-              
               // Apply email filtering
               const emailMessage: EmailMessage = {
                 messageId: emailData.messageId,
@@ -761,8 +740,8 @@ export class GmailPushService {
               );
               
               console.log(`🔬 DEBUG: Filter result - shouldReply: ${filterResult.shouldReply}, reason: ${filterResult.reason}`);
-              
-                              if (!filterResult.shouldReply) {
+
+              if (!filterResult.shouldReply && this.isHardSkipFilterResult(filterResult)) {
                 console.log(`🚫 Email filtered: ${filterResult.reason}`);
                 
                 // Store filter reason in action history for transparency
@@ -788,22 +767,37 @@ export class GmailPushService {
                 
                 continue;
               }
-              
-              console.log(`✅ Email passed filters: ${filterResult.reason}`);
+
+              console.log(
+                filterResult.shouldReply
+                  ? `✅ Email passed reply policy: ${filterResult.reason}`
+                  : `🏷️ Email blocked for draft generation but still eligible for labeling: ${filterResult.reason}`,
+              );
 
               // Stage 1 (Router): LLM-based second-pass evaluator to prevent unnecessary drafts
-              // Runs after deterministic filter has allowed the email
+              // Existing evaluate() behavior is preserved; realtime labeling uses the new router entrypoint.
               const router = new ReplyRouterAgent();
-              const routerDecision = await router.evaluate({
+              const routerResult = await router.evaluateRealtimeRouting({
                 userId: user.id,
                 userEmail: userDetails.email,
+                emailId: savedEmail.id,
+                mailboxId: mailbox.id,
+                mailboxEmail: mailbox.emailAddress,
                 message: emailMessage,
                 filterResult,
                 strict: false,
               });
+              const routerDecision = routerResult.replyDecision;
+              const queueLabelId = routerResult.labeling.label?.id;
+              const predictedLabelName = routerResult.labeling.label?.name;
+              const predictedLabelColor = routerResult.labeling.label?.color || '#6B7280';
+              const predictedGmailLabelId = routerResult.labeling.label?.gmailLabelId;
 
               console.log(
                 `🧭 Router decision - shouldReply: ${routerDecision.shouldReply}, reason: ${routerDecision.reason}`,
+              );
+              console.log(
+                `🏷️ Router labeling - status: ${routerResult.labeling.status}, reason: ${routerResult.labeling.reason}`,
               );
 
               if (routerDecision.shouldNotify && routerDecision.matchedAlertId) {
@@ -847,6 +841,7 @@ export class GmailPushService {
                       autoFiltered: true,
                       filterReason: filterResult.reason,
                       routerBlocked: true,
+                      labelingStatus: routerResult.labeling.status,
                     },
                   },
                 });
@@ -900,7 +895,12 @@ export class GmailPushService {
                   mailboxId: mailbox.id,
                   mailboxEmail: mailbox.emailAddress,
                   gmailMessageId: emailData.gmailMessageId,
-                  currentLabelIds: emailData.labelIds || [],
+                  currentLabelIds: Array.from(
+                    new Set([
+                      ...(emailData.labelIds || []),
+                      ...(predictedGmailLabelId ? [predictedGmailLabelId] : []),
+                    ]),
+                  ),
                   traceContext,
                   incomingEmail: {
                     from: emailData.from,
