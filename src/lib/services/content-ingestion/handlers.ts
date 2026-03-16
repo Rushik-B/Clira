@@ -3,7 +3,20 @@ import { callTextWithMessages } from '@/lib/ai/callLlm';
 import { models } from '@/lib/ai/models';
 import type { AiTraceContext, AiTraceUsage } from '@/lib/ai/tracing';
 import { stripHtmlPreservingNewlines } from '@/lib/email/text';
-import type { AcquiredContent, ContentMediaFamily, ContentTokenCost } from './types';
+import { resolveContentMediaFamily } from './limits';
+import { guessMimeTypeFromFilename } from './mime';
+import { extractOfficeDocumentText, extractSpreadsheetText } from './structuredFormats';
+import type {
+  AcquiredContent,
+  ContentExtractionNote,
+  ContentExtractionResult,
+  ContentMediaFamily,
+  ContentTokenCost,
+} from './types';
+import { readZipEntries } from './zip';
+
+const MAX_ARCHIVE_CHILDREN = 8;
+const MAX_CONTAINER_DEPTH = 2;
 
 type ExtractHandlerParams = {
   acquiredContent: AcquiredContent;
@@ -11,6 +24,13 @@ type ExtractHandlerParams = {
   traceContext?: AiTraceContext;
   channelLabel?: string;
   userCaption?: string | null;
+  containerDepth: number;
+  extractNestedContent: (params: {
+    buffer: Buffer;
+    mimeType?: string | null;
+    filename?: string | null;
+    originUri?: string | null;
+  }) => Promise<ContentExtractionResult>;
 };
 
 type ExtractHandlerOutput = {
@@ -18,6 +38,7 @@ type ExtractHandlerOutput = {
   images: string[];
   structuredData: Record<string, unknown> | null;
   tokenCost: ContentTokenCost;
+  degradationNotes?: ContentExtractionNote[];
 };
 
 export type ContentHandler = {
@@ -241,6 +262,211 @@ async function extractHtmlText(params: ExtractHandlerParams): Promise<ExtractHan
   };
 }
 
+function buildDeterministicOutput(params: {
+  extractedText: string;
+  structuredData?: Record<string, unknown> | null;
+  degradationNotes?: ContentExtractionNote[];
+}): ExtractHandlerOutput {
+  return {
+    extractedText: params.extractedText.trim(),
+    images: [],
+    structuredData: params.structuredData ?? null,
+    tokenCost: normalizeUsage(null),
+    degradationNotes: params.degradationNotes ?? [],
+  };
+}
+
+function renderNestedExtraction(result: ContentExtractionResult): string {
+  if (result.status === 'ok') {
+    return result.extractedText;
+  }
+
+  const degradation = result.degradationNotes
+    .map((note) => `[Content extraction degraded] ${note.message}`)
+    .join('\n');
+
+  return [degradation, result.extractedText || null].filter(Boolean).join('\n\n');
+}
+
+function isZipContainer(params: ExtractHandlerParams): boolean {
+  const mimeType = params.acquiredContent.mimeType.toLowerCase();
+  const filename = params.acquiredContent.filename?.toLowerCase() ?? '';
+  return mimeType === 'application/zip' || filename.endsWith('.zip');
+}
+
+async function extractOfficeDocument(params: ExtractHandlerParams): Promise<ExtractHandlerOutput> {
+  const filename = params.acquiredContent.filename?.toLowerCase() ?? '';
+  const bytes = params.acquiredContent.bytes ?? Buffer.alloc(0);
+
+  if (!/\.(docx|pptx|odt|odp)$/i.test(filename)) {
+    return buildDeterministicOutput({
+      extractedText: '',
+      degradationNotes: [
+        {
+          code: 'unsupported_media_family',
+          message: 'Content ingestion can only deterministically read DOCX, PPTX, ODT, and ODP office files right now.',
+        },
+      ],
+    });
+  }
+
+  const entries = readZipEntries(bytes);
+  const extractedText = extractOfficeDocumentText(entries, filename);
+  if (!extractedText) {
+    return buildDeterministicOutput({
+      extractedText: '',
+      degradationNotes: [
+        {
+          code: 'unsupported_media_family',
+          message: 'The office document did not contain any deterministically readable text.',
+        },
+      ],
+      structuredData: {
+        entryCount: entries.length,
+      },
+    });
+  }
+
+  return buildDeterministicOutput({
+    extractedText,
+    structuredData: {
+      entryCount: entries.length,
+    },
+  });
+}
+
+async function extractSpreadsheet(params: ExtractHandlerParams): Promise<ExtractHandlerOutput> {
+  const filename = params.acquiredContent.filename?.toLowerCase() ?? '';
+  const mimeType = params.acquiredContent.mimeType.toLowerCase();
+
+  if (mimeType === 'text/csv' || filename.endsWith('.csv')) {
+    return decodePlainText(params);
+  }
+
+  if (!/\.(xlsx|ods)$/i.test(filename)) {
+    return buildDeterministicOutput({
+      extractedText: '',
+      degradationNotes: [
+        {
+          code: 'unsupported_media_family',
+          message: 'Content ingestion can only deterministically read CSV, XLSX, and ODS spreadsheets right now.',
+        },
+      ],
+    });
+  }
+
+  const entries = readZipEntries(params.acquiredContent.bytes ?? Buffer.alloc(0));
+  const extractedText = extractSpreadsheetText(entries, filename);
+  if (!extractedText) {
+    return buildDeterministicOutput({
+      extractedText: '',
+      degradationNotes: [
+        {
+          code: 'unsupported_media_family',
+          message: 'The spreadsheet did not contain any deterministically readable cells.',
+        },
+      ],
+      structuredData: {
+        entryCount: entries.length,
+      },
+    });
+  }
+
+  return buildDeterministicOutput({
+    extractedText,
+    structuredData: {
+      entryCount: entries.length,
+    },
+  });
+}
+
+async function extractArchive(params: ExtractHandlerParams): Promise<ExtractHandlerOutput> {
+  if (!isZipContainer(params)) {
+    return buildDeterministicOutput({
+      extractedText: '',
+      degradationNotes: [
+        {
+          code: 'archive_format_unsupported',
+          message: 'Content ingestion can only recursively inspect ZIP archives right now.',
+        },
+      ],
+    });
+  }
+
+  if (params.containerDepth >= MAX_CONTAINER_DEPTH) {
+    return buildDeterministicOutput({
+      extractedText: '',
+      degradationNotes: [
+        {
+          code: 'container_recursion_limit_exceeded',
+          message: `Archive extraction stopped because nested container depth exceeded the limit of ${MAX_CONTAINER_DEPTH}.`,
+        },
+      ],
+    });
+  }
+
+  const entries = readZipEntries(params.acquiredContent.bytes ?? Buffer.alloc(0))
+    .filter((entry) => !entry.name.startsWith('__MACOSX/') && !entry.name.endsWith('.DS_Store'));
+
+  if (entries.length === 0) {
+    return buildDeterministicOutput({
+      extractedText: '',
+      degradationNotes: [
+        {
+          code: 'archive_format_unsupported',
+          message: 'The ZIP archive did not contain any readable file entries.',
+        },
+      ],
+    });
+  }
+
+  const degradationNotes: ContentExtractionNote[] = [];
+  if (entries.length > MAX_ARCHIVE_CHILDREN) {
+    degradationNotes.push({
+      code: 'container_entry_limit_exceeded',
+      message: `Archive extraction processed only the first ${MAX_ARCHIVE_CHILDREN} files in this archive.`,
+    });
+  }
+
+  const childSummaries: string[] = [];
+  const childStructured = [];
+
+  for (const entry of entries.slice(0, MAX_ARCHIVE_CHILDREN)) {
+    const mimeType = guessMimeTypeFromFilename(entry.name);
+    const mediaFamily = resolveContentMediaFamily({
+      mimeType: mimeType ?? 'application/octet-stream',
+      filename: entry.name,
+    });
+    const childResult = await params.extractNestedContent({
+      buffer: entry.data,
+      mimeType,
+      filename: entry.name,
+      originUri: `zip://${entry.name}`,
+    });
+
+    childSummaries.push(
+      [`Archive entry: ${entry.name} [${mediaFamily}]`, renderNestedExtraction(childResult)].join(
+        '\n\n',
+      ),
+    );
+    childStructured.push({
+      name: entry.name,
+      mediaFamily,
+      status: childResult.status,
+    });
+  }
+
+  return buildDeterministicOutput({
+    extractedText: childSummaries.join('\n\n'),
+    degradationNotes,
+    structuredData: {
+      entryCount: entries.length,
+      processedEntryCount: Math.min(entries.length, MAX_ARCHIVE_CHILDREN),
+      entries: childStructured,
+    },
+  });
+}
+
 const HANDLERS: Record<ContentMediaFamily, ContentHandler> = {
   pdf: {
     mediaFamily: 'pdf',
@@ -279,21 +505,24 @@ const HANDLERS: Record<ContentMediaFamily, ContentHandler> = {
   },
   office_doc: {
     mediaFamily: 'office_doc',
-    version: 'office-doc-v1',
+    version: 'office-doc-v2',
     consumesBudget: false,
-    supportsExtraction: false,
+    supportsExtraction: true,
+    extract: extractOfficeDocument,
   },
   spreadsheet: {
     mediaFamily: 'spreadsheet',
-    version: 'spreadsheet-v1',
+    version: 'spreadsheet-v2',
     consumesBudget: false,
-    supportsExtraction: false,
+    supportsExtraction: true,
+    extract: extractSpreadsheet,
   },
   archive: {
     mediaFamily: 'archive',
-    version: 'archive-v1',
+    version: 'archive-v2',
     consumesBudget: false,
-    supportsExtraction: false,
+    supportsExtraction: true,
+    extract: extractArchive,
   },
   unknown_binary: {
     mediaFamily: 'unknown_binary',

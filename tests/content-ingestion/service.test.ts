@@ -61,8 +61,21 @@ function createPdfBuffer(seed: string): Buffer {
 }
 
 function createDocxLikeBuffer(): Buffer {
-  const filenameBuffer = Buffer.from('word/document.xml', 'utf8');
-  const contentBuffer = Buffer.from('<w:document />', 'utf8');
+  return createZipArchive([
+    ['word/document.xml', '<w:document><w:body><w:p><w:r><w:t>Quarterly plan</w:t></w:r></w:p><w:p><w:r><w:t>Budget approved</w:t></w:r></w:p></w:body></w:document>'],
+  ]);
+}
+
+function createXlsxLikeBuffer(): Buffer {
+  return createZipArchive([
+    ['xl/sharedStrings.xml', '<sst><si><t>Client</t></si><si><t>Amount</t></si><si><t>Acme</t></si></sst>'],
+    ['xl/worksheets/sheet1.xml', '<worksheet><sheetData><row><c t="s"><v>0</v></c><c t="s"><v>1</v></c></row><row><c t="s"><v>2</v></c><c><v>450</v></c></row></sheetData></worksheet>'],
+  ]);
+}
+
+function createZipLocalFileEntry(filename: string, content: string): Buffer {
+  const filenameBuffer = Buffer.from(filename, 'utf8');
+  const contentBuffer = Buffer.from(content, 'utf8');
   const header = Buffer.alloc(30);
 
   header.writeUInt32LE(0x04034b50, 0);
@@ -74,10 +87,14 @@ function createDocxLikeBuffer(): Buffer {
   header.writeUInt32LE(0, 14);
   header.writeUInt32LE(contentBuffer.length, 18);
   header.writeUInt32LE(contentBuffer.length, 22);
-  header.writeUInt16LE(filenameBuffer.length, 26);
+  header.writeUInt16LE(Buffer.byteLength(filename), 26);
   header.writeUInt16LE(0, 28);
 
   return Buffer.concat([header, filenameBuffer, contentBuffer]);
+}
+
+function createZipArchive(entries: Array<[string, string]>): Buffer {
+  return Buffer.concat(entries.map(([filename, content]) => createZipLocalFileEntry(filename, content)));
 }
 
 describe('content-ingestion service', () => {
@@ -186,7 +203,7 @@ describe('content-ingestion service', () => {
     expect(llmMocks.callTextWithMessages).not.toHaveBeenCalled();
   });
 
-  test('returns an explicit degraded result for unsupported office documents', async () => {
+  test('extracts docx office documents deterministically', async () => {
     const result = await extractContentFromBuffer({
       buffer: createDocxLikeBuffer(),
       mimeType: 'application/octet-stream',
@@ -194,9 +211,46 @@ describe('content-ingestion service', () => {
       traceContext: createTraceContext(),
     });
 
-    expect(result.status).toBe('degraded');
+    expect(result.status).toBe('ok');
     expect(result.mediaFamily).toBe('office_doc');
-    expect(result.degradationNotes[0]?.code).toBe('unsupported_media_family');
+    expect(result.extractedText).toContain('Quarterly plan');
+    expect(result.extractedText).toContain('Budget approved');
+    expect(llmMocks.callTextWithMessages).not.toHaveBeenCalled();
+  });
+
+  test('extracts xlsx spreadsheets deterministically', async () => {
+    const result = await extractContentFromBuffer({
+      buffer: createXlsxLikeBuffer(),
+      mimeType: 'application/octet-stream',
+      filename: 'pipeline.xlsx',
+      traceContext: createTraceContext(),
+    });
+
+    expect(result.status).toBe('ok');
+    expect(result.mediaFamily).toBe('spreadsheet');
+    expect(result.extractedText).toContain('Sheet 1:');
+    expect(result.extractedText).toContain('Client\tAmount');
+    expect(result.extractedText).toContain('Acme\t450');
+    expect(llmMocks.callTextWithMessages).not.toHaveBeenCalled();
+  });
+
+  test('recursively extracts readable files from zip archives', async () => {
+    const result = await extractContentFromBuffer({
+      buffer: createZipArchive([
+        ['notes.txt', 'Bring passport and insurance card'],
+        ['totals.csv', 'month,total\nmarch,400'],
+      ]),
+      mimeType: 'application/zip',
+      filename: 'trip.zip',
+      traceContext: createTraceContext(),
+    });
+
+    expect(result.status).toBe('ok');
+    expect(result.mediaFamily).toBe('archive');
+    expect(result.extractedText).toContain('Archive entry: notes.txt [text]');
+    expect(result.extractedText).toContain('Bring passport and insurance card');
+    expect(result.extractedText).toContain('Archive entry: totals.csv [spreadsheet]');
+    expect(result.extractedText).toContain('month,total');
     expect(llmMocks.callTextWithMessages).not.toHaveBeenCalled();
   });
 });

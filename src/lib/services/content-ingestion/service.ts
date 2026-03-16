@@ -96,7 +96,10 @@ function buildDegradedResult(params: {
     | 'size_limit_exceeded'
     | 'page_limit_exceeded'
     | 'duration_limit_exceeded'
-    | 'extraction_budget_exceeded';
+    | 'extraction_budget_exceeded'
+    | 'archive_format_unsupported'
+    | 'container_entry_limit_exceeded'
+    | 'container_recursion_limit_exceeded';
   maxExtractionsPerTurn: number;
   budgetScopeKey: string | null;
   pageCountEstimate?: number | null;
@@ -249,6 +252,7 @@ export async function extractContentFromBuffer(
 ): Promise<ContentExtractionResult> {
   const scopes = buildScopeKeys(params);
   const maxExtractionsPerTurn = params.maxExtractionsPerTurn ?? DEFAULT_MAX_EXTRACTIONS_PER_TURN;
+  const containerDepth = params.containerDepth ?? 0;
   const provenance: ContentProvenance = {
     sourceLabel: params.provenance?.sourceLabel ?? params.channelLabel ?? 'content_ingestion',
     sourceKind: params.provenance?.sourceKind ?? null,
@@ -350,6 +354,27 @@ export async function extractContentFromBuffer(
     traceContext: params.traceContext,
     channelLabel: params.channelLabel,
     userCaption: params.userCaption,
+    containerDepth,
+    extractNestedContent: async (nestedParams) =>
+      extractContentFromBuffer({
+        buffer: nestedParams.buffer,
+        mimeType: nestedParams.mimeType ?? undefined,
+        filename: nestedParams.filename ?? undefined,
+        trustClass: acquiredContent.trustClass,
+        provenance: {
+          ...provenance,
+          originUri: nestedParams.originUri ?? provenance.originUri,
+        },
+        channelLabel: params.channelLabel,
+        abortSignal: params.abortSignal,
+        traceContext: params.traceContext,
+        scope: {
+          conversationId: scopes.conversationId,
+          runId: scopes.runId,
+        },
+        maxExtractionsPerTurn,
+        containerDepth: containerDepth + 1,
+      }),
   });
 
   if (!handlerOutput) {
@@ -364,12 +389,12 @@ export async function extractContentFromBuffer(
   });
 
   const result: ContentExtractionResult = {
-    status: 'ok',
+    status: handlerOutput.degradationNotes?.length ? 'degraded' : 'ok',
     mediaFamily,
     extractedText: handlerOutput.extractedText,
     images: handlerOutput.images,
     structuredData: handlerOutput.structuredData,
-    degradationNotes: [],
+    degradationNotes: handlerOutput.degradationNotes ?? [],
     attribution: {
       filename: acquiredContent.filename ?? null,
       mimeType: acquiredContent.mimeType,

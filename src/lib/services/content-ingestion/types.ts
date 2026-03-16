@@ -26,7 +26,10 @@ export type ContentDegradationCode =
   | 'size_limit_exceeded'
   | 'page_limit_exceeded'
   | 'duration_limit_exceeded'
-  | 'extraction_budget_exceeded';
+  | 'extraction_budget_exceeded'
+  | 'archive_format_unsupported'
+  | 'container_entry_limit_exceeded'
+  | 'container_recursion_limit_exceeded';
 
 export type ContentProvenance = {
   sourceLabel: string;
@@ -130,4 +133,5 @@ export type ExtractContentFromBufferParams = {
   traceContext?: AiTraceContext;
   scope?: ContentProcessingScope;
   maxExtractionsPerTurn?: number;
+  containerDepth?: number;
 };
