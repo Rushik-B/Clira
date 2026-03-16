@@ -17,7 +17,7 @@ export const MESSAGING_SUBSEQUENT_TOOL_RESERVE_MS = 15_000;
 export const MESSAGING_MIN_SUBAGENT_BUDGET_MS = 8_000;
 export const PLAN_CALENDAR_CHANGE_MIN_BUDGET_MS = 35_000;
 export const CALENDAR_SEARCH_MIN_BUDGET_MS = 35_000;
-export const MESSAGING_MAX_STEPS = 15;
+export const MESSAGING_MAX_STEPS = 30;
 /** Total tool calls per run. Per-tool limits in MESSAGING_TOOL_BUDGETS_BASE must stay below this. */
 export const MESSAGING_MAX_TOOL_CALLS_TOTAL = 70;
 export const PENDING_CALENDAR_CHANGE_TTL_MS = 10 * 60 * 1000;
