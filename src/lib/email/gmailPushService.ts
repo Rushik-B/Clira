@@ -58,6 +58,17 @@ export class GmailPushService {
     );
   }
 
+  private isHistoryIdNewer(candidate: string | null | undefined, current: string | null | undefined): boolean {
+    if (!candidate) return false;
+    if (!current) return true;
+
+    try {
+      return BigInt(candidate) > BigInt(current);
+    } catch {
+      return candidate !== current;
+    }
+  }
+
   private async prepareGmailClient({
     userId,
     mailboxId,
@@ -113,6 +124,20 @@ export class GmailPushService {
         throw new Error('GmailPushService requires userId and mailboxId to setup push notifications');
       }
 
+      const mailboxRecord = await prisma.mailbox.findUnique({
+        where: { id: mailboxId },
+        select: {
+          emailAddress: true,
+          gmailHistoryId: true,
+        },
+      });
+
+      if (!mailboxRecord?.emailAddress) {
+        throw new Error(`Mailbox ${mailboxId} not found while setting up Gmail push notifications`);
+      }
+
+      const previousHistoryId = mailboxRecord.gmailHistoryId || null;
+
       const context = await createGmailServiceForUser({
         userId,
         mailboxId,
@@ -150,14 +175,32 @@ export class GmailPushService {
       
       console.log(`✅ Push notifications setup - historyId: ${response.data.historyId}, expiration: ${response.data.expiration}`);
       
-      // Store the initial history ID to avoid processing old emails on first notification
       if (response.data.historyId) {
-        await this.updateLastHistoryId(mailboxId, response.data.historyId);
-        console.log(`📧 Stored initial history ID ${response.data.historyId} for mailbox ${mailboxId}`);
-        
-        // **IMPORTANT**: Do NOT fetch any emails during initial setup
-        // This prevents processing emails before onboarding is complete
-        console.log(`🚫 Skipping email fetch during initial push setup for mailbox ${mailboxId}`);
+        const newHistoryId = String(response.data.historyId);
+
+        if (previousHistoryId && this.isHistoryIdNewer(newHistoryId, previousHistoryId)) {
+          console.log(
+            `📬 Gmail watch renewed for mailbox ${mailboxId}; catching up history gap ${previousHistoryId} → ${newHistoryId}`,
+          );
+
+          try {
+            await this.processPushNotification({
+              emailAddress: mailboxRecord.emailAddress,
+              historyId: newHistoryId,
+            });
+          } catch (catchUpError) {
+            console.error(
+              `❌ Failed to catch up Gmail history gap for mailbox ${mailboxId}; preserving previous checkpoint ${previousHistoryId}`,
+              catchUpError,
+            );
+          }
+        } else {
+          await this.updateLastHistoryId(mailboxId, newHistoryId);
+          console.log(`📧 Stored initial history ID ${newHistoryId} for mailbox ${mailboxId}`);
+
+          // Do not fetch historical mail on first watch setup.
+          console.log(`🚫 Skipping email fetch during initial push setup for mailbox ${mailboxId}`);
+        }
       }
 
       if (response.data.expiration) {
