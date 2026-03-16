@@ -202,10 +202,25 @@ function deriveFact(toolName: string, result: unknown): string | null {
   if (toolName.startsWith('mcp__')) {
     const displayName = typeof record.displayName === 'string' ? record.displayName : 'MCP';
     const snippets = Array.isArray(record.snippets) ? record.snippets : [];
+    const contentRefs = Array.isArray(record.contentRefs) ? record.contentRefs : [];
     const firstSnippet =
       snippets.length > 0 && typeof snippets[0] === 'string' ? snippets[0] : null;
     if (firstSnippet) {
       return truncateFact(`${displayName}: ${firstSnippet}`);
+    }
+    if (contentRefs.length > 0) {
+      const firstReference = contentRefs[0];
+      const firstName =
+        firstReference &&
+        typeof firstReference === 'object' &&
+        typeof (firstReference as Record<string, unknown>).displayName === 'string'
+          ? ((firstReference as Record<string, unknown>).displayName as string)
+          : null;
+      return truncateFact(
+        `${displayName}: ${contentRefs.length} content reference(s) available${
+          firstName ? `, starting with ${firstName}` : ''
+        }.`,
+      );
     }
     if (record.ok === true) {
       return truncateFact(`${displayName}: returned ${snippets.length} result(s).`);

@@ -234,6 +234,7 @@ function summarizeToolResult(toolName: string, result: unknown): string | null {
       const displayName = getStringValue(output.displayName) ?? 'MCP';
       const snippets = Array.isArray(output.snippets) ? output.snippets : [];
       const snippetCount = snippets.length;
+      const contentRefs = Array.isArray(output.contentRefs) ? output.contentRefs : [];
       const degraded = output.degraded === true;
       const errorClass = getStringValue(output.errorClass);
 
@@ -243,6 +244,8 @@ function summarizeToolResult(toolName: string, result: unknown): string | null {
         const firstSnippet = getStringValue(snippets[0]);
         summary = `${toolName}: ${status} via ${displayName}, ${snippetCount} snippet(s)`;
         if (firstSnippet) summary += ` — ${firstSnippet}`;
+      } else if (contentRefs.length > 0) {
+        summary = `${toolName}: ${status} via ${displayName}, ${contentRefs.length} content ref(s)`;
       } else {
         summary = `${toolName}: ${status} via ${displayName}`;
       }
