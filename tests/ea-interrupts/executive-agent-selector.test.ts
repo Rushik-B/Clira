@@ -439,6 +439,7 @@ describe('Executive agent selector', () => {
 
     expect(selection.packIds).toEqual(['inbox_context_pack']);
     expect(selection.mcpConnectionIds).toEqual(['mcp-conn-1']);
+    expect(selection.reminders).not.toContain('Only context tools are available this turn.');
 
     const [, init] = fetchMock.mock.calls[0] ?? [];
     const body = JSON.parse(String(init?.body));
@@ -446,6 +447,15 @@ describe('Executive agent selector', () => {
 
     expect(selectorPrompt).toContain('Dynamic MCP server packs:');
     expect(selectorPrompt).toContain('mcp_server:notion');
+    expect(selectorPrompt).toContain(
+      'If the user explicitly names a server, vendor, tool, or says "use <server> mcp/tools", include that server in mcpServerKeys.',
+    );
+    expect(selectorPrompt).toContain(
+      'Treat plain-English capability requests as MCP routing signals.',
+    );
+    expect(selectorPrompt).toContain(
+      'When an MCP server is needed, choosing only native packIds is insufficient.',
+    );
     expect(selectorPrompt).toContain('You may select both a native pack and one or more MCP server packs');
   });
 

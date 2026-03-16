@@ -573,8 +573,15 @@ function isSelectorLlmEnabled(channel: ExecutiveTurnFeatures['channel']): boolea
   return globalFlag === 'true';
 }
 
-function getDefaultPackRemindersForSelection(packIds: readonly ToolPackId[]): string[] {
-  return packIds.every((packId) =>
+function getDefaultPackRemindersForSelection(params: {
+  packIds: readonly ToolPackId[];
+  hasSelectedMcpServers: boolean;
+}): string[] {
+  if (params.hasSelectedMcpServers) {
+    return [];
+  }
+
+  return params.packIds.every((packId) =>
     packId === 'core_recall_pack' ||
     packId === 'inbox_context_pack' ||
     packId === 'calendar_query_pack',
@@ -689,6 +696,12 @@ function buildSelectorPrompt(params: {
           '',
           'MCP routing principles:',
           '- Use mcp_server:<serverKey> when the user request involves capabilities provided by that external server.',
+          '- If the user explicitly names a server, vendor, tool, or says "use <server> mcp/tools", include that server in mcpServerKeys. Omitting it is incorrect.',
+          '- Do not require an exact one-word match. Requests like "use the Exa MCP", "try the Nia search tool again", or "check Canvas" still target that server.',
+          '- Treat plain-English capability requests as MCP routing signals. If a listed MCP server provides web or internet search, requests like "search the internet", "browse the web", or "look this up online" should route to that MCP server.',
+          '- If the recent conversation was already about a specific MCP server/tool and the user says "try again", "use that tool", "check the tools again", or similar, keep routing to that same server unless the user clearly changes target.',
+          '- Generic capability bans apply only when no matching MCP server is selected. If a listed MCP server provides the needed capability this turn, route to it instead of pretending the capability does not exist.',
+          '- When an MCP server is needed, choosing only native packIds is insufficient. You must also return the matching mcpServerKeys entry.',
           '- You may select both a native pack and one or more MCP server packs in the same turn.',
         ]
       : []),
@@ -712,6 +725,9 @@ function buildSelectorPrompt(params: {
     '"show me how you reply to my mom right now" → settings_mutation_pack',
     '"update my reply rules and remind me tomorrow at 9" → ["settings_mutation_pack", "reminder_alert_pack"]',
     '"yes send it" [draftCandidatePresent=true] → email_send_pack',
+    '"use exa mcp and search the internet for something" → core_recall_pack + mcp_server:exa',
+    '"browse the web for this" when a web-search MCP server is listed → include that mcp_server:<serverKey>',
+    '"try the nia mcp search tool again" right after a nia tool failure → core_recall_pack + mcp_server:nia',
     '',
     `State: draftCandidatePresent=${features.draftCandidatePresent}, explicitSendApproval=${features.explicitSendApproval}, pendingCalendarChangePresent=${features.pendingCalendarChangePresent}`,
     '',
@@ -934,7 +950,10 @@ export async function selectExecutiveToolPackForTurn(params: {
     const selection = buildSelection({
       packIdOrPackIds: safePackIds,
       reasons: ['llm selector'],
-      reminders: getDefaultPackRemindersForSelection(safePackIds),
+      reminders: getDefaultPackRemindersForSelection({
+        packIds: safePackIds,
+        hasSelectedMcpServers: (object.mcpServerKeys?.length ?? 0) > 0,
+      }),
       mcpConnectionIds: (object.mcpServerKeys ?? [])
         .map((serverKey) => {
           return mcpServerPacks.find((pack) => pack.serverKey === serverKey)?.connectionId ?? null;
