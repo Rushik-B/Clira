@@ -47,6 +47,7 @@ export type McpConnectionRecord = {
   serverKey: string;
   displayName: string;
   packDescription: string | null;
+  disabledToolNames: string[];
   transport: McpTransportConfig;
   authMode: McpAuthMode;
   status: McpConnectionStatus;

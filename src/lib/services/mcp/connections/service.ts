@@ -37,6 +37,7 @@ export type UpdateMcpConnectionInput = {
   secrets?: McpSecretConfig;
   trustClass?: McpTrustClass;
   disabled?: boolean;
+  disabledToolNames?: string[];
 };
 
 export type McpConnectionListItem = McpConnectionRecord & {
@@ -51,6 +52,7 @@ type McpConnectionRow = Prisma.McpConnectionGetPayload<{
     serverKey: true;
     displayName: true;
     packDescription: true;
+    disabledToolNames: true;
     transportType: true;
     transportConfig: true;
     authMode: true;
@@ -77,6 +79,7 @@ const CONNECTION_SELECT = {
   serverKey: true,
   displayName: true,
   packDescription: true,
+  disabledToolNames: true,
   transportType: true,
   transportConfig: true,
   authMode: true,
@@ -161,6 +164,34 @@ function fromPrismaConnectionStatus(status: PrismaMcpConnectionStatus): McpConne
   }
 }
 
+function toPrismaConnectionStatus(status: McpConnectionStatus): PrismaMcpConnectionStatus {
+  switch (status) {
+    case 'synced':
+      return 'SYNCED';
+    case 'degraded':
+      return 'DEGRADED';
+    case 'disabled':
+      return 'DISABLED';
+    default:
+      return 'PENDING';
+  }
+}
+
+function parseDisabledToolNames(value: Prisma.JsonValue): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return Array.from(
+    new Set(
+      value
+        .filter((entry): entry is string => typeof entry === 'string')
+        .map((entry) => entry.trim())
+        .filter(Boolean),
+    ),
+  ).sort((left, right) => left.localeCompare(right));
+}
+
 function parseTransportConfig(
   transportType: PrismaMcpTransportType,
   value: Prisma.JsonValue,
@@ -237,6 +268,7 @@ function toConnectionRecord(row: McpConnectionRow): McpConnectionRecord {
     serverKey: row.serverKey,
     displayName: row.displayName,
     packDescription: row.packDescription,
+    disabledToolNames: parseDisabledToolNames(row.disabledToolNames),
     transport: parseTransportConfig(row.transportType, row.transportConfig),
     authMode: fromPrismaAuthMode(row.authMode),
     status: fromPrismaConnectionStatus(row.status),
@@ -369,6 +401,7 @@ export async function createMcpConnection(input: CreateMcpConnectionInput): Prom
       serverKey,
       displayName: input.displayName.trim(),
       packDescription: null,
+      disabledToolNames: [] as Prisma.InputJsonValue,
       transportType: toPrismaTransportType(input.transport.type),
       transportConfig: serializeTransportConfig(input.transport),
       authMode: toPrismaAuthMode(input.secrets.authMode),
@@ -379,7 +412,7 @@ export async function createMcpConnection(input: CreateMcpConnectionInput): Prom
     select: CONNECTION_SELECT,
   });
 
-  return toConnectionRecord(row);
+  return toConnectionRecord(row as McpConnectionRow);
 }
 
 export async function updateMcpConnection(input: UpdateMcpConnectionInput): Promise<McpConnectionRecord> {
@@ -399,13 +432,36 @@ export async function updateMcpConnection(input: UpdateMcpConnectionInput): Prom
   const nextServerKey = input.serverKey
     ? await resolveUniqueServerKey(input.userId, input.serverKey, input.connectionId)
     : existing.connection.serverKey;
+  const nextDisabledToolNames = Array.from(
+    new Set((input.disabledToolNames ?? existing.connection.disabledToolNames).map((toolName) => toolName.trim()).filter(Boolean)),
+  ).sort((left, right) => left.localeCompare(right));
+  const requiresManifestResync =
+    typeof input.displayName === 'string' ||
+    typeof input.serverKey === 'string' ||
+    typeof input.transport !== 'undefined' ||
+    typeof input.secrets !== 'undefined';
+  const requiresStateReset =
+    requiresManifestResync ||
+    typeof input.trustClass !== 'undefined' ||
+    typeof input.disabled === 'boolean';
+  const nextStatus =
+    typeof input.disabled === 'boolean'
+      ? input.disabled
+        ? 'DISABLED'
+        : requiresManifestResync
+          ? 'PENDING'
+          : 'SYNCED'
+      : requiresManifestResync
+        ? 'PENDING'
+        : toPrismaConnectionStatus(existing.connection.status);
 
   const row = await prisma.mcpConnection.update({
     where: { id: input.connectionId },
     data: {
       displayName: input.displayName?.trim() ?? existing.connection.displayName,
       serverKey: nextServerKey,
-      packDescription: null,
+      packDescription: requiresManifestResync ? null : existing.connection.packDescription,
+      disabledToolNames: nextDisabledToolNames as Prisma.InputJsonValue,
       transportType: toPrismaTransportType(nextTransport.type),
       transportConfig: serializeTransportConfig(nextTransport),
       authMode: toPrismaAuthMode(nextSecrets.authMode),
@@ -417,23 +473,22 @@ export async function updateMcpConnection(input: UpdateMcpConnectionInput): Prom
             ? new Date()
             : null
           : existing.connection.disabledAt,
-      status:
-        typeof input.disabled === 'boolean'
-          ? input.disabled
-            ? 'DISABLED'
-            : 'PENDING'
-          : 'PENDING',
-      degradedReason: null,
-      syncDiagnostics: Prisma.JsonNull,
-      healthDiagnostics: Prisma.JsonNull,
-      circuitOpenedAt: null,
-      circuitOpenUntil: null,
-      consecutiveFailures: 0,
+      status: nextStatus,
+      degradedReason: requiresStateReset ? null : existing.connection.degradedReason,
+      syncDiagnostics: requiresManifestResync
+        ? Prisma.JsonNull
+        : toPrismaNullableJsonValue(existing.connection.syncDiagnostics),
+      healthDiagnostics: requiresStateReset
+        ? Prisma.JsonNull
+        : toPrismaNullableJsonValue(existing.connection.healthDiagnostics),
+      circuitOpenedAt: requiresStateReset ? null : existing.connection.circuitOpenedAt,
+      circuitOpenUntil: requiresStateReset ? null : existing.connection.circuitOpenUntil,
+      consecutiveFailures: requiresStateReset ? 0 : existing.connection.consecutiveFailures,
     },
     select: CONNECTION_SELECT,
   });
 
-  return toConnectionRecord(row);
+  return toConnectionRecord(row as McpConnectionRow);
 }
 
 export async function deleteMcpConnection(params: {

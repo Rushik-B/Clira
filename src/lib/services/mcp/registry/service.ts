@@ -190,7 +190,15 @@ type NormalizedManifest = {
   syncDiagnostics: Prisma.InputJsonObject | null;
 };
 
-function buildPackDescription(displayName: string, manifests: readonly NormalizedManifest[]): string {
+type PackDescriptionManifest = {
+  displayTitle: string;
+  actionClass: McpActionClass;
+};
+
+export function buildMcpPackDescription(
+  displayName: string,
+  manifests: readonly PackDescriptionManifest[],
+): string {
   if (manifests.length === 0) {
     return `${displayName}: no tools synced yet`;
   }
@@ -306,7 +314,7 @@ export async function syncMcpConnectionRegistry(params: {
     const listedTools = await client.listTools();
     const normalized = normalizeToolManifests(bundle.connection, listedTools);
     const syncedAt = new Date();
-    const packDescription = buildPackDescription(
+    const packDescription = buildMcpPackDescription(
       bundle.connection.displayName,
       normalized.manifests,
     );
@@ -457,7 +465,7 @@ export async function getMcpManifestByModelToolName(params: {
   const snapshot = await loadMcpRegistrySnapshot(params.userId);
   for (const entry of snapshot.connections) {
     const tool = entry.tools.find((candidate) => candidate.modelToolName === params.modelToolName);
-    if (tool) {
+    if (tool && !entry.connection.disabledToolNames.includes(tool.toolName)) {
       return { connection: entry.connection, tool };
     }
   }

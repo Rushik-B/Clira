@@ -55,6 +55,7 @@ export const updateMcpConnectionSchema = z
     secrets: mcpSecretSchema.optional(),
     trustClass: z.enum(['first_party', 'user_configured', 'third_party']).optional(),
     disabled: z.boolean().optional(),
+    disabledToolNames: z.array(z.string().min(1).max(200)).max(500).optional(),
   })
   .refine((value) => Object.keys(value).length > 0, {
     message: 'Provide at least one field to update.',

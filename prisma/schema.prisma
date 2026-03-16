@@ -469,6 +469,7 @@ model McpConnection {
   serverKey           String
   displayName         String
   packDescription     String?
+  disabledToolNames   Json                @default("[]")
   transportType       McpTransportType
   transportConfig     Json
   authMode            McpAuthMode         @default(NONE)

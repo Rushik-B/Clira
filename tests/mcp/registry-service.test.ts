@@ -50,6 +50,7 @@ describe('MCP registry service', () => {
         serverKey: 'canvas',
         displayName: 'Canvas LMS',
         packDescription: null,
+        disabledToolNames: [],
         transport: {
           type: 'streamable_http',
           endpoint: 'https://mcp.example.com',

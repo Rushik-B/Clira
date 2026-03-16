@@ -158,6 +158,7 @@ function buildMcpConnection(overrides?: Partial<McpConnectionRecord>): McpConnec
     serverKey: 'docs',
     displayName: 'Docs Workspace',
     packDescription: null,
+    disabledToolNames: [],
     transport: {
       type: 'streamable_http',
       endpoint: 'https://mcp.example.com',

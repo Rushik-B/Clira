@@ -7,6 +7,7 @@ export interface McpConnectionSummary {
   serverKey: string;
   displayName: string;
   packDescription: string | null;
+  disabledToolNames: string[];
   status: ConnectionStatus;
   transport: { type: TransportType };
   degradedReason: string | null;
@@ -24,6 +25,7 @@ export interface McpToolSummary {
   description: string | null;
   actionClass: string;
   safeForAutoUse: boolean;
+  disabled: boolean;
 }
 
 export interface McpHeaderEntry {

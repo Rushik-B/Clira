@@ -10,15 +10,18 @@ import {
 } from '@/lib/ai/agents/executive-agent/selector';
 import { buildPackToolAllowlist } from '@/lib/ai/agents/executive-agent/toolPacks';
 import type { ExecutiveAgentInput } from '@/lib/ai/agents/executive-agent/types';
-import type { McpConnectionRecord } from '@/lib/services/mcp/types';
 
-const { listMcpConnectionsForUserMock } = vi.hoisted(() => ({
-  listMcpConnectionsForUserMock: vi.fn(),
+const { listSelectableMcpServerPacksMock } = vi.hoisted(() => ({
+  listSelectableMcpServerPacksMock: vi.fn(),
 }));
 
-vi.mock('@/lib/services/mcp/connections/service', () => ({
-  listMcpConnectionsForUser: listMcpConnectionsForUserMock,
-}));
+vi.mock('@/lib/services/mcp/policy/service', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/services/mcp/policy/service')>();
+  return {
+    ...actual,
+    listSelectableMcpServerPacks: listSelectableMcpServerPacksMock,
+  };
+});
 
 const ALL_PACKS = [
   'core_recall_pack',
@@ -71,32 +74,15 @@ function buildInput(params: {
   };
 }
 
-function buildMcpConnection(overrides?: Partial<McpConnectionRecord>): McpConnectionRecord {
+function buildMcpServerPack(overrides: Partial<{
+  connectionId: string;
+  serverKey: string;
+  packDescription: string;
+}> = {}) {
   return {
-    id: 'mcp-conn-1',
-    userId: 'user-1',
+    connectionId: 'mcp-conn-1',
     serverKey: 'notion',
-    displayName: 'Notion Workspace',
     packDescription: 'Notion Workspace: 3 read tools (Search docs, Read page)',
-    transport: {
-      type: 'streamable_http',
-      endpoint: 'https://mcp.example.com',
-      headers: {},
-    },
-    authMode: 'none',
-    status: 'synced',
-    trustClass: 'user_configured',
-    degradedReason: null,
-    syncDiagnostics: null,
-    healthDiagnostics: null,
-    lastSyncedAt: new Date('2026-03-02T18:00:00.000Z'),
-    lastHealthCheckedAt: new Date('2026-03-02T18:00:00.000Z'),
-    consecutiveFailures: 0,
-    circuitOpenedAt: null,
-    circuitOpenUntil: null,
-    disabledAt: null,
-    createdAt: new Date('2026-03-02T17:00:00.000Z'),
-    updatedAt: new Date('2026-03-02T18:00:00.000Z'),
     ...overrides,
   };
 }
@@ -104,7 +90,7 @@ function buildMcpConnection(overrides?: Partial<McpConnectionRecord>): McpConnec
 describe('Executive agent selector', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    listMcpConnectionsForUserMock.mockResolvedValue([]);
+    listSelectableMcpServerPacksMock.mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -417,8 +403,8 @@ describe('Executive agent selector', () => {
     vi.stubEnv('EA_SELECTOR_CEREBRAS_MODEL', 'llama3.1-8b');
     vi.stubEnv('CEREBRAS_API_KEY', 'test-key');
 
-    listMcpConnectionsForUserMock.mockResolvedValue([
-      buildMcpConnection(),
+    listSelectableMcpServerPacksMock.mockResolvedValue([
+      buildMcpServerPack(),
     ]);
 
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
@@ -874,8 +860,8 @@ describe('Executive agent selector', () => {
   });
 
   test('exposes all packs when selector is disabled', async () => {
-    listMcpConnectionsForUserMock.mockResolvedValue([
-      buildMcpConnection(),
+    listSelectableMcpServerPacksMock.mockResolvedValue([
+      buildMcpServerPack(),
     ]);
 
     const input = buildInput({

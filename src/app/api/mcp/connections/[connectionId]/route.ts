@@ -33,6 +33,7 @@ export async function GET(
     // Include tools from the registry snapshot for this connection
     const snapshot = await loadMcpRegistrySnapshot(userId);
     const entry = snapshot.connections.find((c) => c.connection.id === connectionId);
+    const disabledToolSet = new Set(connection.disabledToolNames);
     const tools = (entry?.tools ?? []).map((tool) => ({
       id: tool.id,
       toolName: tool.toolName,
@@ -40,6 +41,7 @@ export async function GET(
       description: tool.description,
       actionClass: tool.actionClass,
       safeForAutoUse: tool.safeForAutoUse,
+      disabled: disabledToolSet.has(tool.toolName),
     }));
 
     return NextResponse.json({
@@ -73,12 +75,19 @@ export async function PATCH(
       ...body,
     });
     invalidateConnectionCaches({ connectionId, userId });
-
-    const syncJob = await enqueueMcpSyncConnectionJob({
-      connectionId,
-      userId,
-      reason: 'updated',
-    });
+    const shouldEnqueueSync =
+      typeof body.displayName === 'string' ||
+      typeof body.serverKey === 'string' ||
+      typeof body.transport !== 'undefined' ||
+      typeof body.secrets !== 'undefined' ||
+      body.disabled === false;
+    const syncJob = shouldEnqueueSync
+      ? await enqueueMcpSyncConnectionJob({
+          connectionId,
+          userId,
+          reason: 'updated',
+        })
+      : null;
 
     return NextResponse.json({
       success: true,

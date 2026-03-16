@@ -3,7 +3,10 @@ import { withConcurrency } from '@/lib/ai/concurrency';
 import { LlmError } from '@/lib/ai/errors';
 import { withRetry } from '@/lib/ai/retry';
 import { logger } from '@/lib/logger';
-import { listMcpConnectionsForUser } from '@/lib/services/mcp/connections/service';
+import {
+  listSelectableMcpServerPacks,
+  type McpSelectableServerPack,
+} from '@/lib/services/mcp/policy/service';
 import type {
   ConversationMessageDTO,
 } from '@/lib/ai/schemas/executiveAgentSchemas';
@@ -23,12 +26,6 @@ const TOOL_PACK_IDS = [
   'settings_mutation_pack',
   'email_send_pack',
 ] as const satisfies readonly ToolPackId[];
-
-type McpPackDescription = {
-  connectionId: string;
-  serverKey: string;
-  packDescription: string;
-};
 
 function buildAllPackSelection(params: {
   reasons: string[];
@@ -426,21 +423,6 @@ function uniqueConnectionIds(connectionIds: readonly string[]): string[] {
   return ordered;
 }
 
-async function loadMcpPackDescriptions(userId: string): Promise<McpPackDescription[]> {
-  const connections = await listMcpConnectionsForUser(userId);
-
-  return connections
-    .filter((connection) => connection.status === 'synced')
-    .map((connection) => ({
-      connectionId: connection.id,
-      serverKey: connection.serverKey,
-      packDescription:
-        connection.packDescription?.trim() ||
-        `${connection.displayName}: synced MCP server pack`,
-    }))
-    .sort((left, right) => left.serverKey.localeCompare(right.serverKey));
-}
-
 function buildSelection(
   params: {
     packIdOrPackIds: ToolPackId | readonly ToolPackId[];
@@ -656,7 +638,7 @@ function buildSelectorPrompt(params: {
   userRequest: string;
   features: ExecutiveTurnFeatures;
   conversationHistory: ConversationMessageDTO[];
-  mcpServerPacks: readonly McpPackDescription[];
+  mcpServerPacks: readonly McpSelectableServerPack[];
 }): string {
   const { userRequest, features, conversationHistory, mcpServerPacks } = params;
 
@@ -746,7 +728,7 @@ async function callCerebrasSelector(params: {
   userRequest: string;
   features: ExecutiveTurnFeatures;
   conversationHistory: ConversationMessageDTO[];
-  mcpServerPacks: readonly McpPackDescription[];
+  mcpServerPacks: readonly McpSelectableServerPack[];
   abortSignal?: AbortSignal;
 }): Promise<z.infer<typeof selectorOutputSchema>> {
   const apiKey = process.env.CEREBRAS_API_KEY?.trim();
@@ -908,7 +890,10 @@ export async function selectExecutiveToolPackForTurn(params: {
   input: ExecutiveAgentInput;
   features: ExecutiveTurnFeatures;
 }): Promise<PackSelection> {
-  const mcpServerPacks = await loadMcpPackDescriptions(params.input.userId);
+  const mcpServerPacks = await listSelectableMcpServerPacks({
+    userId: params.input.userId,
+    channel: params.features.channel,
+  });
 
   if (!isSelectorLlmEnabled(params.features.channel)) {
     return buildAllPackSelection({

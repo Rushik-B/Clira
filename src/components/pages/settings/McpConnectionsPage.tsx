@@ -1,8 +1,9 @@
 'use client';
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertCircle,
+  Ban,
   Check,
   ChevronDown,
   ChevronRight,
@@ -120,14 +121,24 @@ const PackDescription: React.FC<{ description: string | null }> = ({ description
 // Tool row (inside expanded connection)
 // ---------------------------------------------------------------------------
 
-const ToolRow: React.FC<{ tool: McpToolSummary }> = ({ tool }) => {
+const ToolRow: React.FC<{
+  tool: McpToolSummary;
+  onToggleDisabled: (tool: McpToolSummary) => Promise<void>;
+  saving: boolean;
+}> = ({ tool, onToggleDisabled, saving }) => {
   const actionStyle = ACTION_CLASS_STYLES[tool.actionClass] ?? 'bg-gray-500/15 text-gray-300 border-gray-500/20';
   return (
     <div className="flex items-start gap-3 py-2.5 px-3 rounded-lg hover:bg-white/[0.02] transition-colors">
       <Wrench className="w-3.5 h-3.5 text-gray-500 mt-0.5 shrink-0" />
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-sm font-medium text-gray-200 truncate">{tool.displayTitle}</span>
+          <span
+            className={`text-sm font-medium truncate ${
+              tool.disabled ? 'text-gray-500 line-through' : 'text-gray-200'
+            }`}
+          >
+            {tool.displayTitle}
+          </span>
           <span className={`text-[10px] px-1.5 py-px rounded border font-medium ${actionStyle}`}>
             {tool.actionClass}
           </span>
@@ -141,6 +152,21 @@ const ToolRow: React.FC<{ tool: McpToolSummary }> = ({ tool }) => {
           <p className="text-xs text-gray-500 mt-0.5 line-clamp-1">{tool.description}</p>
         )}
       </div>
+      <button
+        type="button"
+        onClick={() => {
+          void onToggleDisabled(tool);
+        }}
+        disabled={saving}
+        className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] font-medium transition-colors disabled:opacity-50 ${
+          tool.disabled
+            ? 'border-gray-700 bg-gray-900/80 text-gray-300 hover:border-emerald-500/30 hover:text-emerald-300'
+            : 'border-red-500/20 bg-red-500/10 text-red-300 hover:border-red-500/40 hover:text-red-200'
+        }`}
+      >
+        {saving ? <Loader2 className="h-3 w-3 animate-spin" /> : <Ban className="h-3 w-3" />}
+        {tool.disabled ? 'Enable' : 'Disable'}
+      </button>
     </div>
   );
 };
@@ -158,7 +184,10 @@ const ConnectionCard: React.FC<{
   const [expanded, setExpanded] = useState(false);
   const [tools, setTools] = useState<McpToolSummary[] | null>(null);
   const [loadingTools, setLoadingTools] = useState(false);
+  const [savingToolName, setSavingToolName] = useState<string | null>(null);
+  const [toolError, setToolError] = useState('');
   const snapshotVersion = buildConnectionSnapshotVersion(conn);
+  const disabledToolNames = useMemo(() => new Set(conn.disabledToolNames), [conn.disabledToolNames]);
 
   const loadTools = useCallback(async () => {
     setLoadingTools(true);
@@ -168,14 +197,21 @@ const ConnectionCard: React.FC<{
       });
       const data = await res.json();
       if (data.success) {
-        setTools(data.tools ?? []);
+        setTools(
+          (data.tools ?? []).map((tool: McpToolSummary) => ({
+            ...tool,
+            disabled: tool.disabled || disabledToolNames.has(tool.toolName),
+          })),
+        );
+        setToolError('');
       }
     } catch {
       setTools([]);
+      setToolError('Failed to load tool settings.');
     } finally {
       setLoadingTools(false);
     }
-  }, [conn.id]);
+  }, [conn.id, disabledToolNames]);
 
   useEffect(() => {
     setTools(null);
@@ -190,6 +226,51 @@ const ConnectionCard: React.FC<{
   const toggleExpand = useCallback(() => {
     setExpanded((currentExpanded) => !currentExpanded);
   }, []);
+
+  const handleToggleDisabled = useCallback(
+    async (tool: McpToolSummary) => {
+      const currentTools = tools ?? [];
+      const nextDisabledToolNames = currentTools
+        .filter((candidate) =>
+          candidate.toolName === tool.toolName ? !candidate.disabled : candidate.disabled,
+        )
+        .map((candidate) => candidate.toolName);
+
+      setSavingToolName(tool.toolName);
+      setToolError('');
+      setTools((current) =>
+        current?.map((candidate) =>
+          candidate.toolName === tool.toolName
+            ? { ...candidate, disabled: !candidate.disabled }
+            : candidate,
+        ) ?? current,
+      );
+
+      try {
+        const res = await fetch(`/api/mcp/connections/${conn.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ disabledToolNames: nextDisabledToolNames }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+          throw new Error(data.error ?? 'Failed to update tool access.');
+        }
+      } catch (error) {
+        setTools((current) =>
+          current?.map((candidate) =>
+            candidate.toolName === tool.toolName
+              ? { ...candidate, disabled: tool.disabled }
+              : candidate,
+          ) ?? current,
+        );
+        setToolError(error instanceof Error ? error.message : 'Failed to update tool access.');
+      } finally {
+        setSavingToolName(null);
+      }
+    },
+    [conn.id, tools],
+  );
 
   const lastSynced = conn.lastSyncedAt
     ? new Date(conn.lastSyncedAt).toLocaleString(undefined, {
@@ -266,6 +347,7 @@ const ConnectionCard: React.FC<{
       {/* Expanded tools panel */}
       {expanded && (
         <div className="border-t border-gray-800/40 bg-gray-950/40 px-4 py-3">
+          {toolError && <p className="mb-2 text-xs text-red-400/80">{toolError}</p>}
           {loadingTools ? (
             <div className="flex items-center gap-2 py-3 justify-center">
               <Loader2 className="w-4 h-4 text-gray-500 animate-spin" />
@@ -274,7 +356,12 @@ const ConnectionCard: React.FC<{
           ) : tools && tools.length > 0 ? (
             <div className="space-y-0.5">
               {tools.map((tool) => (
-                <ToolRow key={tool.id} tool={tool} />
+                <ToolRow
+                  key={tool.id}
+                  tool={tool}
+                  onToggleDisabled={handleToggleDisabled}
+                  saving={savingToolName === tool.toolName}
+                />
               ))}
             </div>
           ) : (

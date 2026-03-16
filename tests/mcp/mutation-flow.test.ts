@@ -52,6 +52,7 @@ function buildConnection(overrides?: Partial<McpConnectionRecord>): McpConnectio
     serverKey: 'calendar',
     displayName: 'Work Calendar',
     packDescription: null,
+    disabledToolNames: [],
     transport: {
       type: 'streamable_http',
       endpoint: 'https://mcp.example.com',

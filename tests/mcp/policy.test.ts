@@ -17,9 +17,13 @@ const {
   getLatestPendingMcpActionMock: vi.fn(),
 }));
 
-vi.mock('@/lib/services/mcp/registry/service', () => ({
-  loadMcpRegistrySnapshot: loadMcpRegistrySnapshotMock,
-}));
+vi.mock('@/lib/services/mcp/registry/service', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/services/mcp/registry/service')>();
+  return {
+    ...actual,
+    loadMcpRegistrySnapshot: loadMcpRegistrySnapshotMock,
+  };
+});
 
 vi.mock('@/lib/services/mcp/config/featureFlags', () => ({
   isMcpEnabled: isMcpEnabledMock,
@@ -30,7 +34,10 @@ vi.mock('@/lib/services/mcp/runtime/mutationFlow', () => ({
   getLatestPendingMcpAction: getLatestPendingMcpActionMock,
 }));
 
-import { resolveMcpToolExposure } from '@/lib/services/mcp/policy/service';
+import {
+  listSelectableMcpServerPacks,
+  resolveMcpToolExposure,
+} from '@/lib/services/mcp/policy/service';
 
 function buildConnection(overrides?: Partial<McpConnectionRecord>): McpConnectionRecord {
   return {
@@ -39,6 +46,7 @@ function buildConnection(overrides?: Partial<McpConnectionRecord>): McpConnectio
     serverKey: 'docs',
     displayName: 'Docs Workspace',
     packDescription: null,
+    disabledToolNames: [],
     transport: {
       type: 'streamable_http',
       endpoint: 'https://mcp.example.com',
@@ -325,6 +333,50 @@ describe('MCP policy service', () => {
     ]);
   });
 
+  test('surfaces disabled MCP tools as unavailable and never approves them', async () => {
+    const snapshot: McpRegistrySnapshot = {
+      userId: 'user-1',
+      fetchedAt: new Date('2026-03-02T18:05:00.000Z'),
+      connections: [
+        {
+          connection: buildConnection({
+            id: 'conn-disabled-tool',
+            serverKey: 'docs',
+            displayName: 'Docs Workspace',
+            disabledToolNames: ['search_docs'],
+          }),
+          tools: [
+            buildTool({
+              id: 'tool-disabled',
+              connectionId: 'conn-disabled-tool',
+              toolName: 'search_docs',
+              toolSlug: 'search_docs',
+              modelToolName: 'mcp__docs__search_docs',
+              displayTitle: 'Search docs',
+            }),
+          ],
+        },
+      ],
+    };
+    loadMcpRegistrySnapshotMock.mockResolvedValue(snapshot);
+
+    const exposure = await resolveMcpToolExposure({
+      userId: 'user-1',
+      conversationId: 'conv-1',
+      channel: 'twilio',
+      selectedConnectionIds: ['conn-disabled-tool'],
+    });
+
+    expect(exposure.approvedTools).toEqual([]);
+    expect(exposure.mutationTools).toEqual([]);
+    expect(exposure.degradedTools.map((candidate) => candidate.decision.reason)).toEqual([
+      'tool_disabled',
+    ]);
+    expect(exposure.promptSummary.degradedLines).toEqual([
+      'Docs Workspace: Search docs unavailable (tool_disabled)',
+    ]);
+  });
+
   test('returns an empty exposure when MCP is disabled', async () => {
     isMcpEnabledMock.mockReturnValue(false);
 
@@ -344,5 +396,111 @@ describe('MCP policy service', () => {
       toolSummaryLines: [],
       degradedLines: [],
     });
+  });
+
+  test('lists only selector-eligible MCP server packs and rebuilds descriptions from eligible tools', async () => {
+    const snapshot: McpRegistrySnapshot = {
+      userId: 'user-1',
+      fetchedAt: new Date('2026-03-02T18:05:00.000Z'),
+      connections: [
+        {
+          connection: buildConnection({
+            id: 'conn-mixed',
+            serverKey: 'docs',
+            displayName: 'Docs Workspace',
+            disabledToolNames: ['write_doc'],
+          }),
+          tools: [
+            buildTool({
+              id: 'tool-search',
+              connectionId: 'conn-mixed',
+              toolName: 'search_docs',
+              toolSlug: 'search_docs',
+              modelToolName: 'mcp__docs__search_docs',
+              displayTitle: 'Search docs',
+              actionClass: 'read',
+            }),
+            buildTool({
+              id: 'tool-write',
+              connectionId: 'conn-mixed',
+              toolName: 'write_doc',
+              toolSlug: 'write_doc',
+              modelToolName: 'mcp__docs__write_doc',
+              displayTitle: 'Write doc',
+              actionClass: 'write',
+            }),
+          ],
+        },
+        {
+          connection: buildConnection({
+            id: 'conn-disabled-only',
+            serverKey: 'empty',
+            displayName: 'Empty Server',
+            disabledToolNames: ['search_docs'],
+          }),
+          tools: [
+            buildTool({
+              id: 'tool-empty',
+              connectionId: 'conn-disabled-only',
+              toolName: 'search_docs',
+              toolSlug: 'search_docs',
+              modelToolName: 'mcp__empty__search_docs',
+              displayTitle: 'Search docs',
+            }),
+          ],
+        },
+        {
+          connection: buildConnection({
+            id: 'conn-third-party',
+            serverKey: 'vendor',
+            displayName: 'Vendor Server',
+            trustClass: 'third_party',
+          }),
+          tools: [
+            buildTool({
+              id: 'tool-vendor-write',
+              connectionId: 'conn-third-party',
+              toolName: 'create_record',
+              toolSlug: 'create_record',
+              modelToolName: 'mcp__vendor__create_record',
+              displayTitle: 'Create record',
+              actionClass: 'write',
+            }),
+          ],
+        },
+        {
+          connection: buildConnection({
+            id: 'conn-circuit-open',
+            serverKey: 'offline',
+            displayName: 'Offline Server',
+            circuitOpenUntil: new Date(Date.now() + 60_000),
+          }),
+          tools: [
+            buildTool({
+              id: 'tool-offline',
+              connectionId: 'conn-circuit-open',
+              toolName: 'search_docs',
+              toolSlug: 'search_docs',
+              modelToolName: 'mcp__offline__search_docs',
+              displayTitle: 'Search docs',
+            }),
+          ],
+        },
+      ],
+    };
+    loadMcpRegistrySnapshotMock.mockResolvedValue(snapshot);
+
+    const packs = await listSelectableMcpServerPacks({
+      userId: 'user-1',
+      channel: 'twilio',
+    });
+
+    expect(packs).toEqual([
+      {
+        connectionId: 'conn-mixed',
+        serverKey: 'docs',
+        packDescription: 'Docs Workspace: 1 read tools (Search docs)',
+      },
+    ]);
   });
 });

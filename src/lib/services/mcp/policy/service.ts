@@ -1,6 +1,9 @@
 import type { ProgressUpdateChannel } from '@/lib/ai/progressTypes';
 import { isMcpChannelEnabled, isMcpEnabled } from '@/lib/services/mcp/config/featureFlags';
-import { loadMcpRegistrySnapshot } from '@/lib/services/mcp/registry/service';
+import {
+  buildMcpPackDescription,
+  loadMcpRegistrySnapshot,
+} from '@/lib/services/mcp/registry/service';
 import { getLatestPendingMcpAction } from '@/lib/services/mcp/runtime/mutationFlow';
 import type {
   McpPolicyCandidate,
@@ -11,9 +14,57 @@ import type {
 
 const MAX_APPROVED_TOOLS = 50;
 
+export type McpSelectableServerPack = {
+  connectionId: string;
+  serverKey: string;
+  packDescription: string;
+};
+
+function isConnectionOperationalForChannel(params: {
+  channel: ProgressUpdateChannel;
+  connection: McpRegistryConnection['connection'];
+}): boolean {
+  if (!isMcpEnabled()) {
+    return false;
+  }
+
+  if (!isMcpChannelEnabled(params.channel)) {
+    return false;
+  }
+
+  if (params.connection.disabledAt || params.connection.status === 'disabled') {
+    return false;
+  }
+
+  if (
+    params.connection.circuitOpenUntil &&
+    params.connection.circuitOpenUntil.getTime() > Date.now()
+  ) {
+    return false;
+  }
+
+  return params.connection.status === 'synced';
+}
+
+function isToolEligibleForServerPack(params: {
+  connection: McpRegistryConnection['connection'];
+  tool: McpRegistryConnection['tools'][number];
+}): boolean {
+  if (params.connection.disabledToolNames.includes(params.tool.toolName)) {
+    return false;
+  }
+
+  if (params.tool.actionClass !== 'read' && params.connection.trustClass === 'third_party') {
+    return false;
+  }
+
+  return true;
+}
+
 function buildDecision(params: {
   channel: ProgressUpdateChannel;
   connection: McpRegistryConnection['connection'];
+  toolName: string;
   actionClass: string;
   selected: boolean;
 }): McpPolicyDecision {
@@ -41,6 +92,15 @@ function buildDecision(params: {
       callable: false,
       requiresConfirmation: false,
       reason: 'connection_not_selected',
+    };
+  }
+
+  if (params.connection.disabledToolNames.includes(params.toolName)) {
+    return {
+      visible: true,
+      callable: false,
+      requiresConfirmation: false,
+      reason: 'tool_disabled',
     };
   }
 
@@ -184,6 +244,7 @@ export async function resolveMcpToolExposure(params: {
       const decision = buildDecision({
         channel: params.channel,
         connection: entry.connection,
+        toolName: tool.toolName,
         actionClass: tool.actionClass,
         selected,
       });
@@ -240,4 +301,47 @@ export async function resolveMcpToolExposure(params: {
       degradedTools,
     }),
   };
+}
+
+export async function listSelectableMcpServerPacks(params: {
+  userId: string;
+  channel: ProgressUpdateChannel;
+}): Promise<McpSelectableServerPack[]> {
+  if (!isMcpEnabled() || !isMcpChannelEnabled(params.channel)) {
+    return [];
+  }
+
+  const snapshot = await loadMcpRegistrySnapshot(params.userId);
+
+  return snapshot.connections
+    .filter((entry) =>
+      isConnectionOperationalForChannel({
+        channel: params.channel,
+        connection: entry.connection,
+      }),
+    )
+    .flatMap((entry) => {
+      const eligibleTools = entry.tools.filter((tool) =>
+        isToolEligibleForServerPack({
+          connection: entry.connection,
+          tool,
+        }),
+      );
+
+      if (eligibleTools.length === 0) {
+        return [];
+      }
+
+      return [
+        {
+          connectionId: entry.connection.id,
+          serverKey: entry.connection.serverKey,
+          packDescription: buildMcpPackDescription(
+            entry.connection.displayName,
+            eligibleTools,
+          ),
+        },
+      ];
+    })
+    .sort((left, right) => left.serverKey.localeCompare(right.serverKey));
 }
