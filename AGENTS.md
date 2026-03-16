@@ -378,3 +378,10 @@ If a change makes the system feel smarter but harder to reason about, it is usua
 - Copy `.env.example` to `.env` and fill required values. The `.env` file is gitignored.
 - Google OAuth credentials (`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`) are needed for login. Without real credentials, the OAuth redirect still works but Google will reject the auth attempt.
 - `NEXTAUTH_SECRET` and `CRON_SECRET` can be any non-empty strings for local dev.
+- The test Google account has 2FA enabled. Automated credential-based login will fail at Google's verification step. Use the Desktop pane for interactive login, or ask the user to log in and preserve the session.
+
+### First login and onboarding
+
+- On first authenticated visit, the app redirects to `/onboarding-test-flow` with a multi-step wizard: welcome, phone pairing (skippable), inbox analysis (fetches labels, scans emails, analyzes senders, groups by projects), label selection, and then the main dashboard.
+- The inbox analysis step calls the Gmail API and the Gemini API; it requires valid `GOOGLE_GENERATIVE_AI_API_KEY` and a connected Gmail account.
+- After onboarding completes, the main view is the Queue page at `/` showing "Your queue is empty. Rest well." until emails are processed by the worker pipeline.
