@@ -63,6 +63,7 @@
     "clsx": "^2.1.1",
     "dotenv": "^17.2.1",
     "fasttext.wasm": "^1.0.1",
+    "file-type": "^16.5.4",
     "framer-motion": "^12.22.0",
     "googleapis": "^149.0.0",
     "grammy": "^1.40.0",
