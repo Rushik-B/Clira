@@ -35,17 +35,20 @@ vi.mock('@/lib/prisma', () => ({
   },
 }));
 
-vi.mock('@/lib/ai/describeIncomingImage', () => ({
-  describeIncomingImage: vi.fn(),
+const contentIngestionMocks = vi.hoisted(() => ({
+  extractContentFromBuffer: vi.fn(),
 }));
 
-vi.mock('@/lib/ai/extractIncomingPdfText', () => ({
-  extractIncomingPdfText: vi.fn(),
-}));
+vi.mock('@/lib/services/content-ingestion', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/services/content-ingestion')>(
+    '@/lib/services/content-ingestion',
+  );
 
-vi.mock('@/lib/ai/transcribeVoiceMemo', () => ({
-  transcribeVoiceMemo: vi.fn(),
-}));
+  return {
+    ...actual,
+    extractContentFromBuffer: contentIngestionMocks.extractContentFromBuffer,
+  };
+});
 
 vi.mock('@/lib/ai/agents/executiveAgent', () => ({
   getExecutiveAgent: vi.fn(),
@@ -77,9 +80,60 @@ vi.mock('@/lib/services/messaging-orchestration', () => ({
 }));
 
 import { prisma } from '@/lib/prisma';
-import { describeIncomingImage } from '@/lib/ai/describeIncomingImage';
-import { extractIncomingPdfText } from '@/lib/ai/extractIncomingPdfText';
+import { extractContentFromBuffer } from '@/lib/services/content-ingestion';
 import { processTelegramMessage } from '@/lib/services/telegram/messageProcessor';
+
+function createExtractionResult(params: {
+  mediaFamily: 'image' | 'pdf';
+  extractedText: string;
+}) {
+  return {
+    status: 'ok' as const,
+    mediaFamily: params.mediaFamily,
+    extractedText: params.extractedText,
+    images: [],
+    structuredData: null,
+    degradationNotes: [],
+    attribution: {
+      filename: params.mediaFamily === 'pdf' ? 'invoice.pdf' : null,
+      mimeType: params.mediaFamily === 'pdf' ? 'application/pdf' : 'image/png',
+      sniffedMimeType: params.mediaFamily === 'pdf' ? 'application/pdf' : 'image/png',
+      sha256: `${params.mediaFamily}-sha`,
+      provenance: {
+        sourceLabel: params.mediaFamily === 'pdf' ? 'Telegram PDF' : 'Telegram image',
+        sourceKind: 'telegram_media',
+        channel: 'telegram',
+        conversationId: 'conv-1',
+        runId: null,
+        messageId: '102',
+        attachmentId: params.mediaFamily === 'pdf' ? 'pdf-1' : 'file-1',
+        originUri: null,
+      },
+    },
+    tokenCost: {
+      inputTokens: 10,
+      outputTokens: 5,
+      totalTokens: 15,
+    },
+    extractionDurationMs: 25,
+    cacheKey: `${params.mediaFamily}-cache`,
+    cacheStatus: 'miss' as const,
+    handlerVersion: `${params.mediaFamily}-v1`,
+    budget: {
+      scopeKey: 'conv-1',
+      maxExtractions: 5,
+      attemptsUsed: 1,
+      totalTokens: 15,
+      totalDurationMs: 25,
+    },
+    metadata: {
+      sizeBytes: 2048,
+      declaredMimeType: params.mediaFamily === 'pdf' ? 'application/pdf' : 'image/png',
+      pageCountEstimate: params.mediaFamily === 'pdf' ? 1 : null,
+      audioDurationSeconds: null,
+    },
+  };
+}
 
 describe('processTelegramMessage', () => {
   beforeEach(() => {
@@ -99,6 +153,16 @@ describe('processTelegramMessage', () => {
 
     vi.mocked(prisma.user.findUnique).mockResolvedValue({ email: 'user@example.com' } as never);
     mockPrepareRunWithAdapter.mockResolvedValue({ kind: 'skip', reason: 'test-terminal' });
+    contentIngestionMocks.extractContentFromBuffer.mockResolvedValue(
+      createExtractionResult({
+        mediaFamily: 'pdf',
+        extractedText: [
+          'Invoice for March',
+          'Account: ACME Co.',
+          'Total due: $400',
+        ].join('\n'),
+      }),
+    );
   });
 
   test('adds explicit reply context for text replies to prior user messages', async () => {
@@ -158,7 +222,12 @@ describe('processTelegramMessage', () => {
       data: Buffer.from('image-bytes'),
       mimeType: 'image/png',
     });
-    vi.mocked(describeIncomingImage).mockResolvedValue('Image shows an invoice and due date.');
+    contentIngestionMocks.extractContentFromBuffer.mockResolvedValue(
+      createExtractionResult({
+        mediaFamily: 'image',
+        extractedText: 'Image shows an invoice and due date.',
+      }),
+    );
 
     await processTelegramMessage({
       updateId: 2,
@@ -178,12 +247,23 @@ describe('processTelegramMessage', () => {
       },
     });
 
-    expect(describeIncomingImage).toHaveBeenCalledWith(
-      Buffer.from('image-bytes'),
-      'image/png',
+    expect(extractContentFromBuffer).toHaveBeenCalledWith(
       expect.objectContaining({
+        buffer: Buffer.from('image-bytes'),
+        mimeType: 'image/png',
         channelLabel: 'Telegram',
         userCaption: 'Please summarize the key charges',
+        scope: {
+          conversationId: 'conv-1',
+        },
+        provenance: expect.objectContaining({
+          sourceLabel: 'Telegram image',
+          sourceKind: 'telegram_media',
+          channel: 'telegram',
+          conversationId: 'conv-1',
+          messageId: '102',
+          attachmentId: 'file-1',
+        }),
       }),
     );
     expect(mockPrepareRunWithAdapter).toHaveBeenCalledWith(
@@ -208,12 +288,15 @@ describe('processTelegramMessage', () => {
       data: Buffer.from('pdf-bytes'),
       mimeType: 'application/pdf',
     });
-    vi.mocked(extractIncomingPdfText).mockResolvedValue(
-      [
-        'Invoice for March',
-        'Account: ACME Co.',
-        'Total due: $400',
-      ].join('\n'),
+    contentIngestionMocks.extractContentFromBuffer.mockResolvedValue(
+      createExtractionResult({
+        mediaFamily: 'pdf',
+        extractedText: [
+          'Invoice for March',
+          'Account: ACME Co.',
+          'Total due: $400',
+        ].join('\n'),
+      }),
     );
 
     await processTelegramMessage({
@@ -230,13 +313,24 @@ describe('processTelegramMessage', () => {
       pdfCaption: 'Pull out the amount due',
     });
 
-    expect(extractIncomingPdfText).toHaveBeenCalledWith(
-      Buffer.from('pdf-bytes'),
-      'application/pdf',
+    expect(extractContentFromBuffer).toHaveBeenCalledWith(
       expect.objectContaining({
+        buffer: Buffer.from('pdf-bytes'),
+        mimeType: 'application/pdf',
         channelLabel: 'Telegram',
         filename: 'invoice.pdf',
         userCaption: 'Pull out the amount due',
+        scope: {
+          conversationId: 'conv-1',
+        },
+        provenance: expect.objectContaining({
+          sourceLabel: 'Telegram PDF',
+          sourceKind: 'telegram_media',
+          channel: 'telegram',
+          conversationId: 'conv-1',
+          messageId: '103',
+          attachmentId: 'pdf-1',
+        }),
       }),
     );
     expect(mockPrepareRunWithAdapter).toHaveBeenCalledWith(

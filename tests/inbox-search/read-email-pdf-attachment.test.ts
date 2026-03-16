@@ -11,8 +11,8 @@ const gmailMocks = vi.hoisted(() => ({
   createGmailServiceForUser: vi.fn(),
 }));
 
-const pdfMocks = vi.hoisted(() => ({
-  extractIncomingPdfText: vi.fn(),
+const contentIngestionMocks = vi.hoisted(() => ({
+  extractContentFromBuffer: vi.fn(),
 }));
 
 vi.mock('@/lib/prisma', () => ({
@@ -34,11 +34,68 @@ vi.mock('@/lib/security/getUserGmailCredentials', () => ({
   createGmailServiceForUser: gmailMocks.createGmailServiceForUser,
 }));
 
-vi.mock('@/lib/ai/extractIncomingPdfText', () => ({
-  extractIncomingPdfText: pdfMocks.extractIncomingPdfText,
-}));
+vi.mock('@/lib/services/content-ingestion', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/services/content-ingestion')>(
+    '@/lib/services/content-ingestion',
+  );
+
+  return {
+    ...actual,
+    extractContentFromBuffer: contentIngestionMocks.extractContentFromBuffer,
+  };
+});
 
 import { readEmailPdfAttachment } from '@/lib/services/inbox-search/read-email-pdf-attachment';
+import { extractContentFromBuffer } from '@/lib/services/content-ingestion';
+
+function createExtractionResult(extractedText: string) {
+  return {
+    status: 'ok' as const,
+    mediaFamily: 'pdf' as const,
+    extractedText,
+    images: [],
+    structuredData: null,
+    degradationNotes: [],
+    attribution: {
+      filename: 'invoice.pdf',
+      mimeType: 'application/pdf',
+      sniffedMimeType: 'application/pdf',
+      sha256: 'sha-1',
+      provenance: {
+        sourceLabel: 'Gmail email attachment',
+        sourceKind: 'gmail_attachment',
+        channel: 'gmail',
+        conversationId: null,
+        runId: null,
+        messageId: 'message-1',
+        attachmentId: 'att-1',
+        originUri: null,
+      },
+    },
+    tokenCost: {
+      inputTokens: 10,
+      outputTokens: 5,
+      totalTokens: 15,
+    },
+    extractionDurationMs: 12,
+    cacheKey: 'cache-key',
+    cacheStatus: 'miss' as const,
+    handlerVersion: 'pdf-v1',
+    budget: {
+      scopeKey: null,
+      maxExtractions: 5,
+      attemptsUsed: 1,
+      totalTokens: 15,
+      totalDurationMs: 12,
+    },
+    metadata: {
+      sizeBytes: 2048,
+      declaredMimeType: 'application/pdf',
+      pageCountEstimate: 1,
+      audioDurationSeconds: null,
+    },
+  };
+}
 
 function createGmailContext(options?: {
   rawMessage?: Record<string, unknown>;
@@ -116,12 +173,14 @@ describe('readEmailPdfAttachment', () => {
         emailAddress: 'user@example.com',
       },
     ]);
-    pdfMocks.extractIncomingPdfText.mockResolvedValue(
-      [
-        'Invoice for March',
-        'Account: ACME Co.',
-        'Total due: $400',
-      ].join('\n'),
+    contentIngestionMocks.extractContentFromBuffer.mockResolvedValue(
+      createExtractionResult(
+        [
+          'Invoice for March',
+          'Account: ACME Co.',
+          'Total due: $400',
+        ].join('\n'),
+      ),
     );
   });
 
@@ -141,12 +200,19 @@ describe('readEmailPdfAttachment', () => {
         purpose: 'executive-agent:read-email-pdf-attachment',
       }),
     );
-    expect(pdfMocks.extractIncomingPdfText).toHaveBeenCalledWith(
-      Buffer.from('pdf-bytes'),
-      'application/pdf',
+    expect(extractContentFromBuffer).toHaveBeenCalledWith(
       expect.objectContaining({
+        buffer: Buffer.from('pdf-bytes'),
+        mimeType: 'application/pdf',
         channelLabel: 'Gmail email attachment',
         filename: 'invoice.pdf',
+        provenance: expect.objectContaining({
+          sourceLabel: 'Gmail email attachment',
+          sourceKind: 'gmail_attachment',
+          channel: 'gmail',
+          messageId: 'message-1',
+          attachmentId: 'att-1',
+        }),
       }),
     );
     expect(result).toEqual({
@@ -177,6 +243,33 @@ describe('readEmailPdfAttachment', () => {
         },
       ],
       extractedText: 'Invoice for March\nAccount: ACME Co.\nTotal due: $400',
+    });
+  });
+
+  test('surfaces degraded extraction notes through the shared ingestion renderer', async () => {
+    const gmailContext = createGmailContext();
+    gmailMocks.createGmailServiceForUser.mockResolvedValue(gmailContext);
+    contentIngestionMocks.extractContentFromBuffer.mockResolvedValueOnce({
+      ...createExtractionResult(''),
+      status: 'degraded',
+      degradationNotes: [
+        {
+          code: 'size_limit_exceeded',
+          message: 'Extraction skipped because this pdf exceeds the 10 MB limit.',
+        },
+      ],
+    });
+
+    const result = await readEmailPdfAttachment({
+      userId: 'user-1',
+      messageId: 'message-1',
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      status: 'ok',
+      extractedText:
+        '[Content extraction degraded] Extraction skipped because this pdf exceeds the 10 MB limit.',
     });
   });
 
@@ -221,7 +314,7 @@ describe('readEmailPdfAttachment', () => {
       messageId: 'message-1',
     });
 
-    expect(pdfMocks.extractIncomingPdfText).not.toHaveBeenCalled();
+    expect(extractContentFromBuffer).not.toHaveBeenCalled();
     expect(result).toEqual({
       ok: false,
       status: 'multiple_pdf_attachments',
