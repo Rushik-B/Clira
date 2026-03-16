@@ -77,6 +77,9 @@ export function buildExecutiveAgentTools(context: ExecutiveRuntimeContext): Reco
   for (const candidate of context.mcpToolExposure?.approvedTools ?? []) {
     allowlist.add(candidate.tool.modelToolName);
   }
+  if ((context.mcpToolExposure?.selectedConnectionIds.length ?? 0) > 0) {
+    allowlist.add('read_content_reference');
+  }
   if ((context.mcpToolExposure?.mutationTools.length ?? 0) > 0) {
     allowlist.add('plan_mcp_action');
   }

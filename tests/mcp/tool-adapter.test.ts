@@ -8,11 +8,13 @@ import type { ExecutiveRuntimeContext } from '@/lib/ai/agents/executive-agent/ty
 
 const {
   executeMcpToolMock,
+  readMcpContentReferenceMock,
   planMcpMutationActionMock,
   commitPendingMcpActionMock,
   cancelPendingMcpActionMock,
 } = vi.hoisted(() => ({
   executeMcpToolMock: vi.fn(),
+  readMcpContentReferenceMock: vi.fn(),
   planMcpMutationActionMock: vi.fn(),
   commitPendingMcpActionMock: vi.fn(),
   cancelPendingMcpActionMock: vi.fn(),
@@ -21,6 +23,17 @@ const {
 vi.mock('@/lib/services/mcp/runtime/executor', () => ({
   executeMcpTool: executeMcpToolMock,
 }));
+
+vi.mock('@/lib/services/mcp/runtime/contentReferences', async () => {
+  const actual = await vi.importActual<
+    typeof import('@/lib/services/mcp/runtime/contentReferences')
+  >('@/lib/services/mcp/runtime/contentReferences');
+
+  return {
+    ...actual,
+    readMcpContentReference: readMcpContentReferenceMock,
+  };
+});
 
 vi.mock('@/lib/services/mcp/runtime/mutationFlow', () => ({
   planMcpMutationAction: planMcpMutationActionMock,
@@ -249,6 +262,28 @@ describe('Executive MCP tool adapter', () => {
       structuredContent: {
         path: '/guide',
       },
+      contentRefs: [
+        {
+          sourceKind: 'mcp_resource_link',
+          locator: '{"connectionId":"conn-1","uri":"docs://guide.pdf","mimeType":"application/pdf","displayName":"guide.pdf"}',
+          displayName: 'guide.pdf',
+          mimeHint: 'application/pdf',
+          trustClass: 'untrusted_external',
+          requiresApproval: false,
+          capability: 'document',
+          contentRefId: 'ref-1',
+          provenance: {
+            sourceLabel: 'Docs Workspace',
+            sourceKind: 'mcp_resource_link',
+            channel: 'mcp',
+            conversationId: null,
+            runId: null,
+            messageId: null,
+            attachmentId: null,
+            originUri: 'docs://guide.pdf',
+          },
+        },
+      ],
       degraded: false,
       latencyMs: 15,
       cache: 'miss',
@@ -274,8 +309,87 @@ describe('Executive MCP tool adapter', () => {
       structuredSummary: {
         path: '/guide',
       },
+      contentRefs: [
+        expect.objectContaining({
+          displayName: 'guide.pdf',
+          contentRefId: 'ref-1',
+        }),
+      ],
+      contentRefCount: 1,
     });
     expect(result).not.toHaveProperty('content');
     expect(result).not.toHaveProperty('structuredContent');
+  });
+
+  test('exposes read_content_reference and routes it through the MCP content reader', async () => {
+    const exposure: McpToolExposure = {
+      selectedConnectionIds: ['conn-1'],
+      approvedTools: [
+        {
+          connection: buildConnection(),
+          tool: buildTool(),
+          decision: {
+            visible: true,
+            callable: true,
+            requiresConfirmation: false,
+            reason: 'approved',
+          },
+        },
+      ],
+      mutationTools: [],
+      degradedTools: [],
+      pendingAction: null,
+      promptSummary: {
+        toolSummaryLines: ['Docs Workspace: Search docs (read)'],
+        degradedLines: [],
+      },
+    };
+    readMcpContentReferenceMock.mockResolvedValue({
+      ok: true,
+      resultCount: 1,
+      results: [{ status: 'ok', mediaFamily: 'pdf', extractedText: 'Deployment checklist.' }],
+    });
+
+    const tools = buildExecutiveMcpTools({
+      context: buildContext(),
+      exposure,
+    }) as Record<string, { execute: (args: Record<string, unknown>) => Promise<Record<string, unknown>> }>;
+
+    const reference = {
+      sourceKind: 'mcp_resource_link',
+      locator:
+        '{"connectionId":"conn-1","uri":"docs://guide.pdf","mimeType":"application/pdf","displayName":"guide.pdf"}',
+      displayName: 'guide.pdf',
+      mimeHint: 'application/pdf',
+      trustClass: 'untrusted_external',
+      requiresApproval: false,
+      capability: 'document',
+      contentRefId: 'ref-1',
+      provenance: {
+        sourceLabel: 'Docs Workspace',
+        sourceKind: 'mcp_resource_link',
+        channel: 'mcp',
+        conversationId: null,
+        runId: null,
+        messageId: null,
+        attachmentId: null,
+        originUri: 'docs://guide.pdf',
+      },
+    };
+    const result = await tools.read_content_reference.execute({ reference });
+
+    expect(readMcpContentReferenceMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: 'user-1',
+        conversationId: 'conv-1',
+        runId: 'run-1',
+        reference,
+      }),
+    );
+    expect(result).toEqual({
+      ok: true,
+      resultCount: 1,
+      results: [{ status: 'ok', mediaFamily: 'pdf', extractedText: 'Deployment checklist.' }],
+    });
   });
 });

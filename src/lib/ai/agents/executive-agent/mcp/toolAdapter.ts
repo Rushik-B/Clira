@@ -1,11 +1,13 @@
 import { z } from 'zod';
 import { executeMcpTool } from '@/lib/services/mcp/runtime/executor';
+import { readMcpContentReference } from '@/lib/services/mcp/runtime/contentReferences';
 import {
   cancelPendingMcpAction,
   commitPendingMcpAction,
   planMcpMutationAction,
 } from '@/lib/services/mcp/runtime/mutationFlow';
 import { sanitizeMcpInlineText } from '@/lib/services/mcp/security/sanitization';
+import type { ContentReference } from '@/lib/services/content-ingestion/types';
 import type {
   McpToolExposure,
   McpToolManifestRecord,
@@ -78,12 +80,61 @@ function resolveCommitDeadlineMs(context: ExecutiveRuntimeContext): number {
   return Math.max(2_000, Math.min(timeLeftMs, 15_000));
 }
 
+function resolveContentReferenceDeadlineMs(context: ExecutiveRuntimeContext): number {
+  const timeLeftMs = context.toolAbort.timeLeftMs();
+  if (!timeLeftMs || timeLeftMs <= 0) {
+    return 15_000;
+  }
+
+  return Math.max(2_000, Math.min(timeLeftMs, 15_000));
+}
+
 function buildPendingDescription(exposure: McpToolExposure): string {
   if (!exposure.pendingAction) {
     return 'Resolve the latest pending external MCP action.';
   }
 
   return `Resolve the latest pending external MCP action: ${exposure.pendingAction.displayTitle}.`;
+}
+
+const contentReferenceSchema = z.object({
+  sourceKind: z.string().min(1),
+  locator: z.string().min(1),
+  displayName: z.string().trim().min(1).nullable().optional(),
+  mimeHint: z.string().trim().min(1).nullable().optional(),
+  trustClass: z.enum([
+    'trusted_internal',
+    'user_provided',
+    'third_party',
+    'untrusted_external',
+  ]),
+  requiresApproval: z.boolean(),
+  capability: z.enum(['document', 'container', 'list', 'link', 'binary']),
+  contentRefId: z.string().min(1),
+  provenance: z.object({
+    sourceLabel: z.string().min(1),
+    sourceKind: z.string().trim().min(1).nullable().optional(),
+    channel: z.string().trim().min(1).nullable().optional(),
+    conversationId: z.string().trim().min(1).nullable().optional(),
+    runId: z.string().trim().min(1).nullable().optional(),
+    messageId: z.string().trim().min(1).nullable().optional(),
+    attachmentId: z.string().trim().min(1).nullable().optional(),
+    originUri: z.string().trim().min(1).nullable().optional(),
+  }),
+});
+
+const readContentReferenceInputSchema = z.object({
+  reference: contentReferenceSchema.describe(
+    'A content reference copied from an earlier MCP tool result contentRefs array.',
+  ),
+});
+
+function buildReadContentReferenceDescription(): string {
+  return [
+    'Resolve a contentRef returned by an MCP read/list tool and extract readable text from it.',
+    'Use this only with a reference copied from an MCP tool result contentRefs array.',
+    'Do not invent or modify the reference fields.',
+  ].join(' ');
 }
 
 export function buildExecutiveMcpTools(params: {
@@ -129,6 +180,29 @@ export function buildExecutiveMcpTools(params: {
       },
     ]),
   );
+
+  tools.read_content_reference = {
+    description: buildReadContentReferenceDescription(),
+    inputSchema: readContentReferenceInputSchema,
+    execute: async (rawArgs: Record<string, unknown>) => {
+      const parsed = readContentReferenceInputSchema.safeParse(rawArgs);
+      if (!parsed.success) {
+        return {
+          ok: false,
+          error: 'invalid_content_reference_arguments',
+          message: 'A complete content reference object is required.',
+        };
+      }
+
+      return readMcpContentReference({
+        userId: params.context.input.userId,
+        reference: parsed.data.reference as ContentReference,
+        conversationId: params.context.input.conversationId,
+        runId: params.context.input.runContext?.runId ?? 'mcp-content-ref',
+        deadlineMs: resolveContentReferenceDeadlineMs(params.context),
+      });
+    },
+  };
 
   if (params.exposure.mutationTools.length > 0) {
     tools.plan_mcp_action = {

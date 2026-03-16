@@ -368,6 +368,7 @@ describe('Executive agent tool packs', () => {
 
     expect(toolNames).toContain('search_inbox_context');
     expect(toolNames).toContain('mcp__docs__search_docs');
+    expect(toolNames).toContain('read_content_reference');
   });
 
   test('mutation-capable MCP exposure adds preview and pending confirmation wrappers instead of raw mutating tools', () => {
@@ -442,6 +443,7 @@ describe('Executive agent tool packs', () => {
     expect(toolNames).toContain('plan_mcp_action');
     expect(toolNames).toContain('commit_mcp_action');
     expect(toolNames).toContain('cancel_mcp_action');
+    expect(toolNames).toContain('read_content_reference');
     expect(toolNames).not.toContain('mcp__calendar__create_event');
   });
 });
