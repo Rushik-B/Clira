@@ -82,6 +82,23 @@ export const ReplyRouterDecisionSchema = z.object({
 
 export type ReplyRouterDecisionDTO = z.infer<typeof ReplyRouterDecisionSchema>;
 
+export const ReplyRouterAlertMatchSchema = z.object({
+  shouldNotify: z
+    .boolean()
+    .default(false)
+    .describe('True if email matches any user alert rule'),
+  matchedAlertId: z
+    .string()
+    .optional()
+    .describe('ID of matched alert'),
+  matchedAlertDescription: z
+    .string()
+    .optional()
+    .describe('Description of matched alert'),
+});
+
+export type ReplyRouterAlertMatchDTO = z.infer<typeof ReplyRouterAlertMatchSchema>;
+
 /**
  * Stage 2 (Planner): produce a structured reply plan (facts + requirements + rough draft)
  * that downstream style/voice layers can rewrite without introducing new facts.

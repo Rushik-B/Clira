@@ -3,7 +3,12 @@ import { pruneEmailContentForRouting } from '@/lib/services/onboarding-services/
 import type { EmailMessage, FilterResult } from '@/lib/email/emailFilterService';
 import { callObject } from '@/lib/ai/callLlm';
 import { models } from '@/lib/ai/models';
-import { ReplyRouterDecisionSchema, type ReplyRouterDecisionDTO } from '@/lib/ai/schemas/schemas';
+import {
+  ReplyRouterAlertMatchSchema,
+  ReplyRouterDecisionSchema,
+  type ReplyRouterAlertMatchDTO,
+  type ReplyRouterDecisionDTO,
+} from '@/lib/ai/schemas/schemas';
 import { prisma } from '@/lib/prisma';
 import { logger } from '@/lib/logger';
 import { createGmailServiceForUser } from '@/lib/security/getUserGmailCredentials';
@@ -74,23 +79,34 @@ function safeString(value: unknown): string {
   return String(value);
 }
 
-async function buildReplyRouterPrompt(input: ReplyRouterAgentInput): Promise<string> {
+type ActiveEmailAlert = {
+  id: string;
+  description: string | null;
+};
+
+function formatAlertsSection(alerts: ActiveEmailAlert[]): string {
+  return alerts.length > 0
+    ? alerts.map((alert) => `- [${alert.id}] ${safeString(alert.description)}`).join('\n')
+    : '(No active alerts)';
+}
+
+async function listActiveAlerts(userId: string): Promise<ActiveEmailAlert[]> {
+  return prisma.emailAlert.findMany({
+    where: { userId, isActive: true },
+    select: { id: true, description: true },
+  });
+}
+
+async function buildReplyRouterPrompt(
+  input: ReplyRouterAgentInput,
+  alerts: ActiveEmailAlert[],
+): Promise<string> {
   const template = readPromptFile('core-processing/replyRouterPrompt.md');
 
   const prunedBody = pruneEmailContentForRouting({
     subject: input.message.subject,
     body: input.message.body,
   }).prunedBody;
-
-  const alerts = await prisma.emailAlert.findMany({
-    where: { userId: input.userId, isActive: true },
-    select: { id: true, description: true },
-  });
-
-  const alertsSection =
-    alerts.length > 0
-      ? alerts.map((alert) => `- [${alert.id}] ${safeString(alert.description)}`).join('\n')
-      : '(No active alerts)';
 
   return template
     .replace('{userEmail}', safeString(input.userEmail))
@@ -102,7 +118,32 @@ async function buildReplyRouterPrompt(input: ReplyRouterAgentInput): Promise<str
     .replace('{ccEmails}', asCsv(input.message.cc))
     .replace('{subject}', safeString(input.message.subject))
     .replace('{labelIds}', asCsv(input.message.labelIds))
-    .replace('{emailAlerts}', alertsSection)
+    .replace('{emailAlerts}', formatAlertsSection(alerts))
+    .replace('{body}', prunedBody);
+}
+
+async function buildReplyRouterAlertPrompt(
+  input: ReplyRouterAgentInput,
+  alerts: ActiveEmailAlert[],
+): Promise<string> {
+  const template = readPromptFile('core-processing/replyRouterAlertPrompt.md');
+
+  const prunedBody = pruneEmailContentForRouting({
+    subject: input.message.subject,
+    body: input.message.body,
+  }).prunedBody;
+
+  return template
+    .replace('{userEmail}', safeString(input.userEmail))
+    .replace('{filterShouldReply}', String(input.filterResult.shouldReply))
+    .replace('{filterCategory}', safeString(input.filterResult.category))
+    .replace('{filterReason}', safeString(input.filterResult.reason))
+    .replace('{fromEmail}', safeString(input.message.from))
+    .replace('{toEmails}', asCsv(input.message.to))
+    .replace('{ccEmails}', asCsv(input.message.cc))
+    .replace('{subject}', safeString(input.message.subject))
+    .replace('{labelIds}', asCsv(input.message.labelIds))
+    .replace('{emailAlerts}', formatAlertsSection(alerts))
     .replace('{body}', prunedBody);
 }
 
@@ -116,7 +157,8 @@ async function buildReplyRouterPrompt(input: ReplyRouterAgentInput): Promise<str
 export class ReplyRouterAgent {
   async evaluate(input: ReplyRouterAgentInput): Promise<ReplyRouterDecisionDTO> {
     try {
-      const prompt = await buildReplyRouterPrompt(input);
+      const alerts = await listActiveAlerts(input.userId);
+      const prompt = await buildReplyRouterPrompt(input, alerts);
       const { object } = await callObject<ReplyRouterDecisionDTO>({
         model: models.replyRouter(),
         system:
@@ -147,20 +189,64 @@ export class ReplyRouterAgent {
   }
 
   async evaluateRealtimeRouting(input: ReplyRouterRealtimeInput): Promise<ReplyRouterRealtimeResult> {
-    const routerDecision = await this.evaluate(input);
     const replyDecision = input.filterResult.shouldReply
-      ? routerDecision
-      : {
-          ...routerDecision,
-          shouldReply: false,
-          reason: `Reply policy blocked draft generation: ${input.filterResult.reason}`,
-        };
+      ? await this.evaluate(input)
+      : await this.evaluateAlertsOnly(input);
 
     const labeling = await this.applyRealtimeLabeling(input);
     return {
       replyDecision,
       labeling,
     };
+  }
+
+  private async evaluateAlertsOnly(input: ReplyRouterRealtimeInput): Promise<ReplyRouterDecisionDTO> {
+    const blockedReason = `Reply policy blocked draft generation: ${input.filterResult.reason}`;
+
+    try {
+      const alerts = await listActiveAlerts(input.userId);
+      if (alerts.length === 0) {
+        return {
+          shouldReply: false,
+          reason: blockedReason,
+          shouldNotify: false,
+        };
+      }
+
+      const prompt = await buildReplyRouterAlertPrompt(input, alerts);
+      const { object } = await callObject<ReplyRouterAlertMatchDTO>({
+        model: models.flashLite(),
+        system:
+          'You classify whether an incoming email matches any user-defined alert. Return only a JSON object that matches the provided schema; do not include markdown, code fences, or extra commentary.',
+        prompt,
+        schema: ReplyRouterAlertMatchSchema,
+        temperature: 0,
+        op: 'reply.router.alerts',
+        concurrency: { key: 'reply.router.alerts', maxConcurrency: 8 },
+        retry: { maxAttempts: 3, baseDelayMs: 250 },
+        abortSignal: input.abortSignal,
+      });
+
+      return {
+        shouldReply: false,
+        reason: blockedReason,
+        shouldNotify: object.shouldNotify,
+        matchedAlertId: object.shouldNotify ? object.matchedAlertId : undefined,
+        matchedAlertDescription: object.shouldNotify ? object.matchedAlertDescription : undefined,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      logger.error(`[replyRouterAgent] Alert-only evaluation failed: ${message}`);
+      if (input.strict) {
+        throw new Error(`ReplyRouterAlertMatchFailed: ${message}`);
+      }
+
+      return {
+        shouldReply: false,
+        reason: `${blockedReason} Alert matching unavailable.`,
+        shouldNotify: false,
+      };
+    }
   }
 
   private async applyRealtimeLabeling(
