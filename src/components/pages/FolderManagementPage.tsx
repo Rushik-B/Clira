@@ -6,11 +6,10 @@ import {
   Folder, 
   Plus,
   AlertCircle,
+  CheckCircle2,
   Loader2,
   Search,
   ArrowUpDown,
-  Zap,
-  CheckCircle2,
   RefreshCw
 } from 'lucide-react';
 import { LoaderFive } from '@/components/ui/loader';
@@ -68,31 +67,29 @@ const CustomFolderIcon = React.forwardRef<SVGSVGElement, React.ComponentProps<'s
 );
 CustomFolderIcon.displayName = 'CustomFolderIcon';
 
+function useAutoReset<T>(value: T, reset: () => void, delayMs: number) {
+  useEffect(() => {
+    if (value == null) return;
+    const timer = window.setTimeout(() => {
+      reset();
+    }, delayMs);
+    return () => window.clearTimeout(timer);
+  }, [value, reset, delayMs]);
+}
 
-  // Helper: auto-reset a value after a delay with proper cleanup
-  function useAutoReset<T>(value: T, reset: () => void, delayMs: number) {
-    useEffect(() => {
-      if (value == null) return;
-      const timer = window.setTimeout(() => {
-        reset();
-      }, delayMs);
-      return () => window.clearTimeout(timer);
-    }, [value, reset, delayMs]);
+// Helper: map API rule types to frontend condition types
+function mapApiTypeToCondition(apiType: string): import('@/components/ui/folder-management').HardRule['condition'] {
+  switch (apiType) {
+    case 'EMAIL': return 'sender';
+    case 'DOMAIN': return 'domain';
+    case 'SUBJECT': return 'subject';
+    case 'SUBJECT_CONTAINS': return 'subject_contains';
+    case 'SUBJECT_STARTS_WITH': return 'subject_starts_with';
+    case 'SUBJECT_ENDS_WITH': return 'subject_ends_with';
+    case 'SUBJECT_REGEX': return 'subject_regex';
+    default: return 'sender';
   }
-
-  // Helper: map API rule types to frontend condition types
-  function mapApiTypeToCondition(apiType: string): import('@/components/ui/folder-management').HardRule['condition'] {
-    switch (apiType) {
-      case 'EMAIL': return 'sender';
-      case 'DOMAIN': return 'domain';
-      case 'SUBJECT': return 'subject';
-      case 'SUBJECT_CONTAINS': return 'subject_contains';
-      case 'SUBJECT_STARTS_WITH': return 'subject_starts_with';
-      case 'SUBJECT_ENDS_WITH': return 'subject_ends_with';
-      case 'SUBJECT_REGEX': return 'subject_regex';
-      default: return 'sender';
-    }
-  }
+}
 
 // Types are now imported from folder-management components
 
@@ -124,23 +121,18 @@ export const FolderManagementPage: React.FC = () => {
   const [reorganizationResult, setReorganizationResult] = useState<ReorganizationResult | null>(null);
   const [reorganizationProgress, setReorganizationProgress] = useState(0);
   const [processing, setProcessing] = useState(false);
-  
-  // Deletion confirmation state
-  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
-  const [folderPendingDelete, setFolderPendingDelete] = useState<FolderData | null>(null);
-  const [deleteLoading, setDeleteLoading] = useState(false);
-  const [deleteError, setDeleteError] = useState('');
-  
-  // Sort Now state
-  const [sortingNow, setSortingNow] = useState(false);
   const [sortStatus, setSortStatus] = useState<{
     state: 'idle' | 'processing' | 'success' | 'error';
     message: string;
     details?: string;
     emailsProcessed?: number;
   }>({ state: 'idle', message: '' });
-  const jobPollingRef = useRef<number | null>(null);
-  const jobCompletedRef = useRef<boolean>(false);
+  
+  // Deletion confirmation state
+  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  const [folderPendingDelete, setFolderPendingDelete] = useState<FolderData | null>(null);
+  const [deleteLoading, setDeleteLoading] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
   const fetchingDataRef = useRef<boolean>(false);
   // UI controls
   const [searchQuery, setSearchQuery] = useState('');
@@ -401,13 +393,6 @@ export const FolderManagementPage: React.FC = () => {
     fetchFolderData({ skipFolderSpinner: showedInstant, userId: session.userId });
 
     return () => {
-      // Cleanup any running polling interval on unmount
-      if (jobPollingRef.current) {
-        window.clearInterval(jobPollingRef.current);
-        jobPollingRef.current = null;
-      }
-      // Reset flags on unmount
-      jobCompletedRef.current = false;
       fetchingDataRef.current = false;
     };
   }, [session?.userId, fetchFolderData]);
@@ -546,6 +531,12 @@ export const FolderManagementPage: React.FC = () => {
     [fetchFolderData]
   );
 
+  useAutoReset(
+    sortStatus.state === 'success' || sortStatus.state === 'error' ? sortStatus : null,
+    () => setSortStatus({ state: 'idle', message: '' }),
+    15000
+  );
+
   const handleCreateFolder = async (newFolder: {
     name: string;
     description: string;
@@ -649,100 +640,6 @@ export const FolderManagementPage: React.FC = () => {
       void runReorganization(queuedReorganization);
     }
   };
-
-  const handleSortNow = async () => {
-    try {
-      setSortingNow(true);
-      setSortStatus({
-        state: 'processing',
-        message: 'Analyzing your inbox...',
-        details: 'This may take a few moments'
-      });
-      setError(null);
-      
-      // Reset job completion flag for new sort operation
-      jobCompletedRef.current = false;
-      
-      console.log('🚀 Triggering Sort Now for user');
-      
-      const response = await fetch('/api/folders/sort-now', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
-      });
-      
-      const data = await response.json();
-      
-      if (response.ok && data.success) {
-        setSortStatus({
-          state: 'processing',
-          message: 'Sorting emails into folders...',
-          details: 'AI is organizing your emails based on folder rules'
-        });
-        console.log(`📥 Sort Now enqueued:`, data);
-
-        // Begin lightweight polling of batch job status for a short window
-        if (jobPollingRef.current) {
-          window.clearInterval(jobPollingRef.current);
-          jobPollingRef.current = null;
-        }
-        const intervalId = window.setInterval(async () => {
-          try {
-            const statusRes = await fetch('/api/batch-jobs/status');
-            if (statusRes.ok) {
-              const statusJson = await statusRes.json();
-              if (statusJson?.success) {
-                // Only process job completion once to prevent cascading API calls
-                if (!statusJson.data?.hasRunningJob && !jobCompletedRef.current) {
-                  console.log('✅ Sort job completed - processing results once');
-                  
-                  // Mark job as completed FIRST to prevent race conditions
-                  jobCompletedRef.current = true;
-                  
-                  // Stop polling immediately
-                  window.clearInterval(intervalId);
-                  jobPollingRef.current = null;
-                  
-                  // Show success state
-                  setSortStatus({
-                    state: 'success',
-                    message: 'Sorting completed successfully!',
-                    details: 'Your emails have been organized into folders',
-                    emailsProcessed: statusJson.data?.emailsProcessed
-                  });
-                  
-                  // Refresh folders to show updated counts (with deduplication protection)
-                  await fetchFolderData();
-                }
-              }
-            }
-          } catch (error) {
-            console.error('Error during status polling:', error);
-          }
-        }, 5000); // Increased interval to 5 seconds to reduce server load
-        jobPollingRef.current = intervalId;
-      } else {
-        throw new Error(data.error || 'Sort failed');
-      }
-      
-    } catch (error) {
-      console.error('Error during Sort Now:', error);
-      setSortStatus({
-        state: 'error',
-        message: 'Failed to sort emails',
-        details: error instanceof Error ? error.message : 'An unexpected error occurred'
-      });
-      setError(error instanceof Error ? error.message : 'Sort failed');
-    } finally {
-      setSortingNow(false);
-    }
-  };
-
-  // Auto-hide sort status after 15 seconds for success/error states only
-  useAutoReset(
-    sortStatus.state === 'success' || sortStatus.state === 'error' ? sortStatus : null,
-    () => setSortStatus({ state: 'idle', message: '' }),
-    15000
-  );
 
   const toggleFolder = useCallback((folderId: string) => {
     setExpandedFolders((prev) => {
@@ -942,7 +839,7 @@ export const FolderManagementPage: React.FC = () => {
       <MobileHeader title="Folder Management">
         <LiquidButton
           onClick={() => fetchFolderData()}
-          disabled={processing || sortingNow || foldersLoading}
+          disabled={processing || foldersLoading}
           minWidth="none"
           size="icon"
           className="h-8 w-8 rounded-full text-sky-100"
@@ -968,7 +865,7 @@ export const FolderManagementPage: React.FC = () => {
           <div className="flex flex-col space-y-2 sm:flex-row sm:space-y-0 sm:space-x-3">
             <LiquidButton
               onClick={() => fetchFolderData()}
-              disabled={processing || sortingNow || foldersLoading}
+              disabled={processing || foldersLoading}
               minWidth="sm"
               responsive
               variant="default"
@@ -982,15 +879,6 @@ export const FolderManagementPage: React.FC = () => {
                 <span className="hidden sm:inline">{processing ? 'Loading...' : foldersLoading ? 'Loading...' : 'Refresh'}</span>
               </span>
             </LiquidButton>
-            <PrimaryButton
-              onClick={handleSortNow}
-              disabled={sortingNow || processing || foldersLoading}
-              minWidth="md"
-              aria-label="Sort emails now using always-on mapping"
-            >
-              <Zap className={`w-4 h-4 fill-current ${sortingNow ? 'animate-pulse' : ''}`} />
-              <span>{sortingNow ? 'Sorting...' : 'Sort Now'}</span>
-            </PrimaryButton>
             <PrimaryButton
               onClick={() => setShowCreateModal(true)}
               disabled={processing || foldersLoading}
@@ -1071,59 +959,6 @@ export const FolderManagementPage: React.FC = () => {
             </div>
           </div>
         )}
-
-        {/* Sort Status Notification */}
-        {sortStatus.state !== 'idle' && (
-          <div className="mb-6">
-            <div className={`p-4 rounded-xl border backdrop-blur-sm ${
-              sortStatus.state === 'processing' 
-                ? 'bg-blue-900/20 border-blue-800/40' 
-                : sortStatus.state === 'success'
-                ? 'bg-green-900/20 border-green-800/40'
-                : 'bg-red-900/20 border-red-800/40'
-            }`}>
-              <div className="flex items-start space-x-3">
-                <div className="flex-shrink-0 mt-0.5">
-                  {sortStatus.state === 'processing' ? (
-                    <Loader2 className="w-5 h-5 text-blue-400 animate-spin" />
-                  ) : sortStatus.state === 'success' ? (
-                    <CheckCircle2 className="w-5 h-5 text-green-400" />
-                  ) : (
-                    <AlertCircle className="w-5 h-5 text-red-400" />
-                  )}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className={`font-medium ${
-                    sortStatus.state === 'processing' 
-                      ? 'text-blue-300' 
-                      : sortStatus.state === 'success'
-                      ? 'text-green-300'
-                      : 'text-red-300'
-                  }`}>
-                    {sortStatus.message}
-                  </p>
-                  {sortStatus.details && (
-                    <p className={`text-sm mt-1 ${
-                      sortStatus.state === 'processing' 
-                        ? 'text-blue-400/80' 
-                        : sortStatus.state === 'success'
-                        ? 'text-green-400/80'
-                        : 'text-red-400/80'
-                    }`}>
-                      {sortStatus.details}
-                    </p>
-                  )}
-                  {sortStatus.emailsProcessed && (
-                    <p className="text-sm text-green-400/80 mt-1">
-                      📧 {sortStatus.emailsProcessed} emails organized
-                    </p>
-                  )}
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
 
         {/* Processing Progress */}
         {pageMode === 'reorganizing' && (
