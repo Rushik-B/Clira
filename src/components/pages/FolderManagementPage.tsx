@@ -511,7 +511,7 @@ export const FolderManagementPage: React.FC = () => {
         });
       }
     },
-    [fetchFolderData]
+    []
   );
 
   useAutoReset(
