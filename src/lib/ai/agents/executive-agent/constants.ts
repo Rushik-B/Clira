@@ -1,3 +1,15 @@
+/** Gemini 3 thinking level for exec agent (normal flows only). Override with EXEC_AGENT_THINKING_LEVEL. */
+const EXEC_AGENT_THINKING_LEVEL_VALUES = ['minimal', 'low', 'medium', 'high'] as const;
+export type ExecAgentThinkingLevel = (typeof EXEC_AGENT_THINKING_LEVEL_VALUES)[number];
+
+export function resolveExecAgentThinkingLevel(): ExecAgentThinkingLevel {
+  const raw = process.env.EXEC_AGENT_THINKING_LEVEL?.toLowerCase().trim();
+  if (raw && EXEC_AGENT_THINKING_LEVEL_VALUES.includes(raw as ExecAgentThinkingLevel)) {
+    return raw as ExecAgentThinkingLevel;
+  }
+  return 'high';
+}
+
 export const MESSAGING_DEADLINE_MS = 120_000;
 export const MESSAGING_TOOL_RESPONSE_BUFFER_MS = 3_500;
 export const MESSAGING_FIRST_TOOL_MAX_BUDGET_MS = 30_000;

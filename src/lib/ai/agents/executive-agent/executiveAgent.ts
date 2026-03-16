@@ -28,6 +28,7 @@ import {
   MESSAGING_MAX_STEPS,
   MESSAGING_MAX_TOOL_CALLS_TOTAL,
   MESSAGING_TOOL_BUDGETS_BASE,
+  resolveExecAgentThinkingLevel,
 } from './constants';
 import {
   buildTerminalFallbackResponse,
@@ -334,7 +335,7 @@ export class ExecutiveAgent {
         input.userRequest.startsWith('ALERT NOTIFICATION:');
       const providerOptions = isNotificationFlow
         ? { google: { thinkingConfig: { thinkingBudget: 0 } } }
-        : undefined;
+        : { google: { thinkingConfig: { thinkingLevel: resolveExecAgentThinkingLevel() } } };
 
       const nativeSteerEnabled = isNativeSteeringEnabled(resolvedChannel);
       if (nativeSteerEnabled) {
