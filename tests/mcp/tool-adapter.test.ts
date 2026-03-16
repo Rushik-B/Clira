@@ -8,13 +8,13 @@ import type { ExecutiveRuntimeContext } from '@/lib/ai/agents/executive-agent/ty
 
 const {
   executeMcpToolMock,
-  readMcpContentReferenceMock,
+  readContentReferenceMock,
   planMcpMutationActionMock,
   commitPendingMcpActionMock,
   cancelPendingMcpActionMock,
 } = vi.hoisted(() => ({
   executeMcpToolMock: vi.fn(),
-  readMcpContentReferenceMock: vi.fn(),
+  readContentReferenceMock: vi.fn(),
   planMcpMutationActionMock: vi.fn(),
   commitPendingMcpActionMock: vi.fn(),
   cancelPendingMcpActionMock: vi.fn(),
@@ -24,14 +24,14 @@ vi.mock('@/lib/services/mcp/runtime/executor', () => ({
   executeMcpTool: executeMcpToolMock,
 }));
 
-vi.mock('@/lib/services/mcp/runtime/contentReferences', async () => {
+vi.mock('@/lib/services/content-ingestion/referenceRuntime', async () => {
   const actual = await vi.importActual<
-    typeof import('@/lib/services/mcp/runtime/contentReferences')
-  >('@/lib/services/mcp/runtime/contentReferences');
+    typeof import('@/lib/services/content-ingestion/referenceRuntime')
+  >('@/lib/services/content-ingestion/referenceRuntime');
 
   return {
     ...actual,
-    readMcpContentReference: readMcpContentReferenceMock,
+    readContentReference: readContentReferenceMock,
   };
 });
 
@@ -344,7 +344,7 @@ describe('Executive MCP tool adapter', () => {
         degradedLines: [],
       },
     };
-    readMcpContentReferenceMock.mockResolvedValue({
+    readContentReferenceMock.mockResolvedValue({
       ok: true,
       resultCount: 1,
       results: [{ status: 'ok', mediaFamily: 'pdf', extractedText: 'Deployment checklist.' }],
@@ -378,7 +378,7 @@ describe('Executive MCP tool adapter', () => {
     };
     const result = await tools.read_content_reference.execute({ reference });
 
-    expect(readMcpContentReferenceMock).toHaveBeenCalledWith(
+    expect(readContentReferenceMock).toHaveBeenCalledWith(
       expect.objectContaining({
         userId: 'user-1',
         conversationId: 'conv-1',

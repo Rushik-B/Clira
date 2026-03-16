@@ -228,13 +228,20 @@ function summarizeToolResult(toolName: string, result: unknown): string | null {
       break;
     }
     default: {
+      const contentRefs = Array.isArray(output.contentRefs) ? output.contentRefs : [];
+      if (contentRefs.length > 0) {
+        const status =
+          output.ok === true ? 'ok' : output.ok === false ? 'failed' : 'returned';
+        summary = `${toolName}: ${status}, ${contentRefs.length} content ref(s)`;
+        break;
+      }
+
       if (!toolName.startsWith('mcp__')) return null;
 
       const status = output.ok === true ? 'ok' : output.ok === false ? 'failed' : 'unknown';
       const displayName = getStringValue(output.displayName) ?? 'MCP';
       const snippets = Array.isArray(output.snippets) ? output.snippets : [];
       const snippetCount = snippets.length;
-      const contentRefs = Array.isArray(output.contentRefs) ? output.contentRefs : [];
       const degraded = output.degraded === true;
       const errorClass = getStringValue(output.errorClass);
 

@@ -1,8 +1,6 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
-import {
-  createContentReferenceId,
-  type ContentReference,
-} from '@/lib/services/content-ingestion';
+import { createContentReferenceId } from '@/lib/services/content-ingestion/references';
+import type { ContentReference } from '@/lib/services/content-ingestion/types';
 import type {
   McpConnectionRecord,
   McpSecretConfig,
@@ -26,9 +24,9 @@ vi.mock('@/lib/services/mcp/runtime/client', () => ({
   createMcpTransportClient: createMcpTransportClientMock,
 }));
 
-vi.mock('@/lib/services/content-ingestion', async () => {
-  const actual = await vi.importActual<typeof import('@/lib/services/content-ingestion')>(
-    '@/lib/services/content-ingestion',
+vi.mock('@/lib/services/content-ingestion/service', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/services/content-ingestion/service')>(
+    '@/lib/services/content-ingestion/service',
   );
 
   return {

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { executeMcpTool } from '@/lib/services/mcp/runtime/executor';
-import { readMcpContentReference } from '@/lib/services/mcp/runtime/contentReferences';
+import { readContentReference } from '@/lib/services/content-ingestion/referenceRuntime';
 import {
   cancelPendingMcpAction,
   commitPendingMcpAction,
@@ -125,14 +125,14 @@ const contentReferenceSchema = z.object({
 
 const readContentReferenceInputSchema = z.object({
   reference: contentReferenceSchema.describe(
-    'A content reference copied from an earlier MCP tool result contentRefs array.',
+    'A content reference copied from an earlier tool result contentRefs array.',
   ),
 });
 
 function buildReadContentReferenceDescription(): string {
   return [
-    'Resolve a contentRef returned by an MCP read/list tool and extract readable text from it.',
-    'Use this only with a reference copied from an MCP tool result contentRefs array.',
+    'Resolve a previously returned contentRef and extract readable text from it.',
+    'Use this only with a complete reference object copied from an earlier tool result.',
     'Do not invent or modify the reference fields.',
   ].join(' ');
 }
@@ -194,7 +194,7 @@ export function buildExecutiveMcpTools(params: {
         };
       }
 
-      return readMcpContentReference({
+      return readContentReference({
         userId: params.context.input.userId,
         reference: parsed.data.reference as ContentReference,
         conversationId: params.context.input.conversationId,

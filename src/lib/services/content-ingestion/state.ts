@@ -14,8 +14,19 @@ type BudgetScopeState = {
   lastTouchedAt: number;
 };
 
+type StoredContentReferenceEntry = {
+  ownerUserId: string;
+  buffer: Buffer;
+  filename: string | null;
+  mimeType: string | null;
+  storedAt: number;
+};
+
 const cacheScopes = new Map<string, CacheScopeState>();
 const budgetScopes = new Map<string, BudgetScopeState>();
+const storedContentReferences = new Map<string, StoredContentReferenceEntry & {
+  lastTouchedAt: number;
+}>();
 
 function now(): number {
   return Date.now();
@@ -33,6 +44,12 @@ function cleanupExpiredScopes(): void {
   for (const [key, value] of budgetScopes.entries()) {
     if (value.lastTouchedAt < cutoff) {
       budgetScopes.delete(key);
+    }
+  }
+
+  for (const [key, value] of storedContentReferences.entries()) {
+    if (value.lastTouchedAt < cutoff) {
+      storedContentReferences.delete(key);
     }
   }
 }
@@ -152,7 +169,43 @@ export function getExtractionBudgetSnapshot(params: {
   };
 }
 
+export function storeContentReferenceBuffer(params: {
+  referenceId: string;
+  ownerUserId: string;
+  buffer: Buffer;
+  filename?: string | null;
+  mimeType?: string | null;
+}): void {
+  cleanupExpiredScopes();
+  storedContentReferences.set(params.referenceId, {
+    ownerUserId: params.ownerUserId,
+    buffer: params.buffer,
+    filename: params.filename ?? null,
+    mimeType: params.mimeType ?? null,
+    storedAt: now(),
+    lastTouchedAt: now(),
+  });
+}
+
+export function readContentReferenceBuffer(referenceId: string): StoredContentReferenceEntry | null {
+  cleanupExpiredScopes();
+  const stored = storedContentReferences.get(referenceId);
+  if (!stored) {
+    return null;
+  }
+
+  stored.lastTouchedAt = now();
+  return {
+    ownerUserId: stored.ownerUserId,
+    buffer: stored.buffer,
+    filename: stored.filename,
+    mimeType: stored.mimeType,
+    storedAt: stored.storedAt,
+  };
+}
+
 export function resetContentIngestionStateForTests(): void {
   cacheScopes.clear();
   budgetScopes.clear();
+  storedContentReferences.clear();
 }

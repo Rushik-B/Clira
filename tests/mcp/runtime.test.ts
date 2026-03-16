@@ -41,9 +41,9 @@ vi.mock('@/lib/services/mcp/runtime/client', () => ({
   createMcpTransportClient: createMcpTransportClientMock,
 }));
 
-vi.mock('@/lib/services/content-ingestion', async () => {
-  const actual = await vi.importActual<typeof import('@/lib/services/content-ingestion')>(
-    '@/lib/services/content-ingestion',
+vi.mock('@/lib/services/content-ingestion/service', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/services/content-ingestion/service')>(
+    '@/lib/services/content-ingestion/service',
   );
 
   return {

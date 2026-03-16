@@ -1,14 +1,14 @@
 import path from 'node:path';
 import { logger } from '@/lib/logger';
-import {
-  createContentReferenceId,
-  extractContentFromBuffer,
-  renderContentExtractionForLegacyText,
-  type ContentCapability,
-  type ContentExtractionResult,
-  type ContentReference,
-  type ContentTrustClass,
-} from '@/lib/services/content-ingestion';
+import { sanitizeContentExtractionResultForModel, sanitizeContentReferenceForModel, summarizeContentRefsForModel } from '@/lib/services/content-ingestion/referenceModeling';
+import { createContentReferenceId } from '@/lib/services/content-ingestion/references';
+import { extractContentFromBuffer, renderContentExtractionForLegacyText } from '@/lib/services/content-ingestion/service';
+import type {
+  ContentCapability,
+  ContentExtractionResult,
+  ContentReference,
+  ContentTrustClass,
+} from '@/lib/services/content-ingestion/types';
 import { getMcpConnectionWithSecrets } from '@/lib/services/mcp/connections/service';
 import {
   sanitizeMcpInlineText,
@@ -21,7 +21,6 @@ import type {
 } from '@/lib/services/mcp/types';
 import { createMcpTransportClient } from './client';
 
-const MAX_MODEL_CONTENT_REFS = 12;
 const MAX_RESOURCE_READ_PARTS = 4;
 const MCP_RESOURCE_LINK_SOURCE_KIND = 'mcp_resource_link';
 
@@ -185,37 +184,6 @@ function buildMcpResourceContentReference(params: {
       sourceKind: MCP_RESOURCE_LINK_SOURCE_KIND,
       locator,
     }),
-  };
-}
-
-function sanitizeContentReferenceForModel(reference: ContentReference): Record<string, unknown> {
-  return {
-    sourceKind: sanitizeMcpInlineText(reference.sourceKind, 80),
-    locator: sanitizeMcpText(reference.locator, 1_200),
-    displayName: reference.displayName
-      ? sanitizeMcpInlineText(reference.displayName, 180)
-      : null,
-    mimeHint: reference.mimeHint ? sanitizeMcpInlineText(reference.mimeHint, 120) : null,
-    trustClass: reference.trustClass,
-    requiresApproval: reference.requiresApproval,
-    capability: reference.capability,
-    contentRefId: sanitizeMcpInlineText(reference.contentRefId, 96),
-    provenance: {
-      sourceLabel: sanitizeMcpInlineText(reference.provenance.sourceLabel, 160),
-      sourceKind: reference.provenance.sourceKind
-        ? sanitizeMcpInlineText(reference.provenance.sourceKind, 80)
-        : null,
-      channel: reference.provenance.channel
-        ? sanitizeMcpInlineText(reference.provenance.channel, 40)
-        : null,
-      conversationId: null,
-      runId: null,
-      messageId: null,
-      attachmentId: null,
-      originUri: reference.provenance.originUri
-        ? sanitizeMcpText(reference.provenance.originUri, 600)
-        : null,
-    },
   };
 }
 
@@ -521,57 +489,6 @@ function validateContentReference(reference: ContentReference): {
   };
 }
 
-function sanitizeExtractionResultForModel(
-  result: ContentExtractionResult,
-): Record<string, unknown> {
-  return {
-    status: result.status,
-    mediaFamily: result.mediaFamily,
-    extractedText: sanitizeMcpText(result.extractedText, 12_000),
-    images: result.images.slice(0, 4).map((image) => sanitizeMcpText(image, 600)),
-    structuredData: result.structuredData
-      ? (sanitizeMcpJson(result.structuredData, 3) as Record<string, unknown>)
-      : null,
-    degradationNotes: result.degradationNotes.map((note) => ({
-      code: note.code,
-      message: sanitizeMcpInlineText(note.message, 260),
-    })),
-    attribution: {
-      filename: result.attribution.filename
-        ? sanitizeMcpInlineText(result.attribution.filename, 180)
-        : null,
-      mimeType: sanitizeMcpInlineText(result.attribution.mimeType, 120),
-      sniffedMimeType: result.attribution.sniffedMimeType
-        ? sanitizeMcpInlineText(result.attribution.sniffedMimeType, 120)
-        : null,
-      sha256: sanitizeMcpInlineText(result.attribution.sha256, 96),
-      provenance: {
-        sourceLabel: sanitizeMcpInlineText(result.attribution.provenance.sourceLabel, 160),
-        sourceKind: result.attribution.provenance.sourceKind
-          ? sanitizeMcpInlineText(result.attribution.provenance.sourceKind, 80)
-          : null,
-        channel: result.attribution.provenance.channel
-          ? sanitizeMcpInlineText(result.attribution.provenance.channel, 40)
-          : null,
-        conversationId: null,
-        runId: null,
-        messageId: null,
-        attachmentId: null,
-        originUri: result.attribution.provenance.originUri
-          ? sanitizeMcpText(result.attribution.provenance.originUri, 600)
-          : null,
-      },
-    },
-    tokenCost: result.tokenCost,
-    extractionDurationMs: result.extractionDurationMs,
-    cacheKey: sanitizeMcpInlineText(result.cacheKey, 160),
-    cacheStatus: result.cacheStatus,
-    handlerVersion: sanitizeMcpInlineText(result.handlerVersion, 60),
-    budget: result.budget,
-    metadata: result.metadata,
-  };
-}
-
 export async function readMcpContentReference(params: {
   userId: string;
   reference: ContentReference;
@@ -656,7 +573,7 @@ export async function readMcpContentReference(params: {
         },
       });
 
-      results.push(sanitizeExtractionResultForModel(extraction));
+      results.push(sanitizeContentExtractionResultForModel(extraction));
     }
 
     if (results.length === 0) {
@@ -707,23 +624,5 @@ export function summarizeMcpContentRefsForModel(
   omittedContentRefCount: number;
   contentRefSummaryLines: string[];
 } {
-  const allContentRefs = contentRefs ?? [];
-  const selected = allContentRefs.slice(0, MAX_MODEL_CONTENT_REFS);
-
-  return {
-    contentRefs: selected.map((reference) => sanitizeContentReferenceForModel(reference)),
-    contentRefCount: allContentRefs.length,
-    omittedContentRefCount: Math.max(0, allContentRefs.length - selected.length),
-    contentRefSummaryLines: selected.map((reference) => {
-      const name = reference.displayName ?? inferDisplayNameFromUri(reference.provenance.originUri);
-      const capability = reference.capability.replace(/_/g, ' ');
-      const mimeHint = reference.mimeHint ? ` (${reference.mimeHint})` : '';
-      return name
-        ? sanitizeMcpInlineText(`${name}${mimeHint} [${capability}]`, 220)
-        : sanitizeMcpInlineText(
-            `${reference.contentRefId}${mimeHint} [${capability}]`,
-            220,
-          );
-    }),
-  };
+  return summarizeContentRefsForModel(contentRefs);
 }
