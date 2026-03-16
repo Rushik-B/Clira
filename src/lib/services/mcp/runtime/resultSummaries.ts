@@ -3,6 +3,7 @@ import {
   sanitizeMcpJson,
 } from '@/lib/services/mcp/security/sanitization';
 import type { McpExecutionResult } from '@/lib/services/mcp/types';
+import { summarizeMcpContentRefsForModel } from './contentReferences';
 
 function summarizeContentBlocks(content: unknown[]): string[] {
   const snippets: string[] = [];
@@ -32,6 +33,7 @@ export function summarizeMcpExecutionResultForModel(
   result: McpExecutionResult,
 ): Record<string, unknown> {
   const snippets = summarizeContentBlocks(result.content);
+  const contentRefSummary = summarizeMcpContentRefsForModel(result.contentRefs);
   const structuredSummary =
     result.structuredContent && typeof result.structuredContent === 'object'
       ? (sanitizeMcpJson(result.structuredContent, 2) as Record<string, unknown>)
@@ -48,5 +50,13 @@ export function summarizeMcpExecutionResultForModel(
     userFacingDegradedReason: result.userFacingDegradedReason ?? null,
     snippets,
     structuredSummary,
+    ...(contentRefSummary.contentRefCount > 0
+      ? {
+          contentRefs: contentRefSummary.contentRefs,
+          contentRefCount: contentRefSummary.contentRefCount,
+          omittedContentRefCount: contentRefSummary.omittedContentRefCount,
+          contentRefSummaryLines: contentRefSummary.contentRefSummaryLines,
+        }
+      : {}),
   };
 }

@@ -17,10 +17,22 @@ export interface McpTransportClient {
     name: string,
     args: Record<string, unknown>,
     options?: { timeoutMs?: number },
+    ): Promise<{
+      content?: unknown[];
+      structuredContent?: Record<string, unknown>;
+      isError?: boolean;
+    }>;
+  readResource(
+    uri: string,
+    options?: { timeoutMs?: number },
   ): Promise<{
-    content?: unknown[];
-    structuredContent?: Record<string, unknown>;
-    isError?: boolean;
+    contents: Array<{
+      uri: string;
+      text?: string;
+      blob?: string;
+      mimeType?: string;
+      _meta?: Record<string, unknown>;
+    }>;
   }>;
   close(): Promise<void>;
 }
@@ -162,6 +174,20 @@ export async function createMcpTransportClient(params: {
             ? (result.toolResult as Record<string, unknown>)
             : undefined,
         isError: false,
+      };
+    },
+    readResource: async (uri, options) => {
+      const result = await bundle.client.readResource(
+        { uri },
+        {
+          timeout: options?.timeoutMs ?? params.timeoutMs,
+          maxTotalTimeout: options?.timeoutMs ?? params.timeoutMs,
+          resetTimeoutOnProgress: true,
+        },
+      );
+
+      return {
+        contents: Array.isArray(result.contents) ? result.contents : [],
       };
     },
     close: async () => {

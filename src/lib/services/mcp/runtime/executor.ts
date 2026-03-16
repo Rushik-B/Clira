@@ -5,6 +5,7 @@ import { getMcpConnectionWithSecrets } from '@/lib/services/mcp/connections/serv
 import { getCachedMcpResult, setCachedMcpResult } from '@/lib/services/mcp/cache/resultCache';
 import { getMcpManifestByModelToolName } from '@/lib/services/mcp/registry/service';
 import { createMcpTransportClient } from '@/lib/services/mcp/runtime/client';
+import { processMcpResponseContent } from '@/lib/services/mcp/runtime/contentReferences';
 import { sanitizeMcpJson, sanitizeMcpText } from '@/lib/services/mcp/security/sanitization';
 import {
   toPrismaJsonObject,
@@ -27,24 +28,6 @@ function toPrismaActionClass(actionClass: McpActionClass): PrismaMcpActionClass 
     default:
       return 'SIDE_EFFECTFUL';
   }
-}
-
-function sanitizeContentBlocks(content: unknown[]): unknown[] {
-  return content.slice(0, 8).map((block) => {
-    if (!block || typeof block !== 'object') {
-      return sanitizeMcpJson(block);
-    }
-
-    const record = block as Record<string, unknown>;
-    if (record.type === 'text' && typeof record.text === 'string') {
-      return {
-        type: 'text',
-        text: sanitizeMcpText(record.text),
-      };
-    }
-
-    return sanitizeMcpJson(record, 3);
-  });
 }
 
 function buildFreshness(lastSyncedAt: Date | null) {
@@ -224,6 +207,12 @@ export async function executeMcpTool(
       request.args,
       { timeoutMs: request.deadlineMs },
     );
+    const processedContent = await processMcpResponseContent({
+      connection: registryEntry.connection,
+      rawContent: Array.isArray(response.content) ? response.content : [],
+      conversationId: request.conversationId,
+      runId: request.requestId,
+    });
 
     result = {
       ok: !response.isError,
@@ -231,7 +220,8 @@ export async function executeMcpTool(
       modelToolName: registryEntry.tool.modelToolName,
       connectionId: registryEntry.connection.id,
       displayName: registryEntry.connection.displayName,
-      content: sanitizeContentBlocks(Array.isArray(response.content) ? response.content : []),
+      content: processedContent.content,
+      contentRefs: processedContent.contentRefs,
       structuredContent:
         response.structuredContent && typeof response.structuredContent === 'object'
           ? (sanitizeMcpJson(response.structuredContent, 4) as Record<string, unknown>)

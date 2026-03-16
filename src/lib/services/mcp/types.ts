@@ -1,4 +1,5 @@
 import type { ProgressUpdateChannel } from '@/lib/ai/progressTypes';
+import type { ContentReference } from '@/lib/services/content-ingestion/types';
 
 export type McpActionClass = 'read' | 'write' | 'delete' | 'side_effectful';
 export type McpLatencyClass = 'fast' | 'standard' | 'slow';
@@ -167,6 +168,7 @@ export type McpExecutionResult = {
   connectionId: string;
   displayName: string;
   content: unknown[];
+  contentRefs?: ContentReference[];
   structuredContent?: Record<string, unknown>;
   degraded: boolean;
   latencyMs: number;
