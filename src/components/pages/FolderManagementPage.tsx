@@ -832,6 +832,35 @@ export const FolderManagementPage: React.FC = () => {
   }
 
   const showMailboxGrouping = mailboxOptions.length > 1 || isMailboxFilterActive;
+  const sortStatusMeta =
+    sortStatus.state === 'processing'
+      ? {
+          icon: Loader2,
+          iconClassName: 'text-blue-300 animate-spin',
+          titleClassName: 'text-blue-100',
+          containerClassName: 'border-blue-500/30 bg-blue-500/10',
+          role: 'status' as const,
+          ariaLive: 'polite' as const,
+        }
+      : sortStatus.state === 'success'
+        ? {
+            icon: CheckCircle2,
+            iconClassName: 'text-emerald-300',
+            titleClassName: 'text-emerald-100',
+            containerClassName: 'border-emerald-500/30 bg-emerald-500/10',
+            role: 'status' as const,
+            ariaLive: 'polite' as const,
+          }
+        : sortStatus.state === 'error'
+          ? {
+              icon: AlertCircle,
+              iconClassName: 'text-red-300',
+              titleClassName: 'text-red-100',
+              containerClassName: 'border-red-500/30 bg-red-500/10',
+              role: 'alert' as const,
+              ariaLive: 'assertive' as const,
+            }
+          : null;
 
   return (
     <div className="min-h-screen flex flex-col bg-black">
@@ -956,6 +985,29 @@ export const FolderManagementPage: React.FC = () => {
                   <span className="hidden sm:inline">{sortDir === 'asc' ? 'Asc' : 'Desc'}</span>
                 </span>
               </LiquidButton>
+            </div>
+          </div>
+        )}
+
+        {pageMode === 'management' && sortStatusMeta && (
+          <div
+            role={sortStatusMeta.role}
+            aria-live={sortStatusMeta.ariaLive}
+            className={`rounded-2xl border px-4 py-4 shadow-lg backdrop-blur-sm md:px-5 ${sortStatusMeta.containerClassName}`}
+          >
+            <div className="flex items-start gap-3">
+              <sortStatusMeta.icon className={`mt-0.5 h-5 w-5 shrink-0 ${sortStatusMeta.iconClassName}`} />
+              <div className="min-w-0 flex-1">
+                <p className={`text-sm font-semibold ${sortStatusMeta.titleClassName}`}>{sortStatus.message}</p>
+                {sortStatus.details && (
+                  <p className="mt-1 text-sm text-gray-300">{sortStatus.details}</p>
+                )}
+                {typeof sortStatus.emailsProcessed === 'number' && (
+                  <p className="mt-2 text-xs uppercase tracking-[0.18em] text-gray-400">
+                    {sortStatus.emailsProcessed} email{sortStatus.emailsProcessed === 1 ? '' : 's'} updated
+                  </p>
+                )}
+              </div>
             </div>
           </div>
         )}
