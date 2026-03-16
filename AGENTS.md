@@ -348,3 +348,33 @@ Good Clira code is:
 - small enough to reason about
 
 If a change makes the system feel smarter but harder to reason about, it is usually a regression.
+
+---
+
+## Cursor Cloud specific instructions
+
+### Infrastructure
+
+- **PostgreSQL 16 + pgvector** runs via Docker Compose on port `15432`. Redis 7 runs on port `16379`.
+- Start both with `docker compose up -d db redis` from the repo root.
+- The DB init script (`docker/postgres-init/01-create-clira-app-user.sh`) only runs on a **fresh** Postgres volume. If the volume already exists, you must manually create the app DB role or recreate volumes with `docker compose down -v && docker compose up -d db redis`.
+- After creating a fresh DB volume, you must also run `docker exec <db-container> psql -U postgres -d clira -c "CREATE EXTENSION IF NOT EXISTS vector;"` **before** migrations, and grant the app user ownership: `ALTER DATABASE clira OWNER TO "<app_user>";`.
+- Run migrations with `npm run migrate:deploy`.
+
+### Running the app
+
+- `npm run dev` starts the Next.js dev server on port 3000.
+- Workers require a separate build step: `npm run build:worker` before running `npm run start:worker`, `npm run start:gmail-pull-worker`, or `npm run start:cron`.
+- The `/api/health` endpoint requires authentication (not in middleware public paths). Use `/signin` or `/api/auth/providers` to verify the app is responding.
+
+### Lint, test, build
+
+- See `README.md` for the full command table (`npm run lint`, `npm test`, `npm run build`).
+- Tests use Vitest (`vitest run`). Config is in `vitest.config.ts` with `@/` path alias pointing to `src/`.
+- One pre-existing test failure exists in `tests/ea-interrupts/executive-agent-selector.test.ts` (`exposes all packs when selector is disabled`).
+
+### Environment
+
+- Copy `.env.example` to `.env` and fill required values. The `.env` file is gitignored.
+- Google OAuth credentials (`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`) are needed for login. Without real credentials, the OAuth redirect still works but Google will reject the auth attempt.
+- `NEXTAUTH_SECRET` and `CRON_SECRET` can be any non-empty strings for local dev.
