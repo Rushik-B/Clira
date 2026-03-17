@@ -22,7 +22,7 @@ import {
   formatReplyPipelineInstruction,
 } from './replyPipelineContext';
 
-export const EXECUTIVE_AGENT_PROMPT_VERSION = 'ea-prompt-v8';
+export const EXECUTIVE_AGENT_PROMPT_VERSION = 'ea-prompt-v10';
 
 export async function resolveUserCalendarTimezone(userId: string): Promise<string> {
   let userTimezone = DEFAULT_CALENDAR_TIMEZONE;
@@ -53,8 +53,10 @@ function buildCurrentTurnMessage(params: {
   pendingCalendarInstruction: string;
   replyPipelineInstruction: string;
   harnessReminders: string[];
+  actionPackSummaryLines: string[];
   mcpToolSummaryLines: string[];
   mcpDegradedSummaryLines: string[];
+  mcpAvailableServerLines: string[];
 }): string {
   const sections = [
     '## Current Turn Context',
@@ -67,16 +69,37 @@ function buildCurrentTurnMessage(params: {
     '',
     params.runContextFragment,
     '',
+    '## Capability Model This Turn',
+    '- Safe context tools for memory, inbox, calendar, PDF reads, progress updates, and reply preference reads are available every turn.',
+    '- Only action tools already exposed this turn are callable right now.',
+    '- "Available Action Packs" are candidates you may request with request_tool_pack_exposure when safe context is not enough.',
+    '- Only MCP tools listed under "MCP Tools This Turn" are callable right now.',
+    '- "Available MCP Server Packs" are candidates you may request with request_mcp_server_tools when native tools are insufficient.',
+    '',
     '## Pending Calendar State',
     params.pendingCalendarInstruction,
     '',
     '## Reply Pipeline Status',
     params.replyPipelineInstruction,
     '',
+    ...(params.actionPackSummaryLines.length > 0
+      ? [
+          '## Available Action Packs',
+          ...params.actionPackSummaryLines.map((line) => `- ${line}`),
+          '',
+        ]
+      : []),
     ...(params.mcpToolSummaryLines.length > 0
       ? [
           '## MCP Tools This Turn',
           ...params.mcpToolSummaryLines.map((line) => `- ${line}`),
+          '',
+        ]
+      : []),
+    ...(params.mcpAvailableServerLines.length > 0
+      ? [
+          '## Available MCP Server Packs',
+          ...params.mcpAvailableServerLines.map((line) => `- ${line}`),
           '',
         ]
       : []),
@@ -110,8 +133,10 @@ export async function buildExecutiveAgentPrompt(
   options?: {
     pendingCalendarInstruction?: string;
     harnessReminders?: string[];
+    actionPackSummaryLines?: string[];
     mcpToolSummaryLines?: string[];
     mcpDegradedSummaryLines?: string[];
+    mcpAvailableServerLines?: string[];
   },
 ): Promise<PromptContext> {
   const systemPrompt = readPromptFile('whatsapp/executiveAgentPrompt.md');
@@ -221,8 +246,10 @@ export async function buildExecutiveAgentPrompt(
             options?.pendingCalendarInstruction ?? 'No active pending calendar change exists.',
           replyPipelineInstruction,
           harnessReminders: options?.harnessReminders ?? [],
+          actionPackSummaryLines: options?.actionPackSummaryLines ?? [],
           mcpToolSummaryLines: options?.mcpToolSummaryLines ?? [],
           mcpDegradedSummaryLines: options?.mcpDegradedSummaryLines ?? [],
+          mcpAvailableServerLines: options?.mcpAvailableServerLines ?? [],
         }),
       },
     ],

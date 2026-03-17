@@ -77,7 +77,12 @@ export function summarizeToolInventoryForLogs(params: {
   const allToolNames = Object.keys(params.tools).sort();
   const mcpToolNames = allToolNames.filter((name) => name.startsWith('mcp__'));
   const mcpWrapperToolNames = allToolNames.filter((name) =>
-    ['plan_mcp_action', 'commit_mcp_action', 'cancel_mcp_action'].includes(name),
+    [
+      'request_mcp_server_tools',
+      'plan_mcp_action',
+      'commit_mcp_action',
+      'cancel_mcp_action',
+    ].includes(name),
   );
   const nativeToolNames = allToolNames.filter(
     (name) => !mcpToolNames.includes(name) && !mcpWrapperToolNames.includes(name),
@@ -96,23 +101,31 @@ export function summarizeToolInventoryForLogs(params: {
 }
 
 export function buildHarnessMetadata(params: {
-  selectedPack: string | null;
-  selectedPacks: readonly string[];
+  primaryPack: string | null;
+  packIds: readonly string[];
   mcpConnectionIds: readonly string[];
-  selectorReasons: readonly string[];
+  exposureReasons: readonly string[];
+  repairAttempted: boolean;
+  repairReason?: string | null;
+  repairExpandedPacks?: readonly string[];
+  repairExpandedMcpConnectionIds?: readonly string[];
   workingState: ExecutiveWorkingState | null;
   promptVersion: string;
   packVersion: string;
 }): Prisma.InputJsonValue | undefined {
-  if (!params.selectedPack || !params.workingState) {
+  if (!params.primaryPack || !params.workingState) {
     return undefined;
   }
 
   return stripUndefined({
-    selectedPack: params.selectedPack,
-    selectedPacks: params.selectedPacks,
+    primaryPack: params.primaryPack,
+    packIds: params.packIds,
     mcpConnectionIds: params.mcpConnectionIds,
-    selectorReasons: params.selectorReasons,
+    exposureReasons: params.exposureReasons,
+    repairAttempted: params.repairAttempted,
+    repairReason: params.repairReason ?? null,
+    repairExpandedPacks: params.repairExpandedPacks ?? [],
+    repairExpandedMcpConnectionIds: params.repairExpandedMcpConnectionIds ?? [],
     workingState: params.workingState,
     promptVersion: params.promptVersion,
     packVersion: params.packVersion,

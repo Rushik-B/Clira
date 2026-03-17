@@ -35,6 +35,8 @@ import {
   collectExecutedToolNames,
   collectOutOfPackToolNames,
   collectToolNamesFromExecution,
+  extractRequestedPackIdsFromExecution,
+  extractRequestedMcpConnectionIdsFromExecution,
   resolveProgressChannel,
   resolveRetrievalProfile,
   stripInternalMetadataFromAssistantResponse,
@@ -49,12 +51,17 @@ import {
 import { runSteerableTextWithTools, type SteerRunContext } from './steerableLoop';
 import { buildExecutiveAgentTools } from './tools';
 import {
+  expandExposurePlanForRepair,
   extractExecutiveTurnFeatures,
-  resolveTurnFeaturesWithSelection,
+  hasDeterministicActionIntent,
   selectExecutiveToolPackForTurn,
 } from './selector';
 import { buildExecutiveMcpPromptFragments } from './mcp/promptFragments';
-import { EXECUTIVE_AGENT_PACK_VERSION } from './toolPacks';
+import {
+  EXECUTIVE_AGENT_PACK_VERSION,
+  getActionPackRequestSummary,
+  listRequestableActionPackIds,
+} from './toolPacks';
 import {
   createExecutiveToolResultReuseCache,
   isAppendToSupermemorySuccessful,
@@ -77,11 +84,15 @@ import {
 import type {
   ExecutiveAgentInput,
   ExecutiveAgentOutput,
+  ToolExposurePlan,
   ExecutiveTurnFeatures,
   PendingCalendarChangeRecord,
   ToolPackId,
 } from './types';
-import { resolveMcpToolExposure } from '@/lib/services/mcp/policy/service';
+import {
+  listSelectableMcpServerPacks,
+  resolveMcpToolExposure,
+} from '@/lib/services/mcp/policy/service';
 
 export class ExecutiveAgent {
   async process(input: ExecutiveAgentInput): Promise<ExecutiveAgentOutput> {
@@ -104,13 +115,17 @@ export class ExecutiveAgent {
     };
 
     let toolAbort: ReturnType<typeof createDeadlineController> | undefined;
-    let selectedPack: ToolPackId | null = null;
-    let selectedPacks: ToolPackId[] = [];
-    let selectorReasons: string[] = [];
+    let primaryPack: ToolPackId | null = null;
+    let packIds: ToolPackId[] = [];
+    let exposureReasons: string[] = [];
     let turnFeatures: ExecutiveTurnFeatures | null = null;
     let mcpToolExposure: Awaited<ReturnType<typeof resolveMcpToolExposure>> | null = null;
     let workingStateController: ReturnType<typeof createWorkingStateController> | null = null;
     let steerMetadata: Prisma.InputJsonValue | null = null;
+    let repairAttempted = false;
+    let repairReason: string | null = null;
+    let repairExpandedPacks: ToolPackId[] = [];
+    let repairExpandedMcpConnectionIds: string[] = [];
 
     try {
       const resolvedUserTimezone = await resolveUserCalendarTimezone(input.userId);
@@ -147,76 +162,17 @@ export class ExecutiveAgent {
         input,
         pendingCalendarChangePresent: Boolean(pendingRecord),
       });
-      // Pack selection uses the LLM selector when available. Safety-critical
-      // flows can still bypass it deterministically, but selector outages now
-      // expose every pack and rely on downstream tool gating.
-      const selection = await selectExecutiveToolPackForTurn({
+      turnFeatures = activeTurnFeatures;
+      const requestableActionPackIds = listRequestableActionPackIds(activeTurnFeatures);
+      const selectableMcpServerPacks = await listSelectableMcpServerPacks({
+        userId: input.userId,
+        channel: activeTurnFeatures.channel,
+      });
+      let exposurePlan = await selectExecutiveToolPackForTurn({
         input,
         features: activeTurnFeatures,
+        mcpServerPacks: selectableMcpServerPacks,
       });
-      const resolvedTurnFeatures = resolveTurnFeaturesWithSelection({
-        features: activeTurnFeatures,
-        selection,
-      });
-      turnFeatures = resolvedTurnFeatures;
-      const activePack = selection.packId;
-      const activePacks = selection.packIds;
-      input.runContext?.setSelectedPack?.(activePack);
-      selectedPack = activePack;
-      selectedPacks = activePacks;
-      selectorReasons = selection.reasons;
-      mcpToolExposure = await resolveMcpToolExposure({
-        userId: input.userId,
-        conversationId: input.conversationId,
-        channel: resolvedChannel,
-        selectedConnectionIds: selection.mcpConnectionIds,
-      });
-      const mcpServersForLogs = summarizeMcpServersForLogs(
-        mcpToolExposure,
-        selection.mcpConnectionIds,
-      );
-      const mcpPromptFragments = buildExecutiveMcpPromptFragments(mcpToolExposure);
-
-      logger.info('[executiveAgent] harness.selection', {
-        selectedPack,
-        nativePacks: selectedPacks,
-        mcpServers: mcpServersForLogs,
-        selectorReasons,
-        draftCandidatePresent: resolvedTurnFeatures.draftCandidatePresent,
-        draftCandidateReason: resolvedTurnFeatures.draftCandidateReason,
-        pendingCalendarChangePresent: resolvedTurnFeatures.pendingCalendarChangePresent,
-        hasRecentPendingCalendarPreview: resolvedTurnFeatures.hasRecentPendingCalendarPreview,
-        pendingCalendarModifyIntent: resolvedTurnFeatures.pendingCalendarModifyIntent,
-        classifierDecision: input.runContext?.classifierDecision ?? null,
-        channel: resolvedTurnFeatures.channel,
-      });
-
-      workingStateController = createWorkingStateController(
-        createInitialWorkingState({
-          goal: input.userRequest,
-          selectedPack: activePack,
-          features: resolvedTurnFeatures,
-          pendingCalendarChangeId: pendingRecord?.id,
-        }),
-      );
-
-      const promptContext = await buildExecutiveAgentPrompt(input, resolvedChannel, {
-        pendingCalendarInstruction,
-        harnessReminders: [
-          ...selection.reminders,
-          ...mcpPromptFragments.reminderLines,
-        ],
-        mcpToolSummaryLines: mcpPromptFragments.toolSummaryLines,
-        mcpDegradedSummaryLines: mcpPromptFragments.degradedSummaryLines,
-      });
-      const {
-        systemPrompt: promptSystemPrompt,
-        messages,
-        userTimezone,
-        currentTimeUtc,
-        currentTimeUserTz,
-        dayOfWeek,
-      } = promptContext;
 
       toolAbort = createDeadlineController({
         abortSignal: input.abortSignal,
@@ -231,101 +187,12 @@ export class ExecutiveAgent {
         if (typeof input.runContext?.hasPendingSteer !== 'function') return false;
         return input.runContext.hasPendingSteer(0);
       };
-
-      const tools = buildExecutiveAgentTools({
-        input,
-        channel: resolvedChannel,
-        retrievalProfile,
-        selectedPack: activePack,
-        selectedPacks: activePacks,
-        selectorReasons,
-        turnFeatures: resolvedTurnFeatures,
-        userTimezone,
-        currentTimeUtc,
-        currentTimeUserTz,
-        dayOfWeek,
-        toolAbort,
-        toolAbortSignal,
-        isRunCurrent,
-        isBurstStable,
-        onMemoryStored: () => {
-          memoryStored = true;
-        },
-        onToolResult: (toolName, result) => {
-          workingStateController?.updateFromToolResult(toolName, result);
-        },
-        registerToolResultCacheStatsReader: (readStats) => {
-          toolResultCacheStatsReader.read = readStats;
-        },
-        toolResultCache,
-        mcpToolExposure,
-      });
-
-      logger.info('[executiveAgent] harness.pack_tools', {
-        selectedPack,
-        nativePacks: selectedPacks,
-        ...summarizeToolInventoryForLogs({
-          tools,
-          mcpServers: mcpServersForLogs,
-        }),
-      });
-      const availableToolNames = Object.keys(tools);
-
-      const activeToolBudgets = Object.fromEntries(
-        Object.keys(tools).map((toolName) => [
-          toolName,
-          MESSAGING_TOOL_BUDGETS_BASE[toolName] ?? 15, // Default to 15 to allow for MCP tools
-        ]),
-      );
-
-      const timedTools = wrapToolsWithTimingMetadata({
-        tools,
-        agentStartedAt: startTime,
-        timeLeftMs: () => toolAbort!.timeLeftMs(),
-        getLastProgressSentAt: () => lastProgressSentAt,
-        setLastProgressSentAt: (sentAt: number) => {
-          lastProgressSentAt = sentAt;
-        },
-        isRunCurrent,
-        hasPendingSteer,
-        onToolResult: (toolName, args, result, observedAtMs) => {
-          workingStateController?.updateFromToolResult(toolName, result);
-
-          if (
-            toolName === 'append_to_supermemory' &&
-            isAppendToSupermemorySuccessful(result)
-          ) {
-            toolResultCache.noteMutation('append_to_supermemory', observedAtMs);
-            return;
-          }
-
-          if (
-            toolName === 'commit_calendar_change' &&
-            isCommitCalendarChangeSuccessful(args, result)
-          ) {
-            toolResultCache.noteMutation('commit_calendar_change', observedAtMs);
-            return;
-          }
-
-          if (
-            toolName === 'commit_mcp_action' &&
-            result != null &&
-            typeof result === 'object' &&
-            (result as Record<string, unknown>).ok === true
-          ) {
-            toolResultCache.noteMcpMutation(observedAtMs);
-          }
-        },
-      });
-      const tracedTools = wrapToolsWithAiTracing(input.traceContext, timedTools);
-      const modelTools = normalizeExecutiveAgentToolsForModel(
-        tracedTools as Record<string, any>,
-      );
-
       const stopConditions = [
         stopWhenToolCalled('send_email'),
         stopWhenToolCalled('plan_calendar_change'),
         stopWhenToolCalled('commit_calendar_change'),
+        stopWhenToolCalled('request_tool_pack_exposure'),
+        stopWhenToolCalled('request_mcp_server_tools'),
         stopWhenToolCalled('plan_mcp_action'),
         stopWhenToolCalled('commit_mcp_action'),
         stopWhenToolCalled('cancel_mcp_action'),
@@ -349,179 +216,460 @@ export class ExecutiveAgent {
         typeof input.runContext?.consumeSteerEvents === 'function' &&
         typeof input.runContext?.markRunPhase === 'function' &&
         isCooperativeSteeringEnabled(resolvedChannel);
+      const executePass = async (plan: ToolExposurePlan, passIndex: number) => {
+        input.runContext?.setSelectedPack?.(plan.primaryPack);
+        primaryPack = plan.primaryPack;
+        packIds = plan.packIds;
+        exposureReasons = plan.reasons;
 
-      const exec = canCooperativeSteer
-        ? await runSteerableTextWithTools({
-            model: models.execAgent(),
-            system: promptSystemPrompt,
-            messages,
-            tools: modelTools,
-            timeLeftMs: () => toolAbort!.timeLeftMs(),
-            maxSteps: MESSAGING_MAX_STEPS,
-            maxToolCallsTotal: MESSAGING_MAX_TOOL_CALLS_TOTAL,
-            maxToolCallsPerTool: activeToolBudgets,
-            deadlineMs: MESSAGING_DEADLINE_MS,
-            stopWhen: stopConditions,
-            temperature: 0.7,
-            op: `${resolvedChannel}.executive`,
-            concurrency: { key: `${resolvedChannel}.executive`, maxConcurrency: 4 },
-            retry: { maxAttempts: 3, baseDelayMs: 500 },
-            abortSignal: toolAbortSignal,
-            providerOptions,
-            runContext: input.runContext as unknown as SteerRunContext,
-            traceContext: input.traceContext,
-          })
-        : await callTextWithTools({
-            model: models.execAgent(),
-            system: promptSystemPrompt,
-            messages,
-            tools: modelTools,
-            maxSteps: MESSAGING_MAX_STEPS,
-            maxToolCallsTotal: MESSAGING_MAX_TOOL_CALLS_TOTAL,
-            maxToolCallsPerTool: activeToolBudgets,
-            deadlineMs: MESSAGING_DEADLINE_MS,
-            stopWhen: stopConditions,
-            temperature: 0.7,
-            op: `${resolvedChannel}.executive`,
-            concurrency: { key: `${resolvedChannel}.executive`, maxConcurrency: 4 },
-            retry: { maxAttempts: 3, baseDelayMs: 500 },
-            abortSignal: toolAbortSignal,
-            providerOptions,
-            traceContext: input.traceContext,
-          });
-
-      const { text, toolCalls, toolResults, steps, toolBudget } = exec;
-      const messagesWhenEmpty =
-        exec && typeof exec === 'object' && 'messagesWhenEmpty' in exec
-          ? (exec as { messagesWhenEmpty?: unknown[] }).messagesWhenEmpty
-          : undefined;
-      steerMetadata =
-        exec && typeof exec === 'object' && 'steer' in exec
-          ? ((exec as { steer?: Prisma.InputJsonValue }).steer ?? null)
-          : null;
-
-      const toolNames = collectExecutedToolNames({
-        toolCalls,
-        toolResults,
-        steps,
-        toolBudget,
-        availableToolNames,
-      });
-      const outOfPackToolNames = collectOutOfPackToolNames({
-        toolCalls,
-        toolResults,
-        steps,
-        availableToolNames,
-      });
-      if (outOfPackToolNames.size > 0) {
-        logger.warn('[executiveAgent] Model trace referenced out-of-pack tools', {
-          selectedPack,
-          availableTools: availableToolNames,
-          outOfPackTools: Array.from(outOfPackToolNames),
+        const activeMcpToolExposure = await resolveMcpToolExposure({
+          userId: input.userId,
+          conversationId: input.conversationId,
+          channel: resolvedChannel,
+          selectedConnectionIds: plan.mcpConnectionIds,
         });
-      }
-      logger.info(`[executiveAgent] Tools used: ${Array.from(toolNames).join(', ') || '(none)'}`);
-      logger.info(
-        `[executiveAgent] Completed in ${Date.now() - startTime}ms totalTools=${toolBudget?.totalCalls ?? 0}`,
-      );
-      const toolResultCacheStats = toolResultCacheStatsReader.read
-        ? toolResultCacheStatsReader.read()
-        : undefined;
-      if (toolResultCacheStats) {
-        logger.info(`[executiveAgent] Tool result cache stats: ${JSON.stringify(toolResultCacheStats)}`);
-      }
+        mcpToolExposure = activeMcpToolExposure;
 
-      let response = (text || '').trim();
-      if (!response && steps.length > 0 && Array.isArray(messagesWhenEmpty) && messagesWhenEmpty.length > 0) {
-        const synthesisSystem =
-          (promptSystemPrompt ?? '') +
-          '\n\n[SYSTEM: The user is waiting for a reply. Produce a brief, direct response based on the tool results above. If results were poor or inconclusive, say so and offer to try again. Your reply must be non-empty.]';
-        try {
-          const synthesis = await callTextWithMessages({
-            model: models.execAgent(),
-            system: synthesisSystem,
-            messages: messagesWhenEmpty,
-            temperature: 0.3,
-            abortSignal: toolAbortSignal,
-            op: `${resolvedChannel}.executive.synthesis`,
-            concurrency: { key: `${resolvedChannel}.executive`, maxConcurrency: 4 },
-            retry: { maxAttempts: 3, baseDelayMs: 500 },
-            providerOptions,
-            traceContext: input.traceContext,
-          });
-          const synthesized = (synthesis.text || '').trim();
-          if (synthesized) {
-            response = synthesized;
-            logger.info(`[executiveAgent] Synthesis produced reply (was empty)`);
-          }
-        } catch (err) {
-          logger.warn(`[executiveAgent] Synthesis failed, using fallback`, { err });
-        }
-      }
-      if (!response) {
-        response = buildTerminalFallbackResponse(toolResults, steps, {
-          selectedPack,
-          workingState: workingStateController?.getState() ?? null,
-          turnFeatures,
-        });
-        logger.info(`[executiveAgent] Empty model text, using fallback: ${response}`);
-      }
-      const sanitizedResponse = stripInternalMetadataFromAssistantResponse(response);
-      if (sanitizedResponse.stripped) {
-        logger.warn('[executiveAgent] Stripped leaked internal metadata from assistant response');
-      }
-      if (sanitizedResponse.claimedToolHistoryNames.length > 0) {
-        const actualToolNames = collectToolNamesFromExecution({ toolCalls, toolResults, steps });
-        const fabricated = sanitizedResponse.claimedToolHistoryNames.filter(
-          (name) => !actualToolNames.has(name),
+        const mcpServersForLogs = summarizeMcpServersForLogs(
+          activeMcpToolExposure,
+          plan.mcpConnectionIds,
         );
-        if (fabricated.length > 0) {
-          logger.error('[executiveAgent] FABRICATED_TOOL_HISTORY: model claimed tool usage that did not occur', {
-            fabricatedToolNames: fabricated,
-            claimedToolHistory: sanitizedResponse.claimedToolHistoryNames,
-            actualToolNames: Array.from(actualToolNames),
-            selectedPack,
-            selectedPacks,
+        const mcpPromptFragments = buildExecutiveMcpPromptFragments(
+          activeMcpToolExposure,
+          selectableMcpServerPacks,
+        );
+        const actionPackSummaryLines = requestableActionPackIds
+          .filter((packId) => !plan.packIds.includes(packId))
+          .map((packId) => `${packId}: ${getActionPackRequestSummary(packId)}`);
+
+        logger.info('[executiveAgent] harness.selection', {
+          passIndex,
+          primaryPack,
+          packIds,
+          mcpServers: mcpServersForLogs,
+          exposureReasons,
+          repairAttempted: plan.repairAttempted,
+          draftCandidatePresent: activeTurnFeatures.draftCandidatePresent,
+          draftCandidateReason: activeTurnFeatures.draftCandidateReason,
+          pendingCalendarChangePresent: activeTurnFeatures.pendingCalendarChangePresent,
+          hasRecentPendingCalendarPreview: activeTurnFeatures.hasRecentPendingCalendarPreview,
+          classifierDecision: input.runContext?.classifierDecision ?? null,
+          channel: activeTurnFeatures.channel,
+        });
+
+        workingStateController = createWorkingStateController(
+          createInitialWorkingState({
+            goal: input.userRequest,
+            selectedPack: plan.primaryPack,
+            features: activeTurnFeatures,
+            pendingCalendarChangeId: pendingRecord?.id,
+          }),
+        );
+
+        const promptContext = await buildExecutiveAgentPrompt(input, resolvedChannel, {
+          pendingCalendarInstruction,
+          harnessReminders: [
+            ...plan.reminders,
+            ...mcpPromptFragments.reminderLines,
+          ],
+          actionPackSummaryLines,
+          mcpToolSummaryLines: mcpPromptFragments.toolSummaryLines,
+          mcpDegradedSummaryLines: mcpPromptFragments.degradedSummaryLines,
+          mcpAvailableServerLines: mcpPromptFragments.availableServerLines,
+        });
+        const {
+          systemPrompt: promptSystemPrompt,
+          messages,
+          userTimezone,
+          currentTimeUtc,
+          currentTimeUserTz,
+          dayOfWeek,
+        } = promptContext;
+
+        const tools = buildExecutiveAgentTools({
+          input,
+          channel: resolvedChannel,
+          retrievalProfile,
+          selectedPack: plan.primaryPack,
+          selectedPacks: plan.packIds,
+          exposureReasons: plan.reasons,
+          turnFeatures: activeTurnFeatures,
+          userTimezone,
+          currentTimeUtc,
+          currentTimeUserTz,
+          dayOfWeek,
+          toolAbort: toolAbort!,
+          toolAbortSignal,
+          isRunCurrent,
+          isBurstStable,
+          onMemoryStored: () => {
+            memoryStored = true;
+          },
+          onToolResult: (toolName, result) => {
+            workingStateController?.updateFromToolResult(toolName, result);
+          },
+          registerToolResultCacheStatsReader: (readStats) => {
+            toolResultCacheStatsReader.read = readStats;
+          },
+          toolResultCache,
+          mcpToolExposure: activeMcpToolExposure,
+          mcpSelectableServerPacks: selectableMcpServerPacks,
+          requestableActionPackIds,
+        });
+
+        logger.info('[executiveAgent] harness.pack_tools', {
+          passIndex,
+          primaryPack,
+          packIds,
+          ...summarizeToolInventoryForLogs({
+            tools,
+            mcpServers: mcpServersForLogs,
+          }),
+        });
+        const availableToolNames = Object.keys(tools);
+
+        const activeToolBudgets = Object.fromEntries(
+          Object.keys(tools).map((toolName) => [
+            toolName,
+            MESSAGING_TOOL_BUDGETS_BASE[toolName] ?? 15,
+          ]),
+        );
+
+        const timedTools = wrapToolsWithTimingMetadata({
+          tools,
+          agentStartedAt: startTime,
+          timeLeftMs: () => toolAbort!.timeLeftMs(),
+          getLastProgressSentAt: () => lastProgressSentAt,
+          setLastProgressSentAt: (sentAt: number) => {
+            lastProgressSentAt = sentAt;
+          },
+          isRunCurrent,
+          hasPendingSteer,
+          onToolResult: (toolName, args, result, observedAtMs) => {
+            workingStateController?.updateFromToolResult(toolName, result);
+
+            if (
+              toolName === 'append_to_supermemory' &&
+              isAppendToSupermemorySuccessful(result)
+            ) {
+              toolResultCache.noteMutation('append_to_supermemory', observedAtMs);
+              return;
+            }
+
+            if (
+              toolName === 'commit_calendar_change' &&
+              isCommitCalendarChangeSuccessful(args, result)
+            ) {
+              toolResultCache.noteMutation('commit_calendar_change', observedAtMs);
+              return;
+            }
+
+            if (
+              toolName === 'commit_mcp_action' &&
+              result != null &&
+              typeof result === 'object' &&
+              (result as Record<string, unknown>).ok === true
+            ) {
+              toolResultCache.noteMcpMutation(observedAtMs);
+            }
+          },
+        });
+        const tracedTools = wrapToolsWithAiTracing(input.traceContext, timedTools);
+        const modelTools = normalizeExecutiveAgentToolsForModel(
+          tracedTools as Record<string, any>,
+        );
+
+        const exec = canCooperativeSteer
+          ? await runSteerableTextWithTools({
+              model: models.execAgent(),
+              system: promptSystemPrompt,
+              messages,
+              tools: modelTools,
+              timeLeftMs: () => toolAbort!.timeLeftMs(),
+              maxSteps: MESSAGING_MAX_STEPS,
+              maxToolCallsTotal: MESSAGING_MAX_TOOL_CALLS_TOTAL,
+              maxToolCallsPerTool: activeToolBudgets,
+              deadlineMs: MESSAGING_DEADLINE_MS,
+              stopWhen: stopConditions,
+              temperature: 0.7,
+              op: `${resolvedChannel}.executive`,
+              concurrency: { key: `${resolvedChannel}.executive`, maxConcurrency: 4 },
+              retry: { maxAttempts: 3, baseDelayMs: 500 },
+              abortSignal: toolAbortSignal,
+              providerOptions,
+              runContext: input.runContext as unknown as SteerRunContext,
+              traceContext: input.traceContext,
+            })
+          : await callTextWithTools({
+              model: models.execAgent(),
+              system: promptSystemPrompt,
+              messages,
+              tools: modelTools,
+              maxSteps: MESSAGING_MAX_STEPS,
+              maxToolCallsTotal: MESSAGING_MAX_TOOL_CALLS_TOTAL,
+              maxToolCallsPerTool: activeToolBudgets,
+              deadlineMs: MESSAGING_DEADLINE_MS,
+              stopWhen: stopConditions,
+              temperature: 0.7,
+              op: `${resolvedChannel}.executive`,
+              concurrency: { key: `${resolvedChannel}.executive`, maxConcurrency: 4 },
+              retry: { maxAttempts: 3, baseDelayMs: 500 },
+              abortSignal: toolAbortSignal,
+              providerOptions,
+              traceContext: input.traceContext,
+            });
+
+        const { text, toolCalls, toolResults, steps, toolBudget } = exec;
+        const messagesWhenEmpty =
+          exec && typeof exec === 'object' && 'messagesWhenEmpty' in exec
+            ? (exec as { messagesWhenEmpty?: unknown[] }).messagesWhenEmpty
+            : undefined;
+        steerMetadata =
+          exec && typeof exec === 'object' && 'steer' in exec
+            ? ((exec as { steer?: Prisma.InputJsonValue }).steer ?? null)
+            : null;
+
+        const toolNames = collectExecutedToolNames({
+          toolCalls,
+          toolResults,
+          steps,
+          toolBudget,
+          availableToolNames,
+        });
+        const outOfPackToolNames = collectOutOfPackToolNames({
+          toolCalls,
+          toolResults,
+          steps,
+          availableToolNames,
+        });
+        if (outOfPackToolNames.size > 0) {
+          logger.warn('[executiveAgent] Model trace referenced out-of-pack tools', {
+            passIndex,
+            primaryPack: plan.primaryPack,
+            availableTools: availableToolNames,
+            outOfPackTools: Array.from(outOfPackToolNames),
           });
         }
-      }
-      response = sanitizedResponse.response;
-      if (!response) {
-        response = buildTerminalFallbackResponse(toolResults, steps, {
-          selectedPack,
-          workingState: workingStateController?.getState() ?? null,
-          turnFeatures,
-        });
-        logger.warn(`[executiveAgent] Sanitized response became empty, using fallback: ${response}`);
-      }
-      workingStateController.updateFromResponse(response);
+        logger.info(`[executiveAgent] Tools used: ${Array.from(toolNames).join(', ') || '(none)'}`);
+        logger.info(
+          `[executiveAgent] Completed in ${Date.now() - startTime}ms totalTools=${toolBudget?.totalCalls ?? 0}`,
+        );
+        const toolResultCacheStats = toolResultCacheStatsReader.read
+          ? toolResultCacheStatsReader.read()
+          : undefined;
+        if (toolResultCacheStats) {
+          logger.info(`[executiveAgent] Tool result cache stats: ${JSON.stringify(toolResultCacheStats)}`);
+        }
 
-      if (!(await isRunCurrent())) {
-        throw new Error('superseded_by_newer_message');
+        let response = (text || '').trim();
+        let responseSource: 'model' | 'synthesis' | 'fallback' = 'model';
+        if (
+          !response &&
+          steps.length > 0 &&
+          Array.isArray(messagesWhenEmpty) &&
+          messagesWhenEmpty.length > 0
+        ) {
+          const synthesisSystem =
+            (promptSystemPrompt ?? '') +
+            '\n\n[SYSTEM: The user is waiting for a reply. Produce a brief, direct response based on the tool results above. If results were poor or inconclusive, say so and offer to try again. Your reply must be non-empty.]';
+          try {
+            const synthesis = await callTextWithMessages({
+              model: models.execAgent(),
+              system: synthesisSystem,
+              messages: messagesWhenEmpty,
+              temperature: 0.3,
+              abortSignal: toolAbortSignal,
+              op: `${resolvedChannel}.executive.synthesis`,
+              concurrency: { key: `${resolvedChannel}.executive`, maxConcurrency: 4 },
+              retry: { maxAttempts: 3, baseDelayMs: 500 },
+              providerOptions,
+              traceContext: input.traceContext,
+            });
+            const synthesized = (synthesis.text || '').trim();
+            if (synthesized) {
+              response = synthesized;
+              responseSource = 'synthesis';
+              logger.info(`[executiveAgent] Synthesis produced reply (was empty)`);
+            }
+          } catch (err) {
+            logger.warn(`[executiveAgent] Synthesis failed, using fallback`, { err });
+          }
+        }
+        if (!response) {
+          response = buildTerminalFallbackResponse(toolResults, steps, {
+            selectedPack: plan.primaryPack,
+            workingState: workingStateController?.getState() ?? null,
+            turnFeatures,
+          });
+          responseSource = 'fallback';
+          logger.info(`[executiveAgent] Empty model text, using fallback: ${response}`);
+        }
+        const sanitizedResponse = stripInternalMetadataFromAssistantResponse(response);
+        if (sanitizedResponse.stripped) {
+          logger.warn('[executiveAgent] Stripped leaked internal metadata from assistant response');
+        }
+        if (sanitizedResponse.claimedToolHistoryNames.length > 0) {
+          const actualToolNames = collectToolNamesFromExecution({ toolCalls, toolResults, steps });
+          const fabricated = sanitizedResponse.claimedToolHistoryNames.filter(
+            (name) => !actualToolNames.has(name),
+          );
+          if (fabricated.length > 0) {
+            logger.error('[executiveAgent] FABRICATED_TOOL_HISTORY: model claimed tool usage that did not occur', {
+              fabricatedToolNames: fabricated,
+              claimedToolHistory: sanitizedResponse.claimedToolHistoryNames,
+              actualToolNames: Array.from(actualToolNames),
+              primaryPack: plan.primaryPack,
+              packIds: plan.packIds,
+            });
+          }
+        }
+        response = sanitizedResponse.response;
+        if (!response) {
+          response = buildTerminalFallbackResponse(toolResults, steps, {
+            selectedPack: plan.primaryPack,
+            workingState: workingStateController?.getState() ?? null,
+            turnFeatures,
+          });
+          responseSource = 'fallback';
+          logger.warn(`[executiveAgent] Sanitized response became empty, using fallback: ${response}`);
+        }
+        workingStateController.updateFromResponse(response);
+
+        if (!(await isRunCurrent())) {
+          throw new Error('superseded_by_newer_message');
+        }
+
+        return {
+          response,
+          responseSource,
+          toolCalls,
+          toolResults,
+          steps,
+          toolBudget,
+          toolResultCacheStats,
+          toolNames,
+          outOfPackToolNames,
+          selectedConnectionIds: activeMcpToolExposure.selectedConnectionIds,
+          workingState: workingStateController.getState(),
+        };
+      };
+
+      let passResult = await executePass(exposurePlan, 1);
+      const requestedPackIds = extractRequestedPackIdsFromExecution({
+        toolResults: passResult.toolResults,
+        steps: passResult.steps,
+      }).filter((packId) => !exposurePlan.packIds.includes(packId));
+      const requestedMcpConnectionIds = extractRequestedMcpConnectionIdsFromExecution({
+        toolResults: passResult.toolResults,
+        steps: passResult.steps,
+      }).filter((connectionId) => !exposurePlan.mcpConnectionIds.includes(connectionId));
+
+      if (requestedPackIds.length > 0) {
+        repairAttempted = true;
+        repairReason = 'requested_tool_pack_exposure';
+        repairExpandedPacks = requestedPackIds;
+        exposurePlan = {
+          ...exposurePlan,
+          primaryPack: requestedPackIds[0] ?? exposurePlan.primaryPack,
+          packIds: Array.from(
+            new Set([...exposurePlan.packIds, ...requestedPackIds]),
+          ),
+          repairAttempted: true,
+        };
+
+        logger.info('[executiveAgent] harness.action_pack_rerun', {
+          repairReason,
+          repairExpandedPacks,
+        });
+
+        passResult = await executePass(exposurePlan, 2);
+      } else if (requestedMcpConnectionIds.length > 0) {
+        repairAttempted = true;
+        repairReason = 'requested_mcp_server_tools';
+        repairExpandedMcpConnectionIds = requestedMcpConnectionIds;
+        exposurePlan = {
+          ...exposurePlan,
+          mcpConnectionIds: Array.from(
+            new Set([...exposurePlan.mcpConnectionIds, ...requestedMcpConnectionIds]),
+          ),
+          repairAttempted: true,
+        };
+
+        logger.info('[executiveAgent] harness.mcp_selection_rerun', {
+          repairReason,
+          repairExpandedMcpConnectionIds,
+        });
+
+        passResult = await executePass(exposurePlan, 2);
+      } else {
+        const zeroToolActionStall =
+          passResult.toolNames.size === 0 &&
+          hasDeterministicActionIntent(activeTurnFeatures) &&
+          passResult.responseSource !== 'model';
+
+        if (passResult.outOfPackToolNames.size > 0 || zeroToolActionStall) {
+          repairAttempted = true;
+          repairReason =
+            passResult.outOfPackToolNames.size > 0
+              ? 'out_of_pack_tool_reference'
+              : 'zero_tool_action_stall';
+
+          const repairExpansion = await expandExposurePlanForRepair({
+            input,
+            features: activeTurnFeatures,
+            plan: exposurePlan,
+            outOfPackToolNames: [...passResult.outOfPackToolNames],
+            reason:
+              passResult.outOfPackToolNames.size > 0
+                ? 'missing_tools'
+                : 'action_intent_stall',
+            mcpServerPacks: selectableMcpServerPacks,
+          });
+
+          repairExpandedPacks = repairExpansion.expandedPackIds;
+          repairExpandedMcpConnectionIds = repairExpansion.expandedMcpConnectionIds;
+          exposurePlan = repairExpansion.plan;
+
+          logger.info('[executiveAgent] harness.repair_rerun', {
+            repairReason,
+            repairExpandedPacks,
+            repairExpandedMcpConnectionIds,
+          });
+
+          passResult = await executePass(exposurePlan, 2);
+        }
       }
 
       const metadata: Record<string, Prisma.InputJsonValue> = {};
-      if (Array.isArray(toolCalls) && toolCalls.length > 0) {
-        metadata.toolCalls = toolCalls as Prisma.InputJsonValue;
+      if (Array.isArray(passResult.toolCalls) && passResult.toolCalls.length > 0) {
+        metadata.toolCalls = passResult.toolCalls as Prisma.InputJsonValue;
       }
-      if (Array.isArray(toolResults) && toolResults.length > 0) {
-        metadata.toolResults = stripCacheDebugMetadataForPersistence(toolResults) as Prisma.InputJsonValue;
+      if (Array.isArray(passResult.toolResults) && passResult.toolResults.length > 0) {
+        metadata.toolResults = stripCacheDebugMetadataForPersistence(
+          passResult.toolResults,
+        ) as Prisma.InputJsonValue;
       }
-      if (Array.isArray(steps) && steps.length > 0) {
-        metadata.steps = stripCacheDebugMetadataForPersistence(steps) as Prisma.InputJsonValue;
+      if (Array.isArray(passResult.steps) && passResult.steps.length > 0) {
+        metadata.steps = stripCacheDebugMetadataForPersistence(
+          passResult.steps,
+        ) as Prisma.InputJsonValue;
       }
-      if (toolBudget) {
-        metadata.toolBudget = toolBudget as Prisma.InputJsonValue;
+      if (passResult.toolBudget) {
+        metadata.toolBudget = passResult.toolBudget as Prisma.InputJsonValue;
       }
-      if (toolResultCacheStats) {
-        metadata.toolResultCacheStats = toolResultCacheStats as Prisma.InputJsonValue;
+      if (passResult.toolResultCacheStats) {
+        metadata.toolResultCacheStats = passResult.toolResultCacheStats as Prisma.InputJsonValue;
       }
       const harnessMetadata = buildHarnessMetadata({
-        selectedPack,
-        selectedPacks,
-        mcpConnectionIds: mcpToolExposure?.selectedConnectionIds ?? [],
-        selectorReasons,
-        workingState: workingStateController?.getState() ?? null,
+        primaryPack,
+        packIds,
+        mcpConnectionIds: passResult.selectedConnectionIds,
+        exposureReasons,
+        repairAttempted,
+        repairReason,
+        repairExpandedPacks,
+        repairExpandedMcpConnectionIds,
+        workingState: passResult.workingState,
         promptVersion: EXECUTIVE_AGENT_PROMPT_VERSION,
         packVersion: EXECUTIVE_AGENT_PACK_VERSION,
       });
@@ -541,7 +689,7 @@ export class ExecutiveAgent {
       }
 
       return {
-        response,
+        response: passResult.response,
         memoryStored,
         status: 'ok',
         metadata: Object.keys(metadata).length > 0 ? (metadata as Prisma.InputJsonObject) : undefined,
@@ -560,15 +708,23 @@ export class ExecutiveAgent {
       }
 
       logger.error(`[executiveAgent] Error: ${message}`);
-      workingStateController?.markFailed();
+      const currentWorkingStateController =
+        workingStateController as ReturnType<typeof createWorkingStateController> | null;
+      const currentMcpToolExposure =
+        mcpToolExposure as Awaited<ReturnType<typeof resolveMcpToolExposure>> | null;
+      currentWorkingStateController?.markFailed();
 
       const metadata: Record<string, Prisma.InputJsonValue> = {};
       const harnessMetadata = buildHarnessMetadata({
-        selectedPack,
-        selectedPacks,
-        mcpConnectionIds: mcpToolExposure?.selectedConnectionIds ?? [],
-        selectorReasons,
-        workingState: workingStateController?.getState() ?? null,
+        primaryPack,
+        packIds,
+        mcpConnectionIds: currentMcpToolExposure?.selectedConnectionIds ?? [],
+        exposureReasons,
+        repairAttempted,
+        repairReason,
+        repairExpandedPacks,
+        repairExpandedMcpConnectionIds,
+        workingState: currentWorkingStateController?.getState() ?? null,
         promptVersion: EXECUTIVE_AGENT_PROMPT_VERSION,
         packVersion: EXECUTIVE_AGENT_PACK_VERSION,
       });
@@ -587,8 +743,8 @@ export class ExecutiveAgent {
         response: isDeadline
           ? 'I hit a time limit. Should I check your inbox or your calendar?'
           : buildTerminalFallbackResponse([], [], {
-              selectedPack,
-              workingState: workingStateController?.getState() ?? null,
+              selectedPack: primaryPack,
+              workingState: currentWorkingStateController?.getState() ?? null,
               turnFeatures,
             }),
         memoryStored,
