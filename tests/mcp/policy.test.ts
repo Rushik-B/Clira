@@ -501,6 +501,8 @@ describe('MCP policy service', () => {
         serverKey: 'docs',
         displayName: 'Docs Workspace',
         packDescription: 'Docs Workspace: 1 read tools (Search docs)',
+        capabilityTags: ['docs_search', 'external_knowledge'],
+        eligibleModelToolNames: ['mcp__docs__search_docs'],
       },
     ]);
   });

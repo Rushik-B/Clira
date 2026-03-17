@@ -64,23 +64,17 @@ function buildContext(): ExecutiveRuntimeContext {
     },
     channel: 'twilio',
     retrievalProfile: 'messaging',
-    selectedPack: 'inbox_context_pack',
-    selectedPacks: ['inbox_context_pack'],
-    selectorReasons: ['test'],
+    selectedPack: 'safe_context_pack',
+    selectedPacks: ['safe_context_pack'],
+    exposureReasons: ['test'],
     turnFeatures: {
       explicitSendApproval: false,
       draftCandidatePresent: false,
       pendingCalendarChangePresent: false,
-      calendarMutationIntent: false,
-      calendarQueryIntent: false,
-      workloadOverviewIntent: false,
-      reminderIntent: false,
-      alertIntent: false,
       channel: 'twilio',
       hasRecentPendingCalendarPreview: false,
       pendingCalendarConfirmIntent: false,
       pendingCalendarCancelIntent: false,
-      pendingCalendarModifyIntent: false,
       draftCandidateReason: null,
     },
     userTimezone: 'America/Vancouver',
@@ -225,6 +219,40 @@ function buildTool(overrides?: Partial<McpToolManifestRecord>): McpToolManifestR
 }
 
 describe('Executive MCP tool adapter', () => {
+  test('exposes request_mcp_server_tools for unselected MCP server packs', async () => {
+    const tools = buildExecutiveMcpTools({
+      context: buildContext(),
+      exposure: null,
+      selectableServerPacks: [
+        {
+          connectionId: 'conn-2',
+          serverKey: 'exa',
+          displayName: 'Exa Search',
+          packDescription: 'Exa Search: 3 read tools',
+          capabilityTags: ['external_knowledge', 'web_search'],
+          eligibleModelToolNames: ['mcp__exa__web_search'],
+        },
+      ],
+    }) as Record<string, { execute: (args: Record<string, unknown>) => Promise<Record<string, unknown>> }>;
+
+    expect(tools.request_mcp_server_tools).toBeDefined();
+
+    const result = await tools.request_mcp_server_tools.execute({
+      connectionIds: ['conn-2'],
+      reason: 'Need external web search',
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      requestedConnectionIds: ['conn-2'],
+      requestedServerKeys: ['exa'],
+      requestedDisplayNames: ['Exa Search'],
+      reason: 'Need external web search',
+      rerunRequired: true,
+    });
+    expect(executeMcpToolMock).not.toHaveBeenCalled();
+  });
+
   test('returns bounded summaries to the model instead of raw MCP payloads', async () => {
     const exposure: McpToolExposure = {
       selectedConnectionIds: ['conn-1'],
@@ -299,6 +327,7 @@ describe('Executive MCP tool adapter', () => {
     const tools = buildExecutiveMcpTools({
       context: buildContext(),
       exposure,
+      selectableServerPacks: [],
     }) as Record<string, { execute: (args: Record<string, unknown>) => Promise<Record<string, unknown>> }>;
 
     const result = await tools.mcp__docs__search_docs.execute({ query: 'deploy' });
