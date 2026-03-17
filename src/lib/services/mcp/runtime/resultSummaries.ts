@@ -15,13 +15,13 @@ function summarizeContentBlocks(content: unknown[]): string[] {
 
     const record = block as Record<string, unknown>;
     if (record.type === 'text' && typeof record.text === 'string') {
-      const snippet = sanitizeMcpInlineText(record.text, 220);
+      const snippet = sanitizeMcpInlineText(record.text, 400);
       if (snippet) {
         snippets.push(snippet);
       }
     }
 
-    if (snippets.length >= 3) {
+    if (snippets.length >= 6) {
       break;
     }
   }

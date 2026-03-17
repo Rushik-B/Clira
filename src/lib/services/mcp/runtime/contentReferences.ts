@@ -582,6 +582,7 @@ export async function readMcpContentReference(params: {
         error: 'resource_empty',
         message: 'That content reference did not yield any readable resource contents.',
         contentRef: sanitizeContentReferenceForModel(params.reference),
+        hint: 'Use the inline snippets and structured content from the original tool result instead. Do not retry other content references from the same tool result.',
       };
     }
 
@@ -610,6 +611,7 @@ export async function readMcpContentReference(params: {
         260,
       ),
       contentRef: sanitizeContentReferenceForModel(params.reference),
+      hint: 'This MCP server does not support reading this resource directly. Use the inline snippets and structured content from the original tool result instead. Do not retry other content references from the same tool result.',
     };
   } finally {
     await client.close().catch(() => {});
