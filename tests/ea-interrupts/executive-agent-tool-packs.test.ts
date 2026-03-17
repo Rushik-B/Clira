@@ -12,6 +12,9 @@ import { buildExecutiveAgentTools } from '@/lib/ai/agents/executive-agent/tools'
 import {
   extractExecutiveTurnFeatures,
 } from '@/lib/ai/agents/executive-agent/selector';
+import {
+  listRequestableActionPackIds,
+} from '@/lib/ai/agents/executive-agent/toolPacks';
 import type {
   ExecutiveAgentInput,
   ExecutiveRuntimeContext,
@@ -24,6 +27,7 @@ import type {
 
 function buildInput(params: {
   userRequest: string;
+  history?: ExecutiveAgentInput['conversationHistory'];
   classifierDecision?: NonNullable<ExecutiveAgentInput['runContext']>['classifierDecision'];
 }): ExecutiveAgentInput {
   return {
@@ -32,7 +36,7 @@ function buildInput(params: {
     userRequest: params.userRequest,
     conversationId: 'conv-1',
     channel: 'twilio',
-    conversationHistory: [],
+    conversationHistory: params.history ?? [],
     runContext: {
       runId: 'run-1',
       burstId: 'burst-1',
@@ -48,20 +52,21 @@ function buildContext(params: {
   input: ExecutiveAgentInput;
   pendingCalendarChangePresent: boolean;
   selectedPacks?: ToolPackId[];
+  requestableActionPackIds?: Array<Exclude<ToolPackId, 'safe_context_pack'>>;
 }): ExecutiveRuntimeContext {
   const turnFeatures = extractExecutiveTurnFeatures({
     input: params.input,
     pendingCalendarChangePresent: params.pendingCalendarChangePresent,
   });
-  const selectedPacks = params.selectedPacks ?? ['inbox_context_pack'];
+  const selectedPacks = params.selectedPacks ?? ['safe_context_pack'];
 
   return {
     input: params.input,
     channel: 'twilio',
     retrievalProfile: 'messaging',
-    selectedPack: selectedPacks[0],
+    selectedPack: selectedPacks[0]!,
     selectedPacks,
-    selectorReasons: ['test'],
+    exposureReasons: ['test'],
     turnFeatures,
     userTimezone: 'America/Vancouver',
     currentTimeUtc: '2026-03-02T18:00:00.000Z',
@@ -148,6 +153,7 @@ function buildContext(params: {
         set_skipped_non_cacheable: 0,
       }),
     },
+    requestableActionPackIds: params.requestableActionPackIds ?? [],
   };
 }
 
@@ -212,44 +218,39 @@ function buildMcpTool(overrides?: Partial<McpToolManifestRecord>): McpToolManife
 }
 
 describe('Executive agent tool packs', () => {
-  test('tool maps are deterministic and sorted', () => {
-    const context = buildContext({
-      input: buildInput({ userRequest: 'find the email from my professor' }),
-      pendingCalendarChangePresent: false,
-      selectedPacks: ['inbox_context_pack'],
-    });
-
-    const tools = buildExecutiveAgentTools(context);
-    const toolNames = Object.keys(tools);
-
-    expect(toolNames).toEqual([...toolNames].sort());
-  });
-
-  test('ambiguous inbox turns never expose send or calendar mutation tools', () => {
+  test('safe context substrate stays read-oriented on its own', () => {
     const context = buildContext({
       input: buildInput({
         userRequest: 'what did Alex say about tomorrow?',
         classifierDecision: 'ambiguous',
       }),
       pendingCalendarChangePresent: false,
-      selectedPacks: ['inbox_context_pack'],
     });
 
     const toolNames = Object.keys(buildExecutiveAgentTools(context));
 
-    expect(toolNames).toContain('search_inbox_context');
-    expect(toolNames).toContain('list_inbox_emails');
-    expect(toolNames).toContain('read_email_pdf_attachment');
+    expect(toolNames).toEqual([
+      'search_memory',
+      'append_to_supermemory',
+      'send_progress_update',
+      'search_inbox_context',
+      'list_inbox_emails',
+      'read_email_pdf_attachment',
+      'search_calendar',
+      'check_calendar',
+      'get_reply_preferences',
+    ]);
     expect(toolNames).not.toContain('send_email');
     expect(toolNames).not.toContain('plan_calendar_change');
     expect(toolNames).not.toContain('commit_calendar_change');
+    expect(toolNames).not.toContain('manage_reply_preferences');
   });
 
   test('new calendar mutation turns expose plan but not commit', () => {
     const context = buildContext({
       input: buildInput({ userRequest: 'move my 3 meetings tomorrow to Friday' }),
       pendingCalendarChangePresent: false,
-      selectedPacks: ['calendar_mutation_pack'],
+      selectedPacks: ['safe_context_pack', 'calendar_mutation_pack'],
     });
 
     const toolNames = Object.keys(buildExecutiveAgentTools(context));
@@ -258,50 +259,32 @@ describe('Executive agent tool packs', () => {
     expect(toolNames).not.toContain('commit_calendar_change');
   });
 
-  test('multi-pack reminder plus calendar turns expose both tool families', () => {
+  test('safe context can expose request_tool_pack_exposure for hidden action packs', () => {
+    const input = buildInput({
+      userRequest: 'move my 3 meetings tomorrow to Friday',
+    });
     const context = buildContext({
-      input: buildInput({
-        userRequest: 'remind me tomorrow at 9pm to study and put it on my calendar too',
-      }),
+      input,
       pendingCalendarChangePresent: false,
-      selectedPacks: ['calendar_mutation_pack', 'reminder_alert_pack'],
+      requestableActionPackIds: listRequestableActionPackIds(
+        extractExecutiveTurnFeatures({
+          input,
+          pendingCalendarChangePresent: false,
+        }),
+      ),
     });
 
     const toolNames = Object.keys(buildExecutiveAgentTools(context));
 
-    expect(context.selectedPacks).toEqual([
-      'calendar_mutation_pack',
-      'reminder_alert_pack',
-    ]);
-    expect(toolNames).toContain('plan_calendar_change');
-    expect(toolNames).toContain('add_reminder');
-    expect(toolNames).not.toContain('list_inbox_emails');
-  });
-
-  test('settings turns expose only the reply preference tool family', () => {
-    const context = buildContext({
-      input: buildInput({
-        userRequest: 'always reply to my mom informally and end with love you',
-      }),
-      pendingCalendarChangePresent: false,
-      selectedPacks: ['settings_mutation_pack'],
-    });
-
-    const toolNames = Object.keys(buildExecutiveAgentTools(context));
-
-    expect(toolNames).toContain('manage_reply_preferences');
-    expect(toolNames).toContain('get_reply_preferences');
-    expect(toolNames).toContain('search_memory');
-    expect(toolNames).not.toContain('send_email');
+    expect(toolNames).toContain('request_tool_pack_exposure');
     expect(toolNames).not.toContain('plan_calendar_change');
-    expect(toolNames).not.toContain('add_reminder');
   });
 
   test('pending calendar confirm turns expose commit but not plan', () => {
     const context = buildContext({
       input: buildInput({ userRequest: 'yes' }),
       pendingCalendarChangePresent: true,
-      selectedPacks: ['calendar_mutation_pack'],
+      selectedPacks: ['safe_context_pack', 'calendar_mutation_pack'],
     });
 
     const toolNames = Object.keys(buildExecutiveAgentTools(context));
@@ -310,36 +293,64 @@ describe('Executive agent tool packs', () => {
     expect(toolNames).not.toContain('plan_calendar_change');
   });
 
-  test('core recall turns expose deterministic inbox listing but send pack does not', () => {
-    const recallContext = buildContext({
-      input: buildInput({ userRequest: 'show me all emails from Alice this week' }),
+  test('standing reply preference writes unlock manage_reply_preferences', () => {
+    const context = buildContext({
+      input: buildInput({
+        userRequest: 'always reply to my mom informally and end with love you',
+      }),
       pendingCalendarChangePresent: false,
-      selectedPacks: ['core_recall_pack'],
+      selectedPacks: ['safe_context_pack', 'settings_mutation_pack'],
     });
-    const recallTools = Object.keys(buildExecutiveAgentTools(recallContext));
 
-    expect(recallTools).toContain('list_inbox_emails');
-    expect(recallTools).not.toContain('read_email_pdf_attachment');
+    const toolNames = Object.keys(buildExecutiveAgentTools(context));
 
-    const sendContext = buildContext({
-      input: buildInput({ userRequest: 'draft an email to Alice' }),
-      pendingCalendarChangePresent: false,
-    });
-    const sendTools = Object.keys(buildExecutiveAgentTools({
-      ...sendContext,
-      selectedPack: 'email_send_pack',
-      selectedPacks: ['email_send_pack'],
-    }));
-
-    expect(sendTools).toContain('read_email_pdf_attachment');
-    expect(sendTools).not.toContain('list_inbox_emails');
+    expect(toolNames).toContain('get_reply_preferences');
+    expect(toolNames).toContain('manage_reply_preferences');
+    expect(toolNames).not.toContain('send_email');
   });
 
-  test('approved read-only MCP tools are exposed alongside native tools', () => {
+  test('reply preference reads use safe context without unlocking settings mutation', () => {
+    const context = buildContext({
+      input: buildInput({
+        userRequest: 'what reply preferences do you have saved for me?',
+      }),
+      pendingCalendarChangePresent: false,
+    });
+
+    const toolNames = Object.keys(buildExecutiveAgentTools(context));
+
+    expect(toolNames).toContain('get_reply_preferences');
+    expect(toolNames).not.toContain('manage_reply_preferences');
+  });
+
+  test('explicit send approval with a real draft unlocks send_email', () => {
+    const context = buildContext({
+      input: buildInput({
+        userRequest: 'send it',
+        history: [
+          {
+            id: 'assistant-draft',
+            role: 'ASSISTANT',
+            direction: 'OUTBOUND',
+            content: 'Draft ready:\nTo: alex@example.com\nSub: Update\n\nHey Alex,\nDone.\n',
+            metadata: null,
+            createdAt: new Date('2026-03-02T17:00:00.000Z'),
+          },
+        ],
+      }),
+      pendingCalendarChangePresent: false,
+      selectedPacks: ['safe_context_pack', 'email_send_pack'],
+    });
+
+    const toolNames = Object.keys(buildExecutiveAgentTools(context));
+
+    expect(toolNames).toContain('send_email');
+  });
+
+  test('approved read-only MCP tools are appended after native tools', () => {
     const context = buildContext({
       input: buildInput({ userRequest: 'find the notion spec' }),
       pendingCalendarChangePresent: false,
-      selectedPacks: ['inbox_context_pack'],
     });
 
     context.mcpToolExposure = {
@@ -367,16 +378,28 @@ describe('Executive agent tool packs', () => {
 
     const toolNames = Object.keys(buildExecutiveAgentTools(context));
 
-    expect(toolNames).toContain('search_inbox_context');
-    expect(toolNames).toContain('mcp__docs__search_docs');
-    expect(toolNames).toContain('read_content_reference');
+    expect(toolNames.slice(0, 9)).toEqual([
+      'search_memory',
+      'append_to_supermemory',
+      'send_progress_update',
+      'search_inbox_context',
+      'list_inbox_emails',
+      'read_email_pdf_attachment',
+      'search_calendar',
+      'check_calendar',
+      'get_reply_preferences',
+    ]);
+    expect(toolNames.slice(-2)).toEqual([
+      'read_content_reference',
+      'mcp__docs__search_docs',
+    ]);
   });
 
-  test('mutation-capable MCP exposure adds preview and pending confirmation wrappers instead of raw mutating tools', () => {
+  test('mutation-capable MCP exposure adds wrappers after native tools', () => {
     const context = buildContext({
       input: buildInput({ userRequest: 'put the interview on my external work calendar' }),
       pendingCalendarChangePresent: false,
-      selectedPacks: ['calendar_mutation_pack'],
+      selectedPacks: ['safe_context_pack', 'calendar_mutation_pack'],
     });
 
     context.mcpToolExposure = {
@@ -441,10 +464,13 @@ describe('Executive agent tool packs', () => {
 
     const toolNames = Object.keys(buildExecutiveAgentTools(context));
 
-    expect(toolNames).toContain('plan_mcp_action');
-    expect(toolNames).toContain('commit_mcp_action');
-    expect(toolNames).toContain('cancel_mcp_action');
-    expect(toolNames).toContain('read_content_reference');
+    expect(toolNames).toContain('plan_calendar_change');
+    expect(toolNames.slice(-4)).toEqual([
+      'read_content_reference',
+      'plan_mcp_action',
+      'commit_mcp_action',
+      'cancel_mcp_action',
+    ]);
     expect(toolNames).not.toContain('mcp__calendar__create_event');
   });
 });
