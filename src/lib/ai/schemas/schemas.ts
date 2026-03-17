@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import { LabelAnalysisResultSchema } from '@/lib/ai/schemas/labelAnalysisSchemas';
 export {
   CalendarCreatorPlanBaseSchema,
   CalendarCreatorPlanSchema,
@@ -140,7 +139,6 @@ export const ReplyPlanSchema = z.object({
       directEmailHistoryUsed: z.boolean(),
       keywordEmailSearchUsed: z.boolean(),
       memorySearchUsed: z.boolean(),
-      labelingUsed: z.boolean(),
     })
     .optional()
     .default({
@@ -149,13 +147,8 @@ export const ReplyPlanSchema = z.object({
       directEmailHistoryUsed: false,
       keywordEmailSearchUsed: false,
       memorySearchUsed: false,
-      labelingUsed: false,
     })
     .describe('Telemetry: which tools were actually used during planning.'),
-
-  labelAnalysis: LabelAnalysisResultSchema.optional().describe(
-    'Debug: output from analyze_labels tool when invoked.',
-  ),
 });
 
 export type ReplyPlanDTO = z.infer<typeof ReplyPlanSchema>;

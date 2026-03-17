@@ -83,8 +83,7 @@ function buildPrompt(input: StyleAgentInput): string {
     threadId: input.incomingEmail.threadId ?? null,
   });
 
-  const { labelAnalysis: _labelAnalysis, ...planForPrompt } = input.plan;
-  const replyPlan = safeJson(planForPrompt);
+  const replyPlan = safeJson(input.plan);
 
   return template
     .replace('{masterPrompt}', input.masterPrompt)

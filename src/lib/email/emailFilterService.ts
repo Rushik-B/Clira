@@ -18,6 +18,27 @@ export interface FilterResult {
   category: 'allowed' | 'blocked' | 'filtered';
 }
 
+const HARD_SKIP_FILTER_EXACT_REASONS = new Set([
+  'Own message/draft - skip',
+  'Invalid or empty sender',
+  'Empty subject line',
+]);
+
+const HARD_SKIP_FILTER_REASON_PREFIXES = [
+  'Blocked by Gmail category:',
+  'Blocked sender pattern:',
+  'Blocked subject pattern:',
+] as const;
+
+export function isHardSkipFilterResult(filterResult: Pick<FilterResult, 'shouldReply' | 'reason'>): boolean {
+  if (filterResult.shouldReply) return false;
+
+  return (
+    HARD_SKIP_FILTER_EXACT_REASONS.has(filterResult.reason) ||
+    HARD_SKIP_FILTER_REASON_PREFIXES.some((prefix) => filterResult.reason.startsWith(prefix))
+  );
+}
+
 export interface FilterContext {
   /**
    * The mailbox ID this email belongs to (for multi-inbox support).

@@ -264,7 +264,9 @@ model EmailSort {
   id                    String       @id @default(cuid())
   userId                String
   mailboxId             String? // Optional for backcompat; will be required after migration
-  batchSortJobId        String
+  batchSortJobId        String?
+  source                String       @default("batch_sort")
+  dedupeKey             String?      @unique
   labelId               String
   gmailMessageId        String
   gmailThreadId         String?
@@ -272,7 +274,7 @@ model EmailSort {
   reasoning             String?
   wasManuallyOverridden Boolean      @default(false)
   sortedAt              DateTime     @default(now())
-  batchSortJob          BatchSortJob @relation(fields: [batchSortJobId], references: [id], onDelete: Cascade)
+  batchSortJob          BatchSortJob? @relation(fields: [batchSortJobId], references: [id], onDelete: Cascade)
   label                 Label        @relation(fields: [labelId], references: [id], onDelete: Cascade)
   user                  User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   mailbox               Mailbox?     @relation(fields: [mailboxId], references: [id], onDelete: SetNull)

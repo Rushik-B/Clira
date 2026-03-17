@@ -17,20 +17,11 @@ import {
   gatherMemoryContextForReply,
 } from '@/lib/services/core/replyContextTools';
 import { runCalendarAnalysis } from '@/lib/ai/agents/calendarAnalysisSubagent';
-import { CalendarAnalysisInputSchema } from '@/lib/ai/schemas/calendarAnalysisSchemas';
-import { runLabelAnalysis } from '@/lib/ai/agents/labelAnalysisSubagent';
 import { normalizeIsoDateInputToUtc } from '@/lib/utils/timezone';
-import { GmailLabelClassifier } from '@/lib/services/utils/gmailLabelClassifier';
 import type { AiTraceContext } from '@/lib/ai/tracing';
 import {
   wrapToolsWithAiTracing,
 } from '@/lib/ai/tracing';
-import {
-  LabelAnalysisResultSchema,
-  type LabelAnalysisResultDTO,
-  type AvailableLabelDTO,
-  type CurrentLabelDTO,
-} from '@/lib/ai/schemas/labelAnalysisSchemas';
 
 export type ReplyPlannerAgentInput = {
   userId: string;
@@ -184,7 +175,6 @@ function minimalFallbackPlan(input: ReplyPlannerAgentInput, reason: string): Rep
       directEmailHistoryUsed: false,
       keywordEmailSearchUsed: false,
       memorySearchUsed: false,
-      labelingUsed: false,
     },
   };
 }
@@ -295,34 +285,6 @@ function extractPlanFromSteps(steps: unknown): ReplyPlanDTO | null {
     if (plan) return plan;
   }
   return null;
-}
-
-function extractLabelAnalysisFromToolResults(
-  toolResults: unknown,
-): LabelAnalysisResultDTO | null {
-  if (!Array.isArray(toolResults)) return null;
-  let latest: LabelAnalysisResultDTO | null = null;
-  for (const item of toolResults) {
-    const tr = item as any;
-    if (tr?.toolName !== 'analyze_labels') continue;
-    const parsed = LabelAnalysisResultSchema.safeParse(tr.result);
-    if (parsed.success) {
-      latest = parsed.data;
-    }
-  }
-  return latest;
-}
-
-function extractLabelAnalysisFromSteps(steps: unknown): LabelAnalysisResultDTO | null {
-  if (!Array.isArray(steps)) return null;
-  let latest: LabelAnalysisResultDTO | null = null;
-  for (const step of steps) {
-    const fromStep = extractLabelAnalysisFromToolResults((step as any)?.toolResults);
-    if (fromStep) {
-      latest = fromStep;
-    }
-  }
-  return latest;
 }
 
 function safeJsonForPrompt(value: unknown): string {
@@ -458,17 +420,6 @@ export class ReplyPlannerAgent {
       currentTimeUserTz,
       dayOfWeek,
     } = promptContext;
-
-    // Check if automatic sorting is enabled to determine if labeling should be mandatory
-    const userSettings = await prisma.userSettings.findUnique({
-      where: { userId: input.userId },
-      select: { autoSortingEnabled: true },
-    });
-    const autoSortingEnabled = userSettings?.autoSortingEnabled ?? false;
-    logger.info(
-      `[replyPlanner] autoSortingEnabled=${autoSortingEnabled} for userId=${input.userId}, ` +
-        `labeling tool will be ${autoSortingEnabled ? 'MANDATORY' : 'disabled'}`,
-    );
 
     // Calendar Analysis Subagent tool input (replaces the raw get_calendar tool)
     const calendarAnalysisToolInput = z
@@ -712,114 +663,6 @@ export class ReplyPlannerAgent {
           };
         },
       },
-
-      analyze_labels: {
-        description: (() => {
-          const desc =
-            'Analyze which custom label should be added to this email based on its content. ' +
-            'Uses label metaPrompts to categorize emails intelligently. ' +
-            (autoSortingEnabled
-              ? '🚨 MANDATORY: ALWAYS invoke this tool for every email when automatic sorting is enabled. You MUST call this tool. '
-              : 'Do not invoke this tool - automatic sorting is disabled. ') +
-            'Returns a single best label name (or "(none)" if no match). Append-only (never removes labels).';
-          if (autoSortingEnabled) {
-            logger.info(`[replyPlanner] analyze_labels tool description: ${desc.substring(0, 200)}...`);
-          }
-          return desc;
-        })(),
-        inputSchema: z
-          .object({
-            reason: z
-              .string()
-              .max(200)
-              .optional()
-              .describe('Optional: Why you think labeling is needed for this email'),
-          })
-          .strict(),
-        execute: async (args: { reason?: string }) => {
-          // 1. Check if automatic sorting is enabled
-          const userSettings = await prisma.userSettings.findUnique({
-            where: { userId: input.userId },
-            select: { autoSortingEnabled: true },
-          });
-
-          if (!userSettings || !userSettings.autoSortingEnabled) {
-            return {
-              label: '(none)',
-              reasoning: 'Automatic labeling disabled - user has not enabled auto-sorting',
-              permissionDenied: true,
-            };
-          }
-
-          // 2. Fetch available custom labels (exclude system labels)
-          const availableLabels = await prisma.label.findMany({
-            where: {
-              userId: input.userId,
-              ...(input.mailboxId ? { mailboxId: input.mailboxId } : {}),
-              isCustom: true,
-              isSystemLabel: false,
-              gmailLabelId: { not: null },
-            },
-            select: {
-              id: true,
-              gmailLabelId: true,
-              name: true,
-              metaPrompt: true,
-              color: true,
-            },
-          });
-
-          // Apply fallback metaPrompt if null
-          const labelsWithMetaPrompt: AvailableLabelDTO[] = availableLabels.map((label: typeof availableLabels[number]) => ({
-            id: label.id,
-            gmailLabelId: label.gmailLabelId!,
-            name: label.name,
-            metaPrompt: label.metaPrompt || `Emails related to ${label.name}`,
-            color: label.color || undefined,
-          }));
-
-          // 3. Classify current labels (identify system vs custom)
-          const currentLabels: CurrentLabelDTO[] = (input.message.labelIds || []).map((labelId) => {
-            const classification = GmailLabelClassifier.classifyLabel(labelId);
-            return {
-              gmailLabelId: labelId,
-              name: labelId,
-              isSystemLabel: classification.isSystemLabel,
-            };
-          });
-
-          // 4. Invoke subagent
-          const result = await runLabelAnalysis(
-            {
-              emailSubject: safeString(input.message.subject),
-              emailBody: prunedBody,
-              emailFrom: safeString(input.message.from),
-              currentLabelIds: currentLabels.map((l) => l.gmailLabelId),
-            },
-            {
-              availableLabels: labelsWithMetaPrompt,
-              currentLabels: currentLabels,
-              emailContext: {
-                subject: safeString(input.message.subject),
-                body: prunedBody,
-                from: safeString(input.message.from),
-              },
-            },
-            { traceContext: input.traceContext },
-          );
-
-          const labelText = result.label?.trim() || '(none)';
-          const reasoningText = result.reasoning?.slice(0, 80);
-
-          logger.info(
-            `[replyPlanner] Label analysis: label="${labelText}"` +
-              (reasoningText ? ` reasoning="${reasoningText}..."` : ''),
-          );
-
-          return result;
-        },
-      },
-
       submit_reply_plan: {
         description:
           'Submit the final ReplyPlan. This ends planning; do not output anything else. The plan MUST match the schema exactly.',
@@ -838,9 +681,6 @@ export class ReplyPlannerAgent {
           'CRITICAL: Most emails contain specific topics, projects, or references that require keyword search to understand properly. Extract ALL meaningful nouns (project names, metrics, companies, topics) from the email and search for them. ' +
           'Your draft should contain SPECIFIC FACTS from tool results, not vague "I\'ll look into this" statements. If you find yourself drafting generically, STOP and use more tools. ' +
           'Never invent facts. Use tools proactively - it\'s better to over-gather context than to send an uninformed reply. ' +
-          (autoSortingEnabled
-            ? '🚨 MANDATORY TOOL: You MUST call analyze_labels tool for EVERY email when automatic sorting is enabled. This is not optional - you must call this tool before submitting your reply plan. '
-            : '') +
           'When you have gathered context, call submit_reply_plan with a ReplyPlan object that matches the schema exactly. CC decisions are your responsibility (can be empty).',
         prompt,
         tools: tracedTools,
@@ -886,33 +726,19 @@ export class ReplyPlannerAgent {
 
       const toolNames = collectToolNamesFromExecution({ toolCalls, toolResults, steps });
 
-      const labelingWasCalled = toolNames.has('analyze_labels');
-      if (!labelingWasCalled && autoSortingEnabled) {
-        logger.warn(
-          `[replyPlanner] Labeling tool NOT called despite autoSortingEnabled=true. ` +
-            `Tools called: ${Array.from(toolNames).join(', ') || '(none)'}. ` +
-            `Available tools: analyze_labels, analyze_calendar, get_thread_context, get_direct_email_history, search_keyword_email_context, memory_search`,
-        );
-      }
-
       const toolUsage: ReplyPlanDTO['toolUsage'] = {
         calendarUsed: toolNames.has('analyze_calendar'),
         threadUsed: toolNames.has('get_thread_context'),
         directEmailHistoryUsed: toolNames.has('get_direct_email_history'),
         keywordEmailSearchUsed: toolNames.has('search_keyword_email_context'),
         memorySearchUsed: toolNames.has('memory_search'),
-        labelingUsed: labelingWasCalled,
       };
-
-      const labelAnalysis =
-        extractLabelAnalysisFromToolResults(toolResults) ?? extractLabelAnalysisFromSteps(steps);
 
       logger.info(`[replyPlanner] toolUsage=${JSON.stringify(toolUsage)}`);
 
       return {
         ...object,
         toolUsage,
-        labelAnalysis: labelAnalysis ?? undefined,
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
