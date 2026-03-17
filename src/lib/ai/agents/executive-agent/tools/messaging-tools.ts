@@ -60,7 +60,8 @@ export function buildMessagingTools({
           'Store a fact to memory so you remember it in future conversations. Call in two cases: ' +
           '(1) When the user reveals names, roles, preferences, or facts—store them. ' +
           '(2) When you DISCOVER accurate, high-confidence facts from your tools (search_inbox_context, search_calendar)—e.g. you find "Dr. Smith" is the user\'s statistics professor from emails, or "Sarah" is their manager from calendar—store that too. ' +
-          'High confidence only; don\'t guess. One atomic sentence per memory. Memory is deduped—storing the same fact twice is safe. You can\'t rely on the user to say everything.',
+          'High confidence only; don\'t guess. One atomic sentence per memory. Memory is deduped—storing the same fact twice is safe. You can\'t rely on the user to say everything. ' +
+          'Parallelism: call this in the same step as any other independent tool calls. Every sequential step adds latency.',
         inputSchema: z.object({
           content: z.string().min(1).max(300).describe('Atomic memory line (1 sentence describing a user fact)'),
           type: z
@@ -110,7 +111,8 @@ export function buildMessagingTools({
         description:
           'Read the saved reply preferences from the planner/style instruction docs. ' +
           'Use this when the user asks what preferences are saved, how replies are currently configured, ' +
-          'or how Clira replies to a specific sender right now. This is read-only and does not modify anything.',
+          'or how Clira replies to a specific sender right now. This is read-only and does not modify anything. ' +
+          'Parallelism: call this in the same step as any other independent tool calls. Every sequential step adds latency.',
         inputSchema: z.object({
           target: z.enum(['planner', 'style', 'all']).default('all'),
           senderEmail: z
@@ -320,7 +322,7 @@ export function buildMessagingTools({
       // Tool 12: List Email Alerts
       // ─────────────────────────────────────────────────────────────────────────
       list_email_alerts: {
-        description: 'List all active email alerts.',
+        description: 'List all active email alerts. Parallelism: call this in the same step as any other independent tool calls. Every sequential step adds latency.',
         inputSchema: z.object({}),
         execute: async () => {
           const alerts = await prisma.emailAlert.findMany({
@@ -347,7 +349,8 @@ export function buildMessagingTools({
         description:
           'Create a time-based reminder. Prefer natural language like "today 4pm", "tomorrow 9am", or "4:00 PM" (assumed in the user\'s timezone). ' +
           'Only use ISO timestamps if you are certain about timezone conversion: a trailing "Z" means UTC. ' +
-          'Always ensure the time is in the future.',
+          'Always ensure the time is in the future. ' +
+          'Parallelism: call this in the same step as any other independent tool calls. Every sequential step adds latency.',
         inputSchema: z.object({
           title: z.string().min(1).max(200).describe('Short reminder title'),
           scheduledAt: z.string().min(1).max(200).describe('Reminder time (natural language preferred; ISO UTC allowed)'),
@@ -436,7 +439,7 @@ export function buildMessagingTools({
       // Tool 14: List Reminders
       // ─────────────────────────────────────────────────────────────────────────
       list_reminders: {
-        description: 'List upcoming reminders (pending and snoozed by default).',
+        description: 'List upcoming reminders (pending and snoozed by default). Parallelism: call this in the same step as any other independent tool calls. Every sequential step adds latency.',
         inputSchema: z.object({
           limit: z.number().int().min(1).max(20).optional().describe('Max reminders to return (default: 5)'),
           includeCompleted: z.boolean().optional().describe('Include completed/dismissed/cancelled reminders'),

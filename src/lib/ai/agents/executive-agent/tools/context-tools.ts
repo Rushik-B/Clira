@@ -533,7 +533,8 @@ export function buildContextTools({
           'Search the user\'s personal memory for relevant context. ' +
           'Memories include: names and roles (professors, managers, contacts), preferences, facts, communication style. ' +
           'Use this when: the user asks a RECALL question (e.g. "what\'s my stat prof\'s name?", "who\'s my manager?", "what did I tell you about X?"). ' +
-          'Call search_memory first; only say you don\'t know if the search returns nothing.',
+          'Call search_memory first; only say you don\'t know if the search returns nothing. ' +
+          'Parallelism: call this in the same step as any other independent tool calls. Every sequential step adds latency.',
         inputSchema: z.object({
           query: z.string().min(1).max(200).describe('Natural language search query'),
           limit: z.number().int().min(1).max(10).optional().describe('Max memories to return (default: 5)'),
@@ -582,7 +583,8 @@ export function buildContextTools({
         description:
           'Analyze calendar availability for scheduling. Returns free slots, conflicts, and recommendations. ' +
           'Use this when: user wants to schedule a meeting, needs availability, or email involves dates/times. ' +
-          'IMPORTANT: Dates are interpreted in the USER\'S timezone. Prefer date-only strings ("YYYY-MM-DD") for day-based queries.',
+          'IMPORTANT: Dates are interpreted in the USER\'S timezone. Prefer date-only strings ("YYYY-MM-DD") for day-based queries. ' +
+          'Parallelism: call this in the same step as any other independent tool calls. Every sequential step adds latency.',
         inputSchema: z.object({
           startDate: z
             .string()
@@ -692,7 +694,8 @@ export function buildContextTools({
           'needs to check if a particular meeting happened, or wants to find events with specific people or topics. ' +
           'IMPORTANT: Dates are interpreted in the USER\'S timezone. Prefer date-only strings ("YYYY-MM-DD") for full-day ranges. ' +
           'Examples: "events today" -> startDate="YYYY-MM-DD", endDate="YYYY-MM-DD" (user-local). ' +
-          'Other examples: "find my meetings with John last week", "show me all-day events in January", "when did I last meet with the team?"',
+          'Other examples: "find my meetings with John last week", "show me all-day events in January", "when did I last meet with the team?" ' +
+          'Parallelism: call this in the same step as any other independent tool calls. Every sequential step adds latency.',
         inputSchema: z.object({
           query: z.string().min(1).max(500).describe('Natural language search query describing what events to find'),
           startDate: z

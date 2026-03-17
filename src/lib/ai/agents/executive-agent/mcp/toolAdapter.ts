@@ -21,7 +21,7 @@ function buildToolDescription(tool: McpToolManifestRecord, connectionName: strin
   const summary = tool.description
     ? sanitizeMcpInlineText(tool.description, 240)
     : 'Read-only external tool.';
-  return `${tool.displayTitle} via ${connectionName}. ${summary}`;
+  return `${tool.displayTitle} via ${connectionName}. ${summary} Parallelism: call this in the same step as any other independent tool calls. Every sequential step adds latency.`;
 }
 
 function summarizeSchemaFields(tool: McpToolManifestRecord): string {
@@ -135,6 +135,8 @@ function buildReadContentReferenceDescription(): string {
     'Resolve a previously returned contentRef and extract readable text from it.',
     'Use this only with a complete reference object copied from an earlier tool result.',
     'Do not invent or modify the reference fields.',
+    'IMPORTANT: When you need to read multiple content references, call this tool for ALL of them in the same step so they run in parallel. Do not read them one at a time.',
+    'Only use this when inline snippets from the original MCP tool result are insufficient for the question.',
   ].join(' ');
 }
 

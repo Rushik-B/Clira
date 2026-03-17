@@ -30,6 +30,8 @@ Examples:
 - How many recruiter emails last month? -> `action="count"` with `queryText="recruiter"` and `filters.relativeWindow="last_30_days"`
 - Summarize GitHub notifications today -> `action="summarize_range"` with `queryText="github"` and `filters.relativeWindow="today"`
 
+Parallelism: If you are calling other tools in the same turn that do not depend on this tool's result, call them ALL in the same step. There is no penalty for parallel calls; every sequential step adds latency.
+
 Invalid patterns:
 - Do not use an `intent` field.
 - Do not stuff structured constraints into `queryText`.
