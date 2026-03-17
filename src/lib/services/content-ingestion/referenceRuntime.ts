@@ -1,10 +1,13 @@
 import { readMcpContentReference } from '@/lib/services/mcp/runtime/contentReferences';
-import { sanitizeContentReferenceForModel } from './referenceModeling';
+import {
+  sanitizeContentExtractionResultForModel,
+  sanitizeContentReferenceForModel,
+} from './referenceModeling';
 import {
   resolveStoredContentReference,
   STORED_CONTENT_SOURCE_KIND,
 } from './referenceStore';
-import { sanitizeContentExtractionResultForModel } from './referenceModeling';
+import { readThirdPartyContentReference } from './thirdPartyReferenceRuntime';
 import type { ContentReference } from './types';
 
 export async function readContentReference(params: {
@@ -45,6 +48,10 @@ export async function readContentReference(params: {
 
   if (params.reference.sourceKind === 'mcp_resource_link') {
     return readMcpContentReference(params);
+  }
+
+  if (params.reference.sourceKind === 'third_party') {
+    return readThirdPartyContentReference(params);
   }
 
   return {
