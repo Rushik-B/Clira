@@ -140,7 +140,7 @@ function resolveFirecrawlDocument(payload: FirecrawlScrapeResponse | null): {
 
   const metadata =
     data.metadata && typeof data.metadata === 'object' && !Array.isArray(data.metadata)
-      ? data.metadata
+      ? (data.metadata as Record<string, unknown>)
       : null;
 
   const markdown = pickFirstString(data.markdown);

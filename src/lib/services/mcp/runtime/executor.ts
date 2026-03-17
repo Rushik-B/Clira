@@ -17,6 +17,8 @@ import type {
   McpExecutionResult,
 } from '@/lib/services/mcp/types';
 
+const MCP_TOOL_HARD_TIMEOUT_MS = 120_000;
+
 function toPrismaActionClass(actionClass: McpActionClass): PrismaMcpActionClass {
   switch (actionClass) {
     case 'read':
@@ -194,10 +196,14 @@ export async function executeMcpTool(
   }
 
   const startedAt = Date.now();
+  const effectiveTimeoutMs = Math.min(
+    request.deadlineMs ?? MCP_TOOL_HARD_TIMEOUT_MS,
+    MCP_TOOL_HARD_TIMEOUT_MS,
+  );
   const client = await createMcpTransportClient({
     connection: connectionWithSecrets.connection,
     secrets: connectionWithSecrets.secrets,
-    timeoutMs: request.deadlineMs,
+    timeoutMs: effectiveTimeoutMs,
   });
 
   let result: McpExecutionResult;
@@ -205,7 +211,7 @@ export async function executeMcpTool(
     const response = await client.callTool(
       registryEntry.tool.toolName,
       request.args,
-      { timeoutMs: request.deadlineMs },
+      { timeoutMs: effectiveTimeoutMs },
     );
     const processedContent = await processMcpResponseContent({
       connection: registryEntry.connection,

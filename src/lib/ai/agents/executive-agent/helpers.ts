@@ -68,9 +68,10 @@ export function extractLatestToolResult(
     const name = record.toolName ?? record.name ?? record.tool;
     if (name !== toolName) continue;
 
-    const result = record.result;
-    if (result && typeof result === 'object') {
-      return result as Record<string, unknown>;
+    // AI SDK v5+ uses `output`; older versions used `result`. Support both.
+    const payload = record.result ?? record.output;
+    if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+      return payload as Record<string, unknown>;
     }
   }
 
