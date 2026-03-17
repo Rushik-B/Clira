@@ -42,7 +42,9 @@ describe('Executive agent prompt', () => {
     const prompt = await buildExecutiveAgentPrompt(input, 'twilio', {
       pendingCalendarInstruction: 'Active pending calendar change exists (pendingId=pc-1).',
       harnessReminders: ['User approval is present; only send the already-shown draft.'],
+      actionPackSummaryLines: ['calendar_mutation_pack: Calendar changes with confirmation-required previews.'],
       mcpToolSummaryLines: ['Notion Workspace: Search docs (read)'],
+      mcpAvailableServerLines: ['Exa Search (exa): Exa Search: 3 read tools'],
       mcpDegradedSummaryLines: ['CRM Mirror: Search CRM unavailable (auth expired)'],
     });
 
@@ -52,8 +54,12 @@ describe('Executive agent prompt', () => {
     expect(prompt.messages[0]?.content).toContain('pendingId=pc-1');
     expect(prompt.messages[0]?.content).toContain('## Harness Reminders');
     expect(prompt.messages[0]?.content).toContain('only send the already-shown draft');
+    expect(prompt.messages[0]?.content).toContain('## Available Action Packs');
+    expect(prompt.messages[0]?.content).toContain('calendar_mutation_pack');
     expect(prompt.messages[0]?.content).toContain('## MCP Tools This Turn');
     expect(prompt.messages[0]?.content).toContain('Search docs');
+    expect(prompt.messages[0]?.content).toContain('## Available MCP Server Packs');
+    expect(prompt.messages[0]?.content).toContain('Exa Search');
     expect(prompt.messages[0]?.content).toContain('## MCP Degraded Tools');
     expect(prompt.messages[0]?.content).toContain('auth expired');
     expect(prompt.messages[0]?.content).toContain('## Current User Request');
