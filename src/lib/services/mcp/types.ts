@@ -9,6 +9,10 @@ export type McpTrustClass = 'first_party' | 'user_configured' | 'third_party';
 export type McpConnectionStatus = 'pending' | 'synced' | 'degraded' | 'disabled';
 export type McpConnectionId = string;
 export type McpServerPackId = string;
+export type McpCapabilityTag =
+  | 'web_search'
+  | 'docs_search'
+  | 'external_knowledge';
 
 export type McpTransportConfig =
   | {

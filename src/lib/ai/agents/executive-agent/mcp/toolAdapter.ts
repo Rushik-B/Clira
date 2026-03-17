@@ -13,6 +13,7 @@ import type {
   McpToolManifestRecord,
 } from '@/lib/services/mcp/types';
 import type { ExecutiveRuntimeContext } from '@/lib/ai/agents/executive-agent/types';
+import type { McpSelectableServerPack } from '@/lib/services/mcp/policy/service';
 import { resolveExecutiveMcpDeadlineMs } from './budgets';
 import { summarizeMcpExecutionResultForModel } from './resultSummaries';
 
@@ -137,48 +138,146 @@ function buildReadContentReferenceDescription(): string {
   ].join(' ');
 }
 
+function buildRequestMcpServerToolsDescription(
+  selectableServerPacks: readonly McpSelectableServerPack[],
+): string {
+  const candidateSummary = selectableServerPacks
+    .map((pack) => `${pack.displayName} (${pack.serverKey})`)
+    .join('; ');
+
+  return [
+    'Request MCP server tools for the next pass when native tools are insufficient and you need an external integration.',
+    'Use this only after deciding which available MCP server pack actually fits the user request.',
+    `Available MCP server packs: ${candidateSummary}.`,
+  ].join(' ');
+}
+
+function buildRequestMcpServerToolsSchema(
+  selectableServerPacks: readonly McpSelectableServerPack[],
+): Record<string, unknown> {
+  return {
+    type: 'object',
+    properties: {
+      connectionIds: {
+        type: 'array',
+        items: {
+          type: 'string',
+          enum: selectableServerPacks.map((pack) => pack.connectionId),
+        },
+        uniqueItems: true,
+        minItems: 1,
+        maxItems: 2,
+        description: 'One or two MCP server packs to expose on the next pass.',
+      },
+      reason: {
+        type: 'string',
+        minLength: 1,
+        maxLength: 240,
+        description: 'Short reason for why these MCP tools are needed.',
+      },
+    },
+    required: ['connectionIds'],
+  };
+}
+
 export function buildExecutiveMcpTools(params: {
   context: ExecutiveRuntimeContext;
   exposure: McpToolExposure | null;
+  selectableServerPacks?: readonly McpSelectableServerPack[] | null;
 }): Record<string, unknown> {
-  if (!params.exposure) {
-    return {};
+  const reuseCache = params.context.toolResultCache;
+  const selectedConnectionIds = new Set(params.exposure?.selectedConnectionIds ?? []);
+  const selectableServerPacks = (params.selectableServerPacks ?? []).filter(
+    (pack) => !selectedConnectionIds.has(pack.connectionId),
+  );
+  const tools: Record<string, any> = {};
+
+  if (selectableServerPacks.length > 0) {
+    tools.request_mcp_server_tools = {
+      description: buildRequestMcpServerToolsDescription(selectableServerPacks),
+      providerInputSchema: buildRequestMcpServerToolsSchema(selectableServerPacks),
+      execute: async (rawArgs: Record<string, unknown>) => {
+        const args =
+          rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)
+            ? rawArgs
+            : {};
+        const allowedConnectionIds = new Set(
+          selectableServerPacks.map((pack) => pack.connectionId),
+        );
+        const requestedConnectionIds = Array.isArray(args.connectionIds)
+          ? args.connectionIds.filter(
+              (value): value is string =>
+                typeof value === 'string' && allowedConnectionIds.has(value),
+            )
+          : [];
+        const uniqueRequestedConnectionIds = Array.from(new Set(requestedConnectionIds));
+
+        if (uniqueRequestedConnectionIds.length === 0) {
+          return {
+            ok: false,
+            error: 'invalid_mcp_server_selection',
+            message: 'Select at least one available MCP server pack.',
+          };
+        }
+
+        const requestedPacks = selectableServerPacks.filter((pack) =>
+          uniqueRequestedConnectionIds.includes(pack.connectionId),
+        );
+
+        return {
+          ok: true,
+          requestedConnectionIds: uniqueRequestedConnectionIds,
+          requestedServerKeys: requestedPacks.map((pack) => pack.serverKey),
+          requestedDisplayNames: requestedPacks.map((pack) => pack.displayName),
+          reason:
+            typeof args.reason === 'string' && args.reason.trim().length > 0
+              ? args.reason.trim()
+              : null,
+          rerunRequired: true,
+        };
+      },
+    };
   }
 
-  const reuseCache = params.context.toolResultCache;
+  if (!params.exposure) {
+    return tools;
+  }
 
-  const tools: Record<string, any> = Object.fromEntries(
-    params.exposure.approvedTools.map((candidate) => [
-      candidate.tool.modelToolName,
-      {
-        description: buildToolDescription(candidate.tool, candidate.connection.displayName),
-        providerInputSchema: candidate.tool.inputSchema,
-        execute: async (args: Record<string, unknown>) => {
-          const cached = reuseCache.getMcp(candidate.tool.modelToolName, args);
-          if (cached !== null) {
-            return cached;
-          }
+  Object.assign(
+    tools,
+    Object.fromEntries(
+      params.exposure.approvedTools.map((candidate) => [
+        candidate.tool.modelToolName,
+        {
+          description: buildToolDescription(candidate.tool, candidate.connection.displayName),
+          providerInputSchema: candidate.tool.inputSchema,
+          execute: async (args: Record<string, unknown>) => {
+            const cached = reuseCache.getMcp(candidate.tool.modelToolName, args);
+            if (cached !== null) {
+              return cached;
+            }
 
-          const result = await executeMcpTool({
-            userId: params.context.input.userId,
-            connectionId: candidate.connection.id,
-            toolName: candidate.tool.modelToolName,
-            args,
-            deadlineMs: resolveExecutiveMcpDeadlineMs(params.context, candidate.tool),
-            requestId: params.context.input.runContext?.runId ?? 'mcp-exec',
-            conversationId: params.context.input.conversationId,
-          });
+            const result = await executeMcpTool({
+              userId: params.context.input.userId,
+              connectionId: candidate.connection.id,
+              toolName: candidate.tool.modelToolName,
+              args,
+              deadlineMs: resolveExecutiveMcpDeadlineMs(params.context, candidate.tool),
+              requestId: params.context.input.runContext?.runId ?? 'mcp-exec',
+              conversationId: params.context.input.conversationId,
+            });
 
-          const summarized = summarizeMcpExecutionResultForModel(result);
+            const summarized = summarizeMcpExecutionResultForModel(result);
 
-          if (candidate.tool.actionClass === 'read' && result.ok) {
-            reuseCache.setMcp(candidate.tool.modelToolName, args, summarized);
-          }
+            if (candidate.tool.actionClass === 'read' && result.ok) {
+              reuseCache.setMcp(candidate.tool.modelToolName, args, summarized);
+            }
 
-          return summarized;
+            return summarized;
+          },
         },
-      },
-    ]),
+      ]),
+    ),
   );
 
   tools.read_content_reference = {

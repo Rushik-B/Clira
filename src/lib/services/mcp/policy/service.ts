@@ -6,6 +6,7 @@ import {
 } from '@/lib/services/mcp/registry/service';
 import { getLatestPendingMcpAction } from '@/lib/services/mcp/runtime/mutationFlow';
 import type {
+  McpCapabilityTag,
   McpPolicyCandidate,
   McpPolicyDecision,
   McpRegistryConnection,
@@ -19,6 +20,8 @@ export type McpSelectableServerPack = {
   serverKey: string;
   displayName: string;
   packDescription: string;
+  capabilityTags: McpCapabilityTag[];
+  eligibleModelToolNames: string[];
 };
 
 function isConnectionOperationalForChannel(params: {
@@ -167,6 +170,48 @@ function candidateRank(candidate: McpPolicyCandidate): number {
         : 2;
 
   return latencyWeight;
+}
+
+function deriveCapabilityTags(params: {
+  connection: McpRegistryConnection['connection'];
+  eligibleTools: readonly McpRegistryConnection['tools'][number][];
+  packDescription: string;
+}): McpCapabilityTag[] {
+  const text = [
+    params.connection.serverKey,
+    params.connection.displayName,
+    params.connection.packDescription ?? '',
+    params.packDescription,
+    ...params.eligibleTools.flatMap((tool) => [
+      tool.toolName,
+      tool.toolSlug,
+      tool.modelToolName,
+      tool.displayTitle,
+      tool.description ?? '',
+    ]),
+  ]
+    .join(' ')
+    .toLowerCase();
+
+  const tags = new Set<McpCapabilityTag>();
+
+  if (/\b(?:web|internet|browse|google)\b/.test(text)) {
+    tags.add('web_search');
+  }
+
+  if (
+    /\b(?:doc|docs|documentation|api|reference|code context|manual|wiki|knowledge base|kb)\b/.test(
+      text,
+    )
+  ) {
+    tags.add('docs_search');
+  }
+
+  if (tags.size > 0 || /\b(?:search|lookup|research|knowledge)\b/.test(text)) {
+    tags.add('external_knowledge');
+  }
+
+  return [...tags];
 }
 
 function buildPromptSummary(params: {
@@ -342,6 +387,15 @@ export async function listSelectableMcpServerPacks(params: {
             entry.connection.displayName,
             eligibleTools,
           ),
+          capabilityTags: deriveCapabilityTags({
+            connection: entry.connection,
+            eligibleTools,
+            packDescription: buildMcpPackDescription(
+              entry.connection.displayName,
+              eligibleTools,
+            ),
+          }),
+          eligibleModelToolNames: eligibleTools.map((tool) => tool.modelToolName),
         },
       ];
     })
