@@ -17,6 +17,7 @@ const MAX_APPROVED_TOOLS = 50;
 export type McpSelectableServerPack = {
   connectionId: string;
   serverKey: string;
+  displayName: string;
   packDescription: string;
 };
 
@@ -336,6 +337,7 @@ export async function listSelectableMcpServerPacks(params: {
         {
           connectionId: entry.connection.id,
           serverKey: entry.connection.serverKey,
+          displayName: entry.connection.displayName,
           packDescription: buildMcpPackDescription(
             entry.connection.displayName,
             eligibleTools,

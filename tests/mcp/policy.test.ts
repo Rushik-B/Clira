@@ -499,6 +499,7 @@ describe('MCP policy service', () => {
       {
         connectionId: 'conn-mixed',
         serverKey: 'docs',
+        displayName: 'Docs Workspace',
         packDescription: 'Docs Workspace: 1 read tools (Search docs)',
       },
     ]);

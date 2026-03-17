@@ -77,11 +77,13 @@ function buildInput(params: {
 function buildMcpServerPack(overrides: Partial<{
   connectionId: string;
   serverKey: string;
+  displayName: string;
   packDescription: string;
 }> = {}) {
   return {
     connectionId: 'mcp-conn-1',
     serverKey: 'notion',
+    displayName: 'Notion Workspace',
     packDescription: 'Notion Workspace: 3 read tools (Search docs, Read page)',
     ...overrides,
   };
@@ -448,15 +450,71 @@ describe('Executive agent selector', () => {
     expect(selectorPrompt).toContain('Dynamic MCP server packs:');
     expect(selectorPrompt).toContain('mcp_server:notion');
     expect(selectorPrompt).toContain(
-      'If the user explicitly names a server, vendor, tool, or says "use <server> mcp/tools", include that server in mcpServerKeys.',
+      'Return mcp_server:<serverKey> whenever the request depends on a listed MCP server.',
     );
     expect(selectorPrompt).toContain(
-      'Treat plain-English capability requests as MCP routing signals.',
+      'Explicit server mentions and plain-English capability requests both count.',
     );
     expect(selectorPrompt).toContain(
-      'When an MCP server is needed, choosing only native packIds is insufficient.',
+      'Do not let generic capability bans override a matching listed MCP server.',
     );
     expect(selectorPrompt).toContain('You may select both a native pack and one or more MCP server packs');
+  });
+
+  test('injects a dynamic selector notice when the user explicitly names a synced MCP server alias', async () => {
+    vi.stubEnv('EA_SELECTOR_CEREBRAS_ENABLED', 'true');
+    vi.stubEnv('EA_SELECTOR_CEREBRAS_TWILIO', 'true');
+    vi.stubEnv('EA_SELECTOR_CEREBRAS_MODEL', 'llama3.1-8b');
+    vi.stubEnv('CEREBRAS_API_KEY', 'test-key');
+
+    listSelectableMcpServerPacksMock.mockResolvedValue([
+      buildMcpServerPack({
+        serverKey: 'exa_mcp',
+        displayName: 'Exa MCP',
+        packDescription: 'Exa MCP: 2 read tools (Web search, Code context)',
+      }),
+    ]);
+
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                packIds: ['core_recall_pack'],
+                mcpServerKeys: ['exa_mcp'],
+              }),
+            },
+          },
+        ],
+        id: 'resp-exa-mcp',
+      }),
+    } as Response);
+
+    const input = buildInput({
+      userRequest: 'exa',
+    });
+    const features = extractExecutiveTurnFeatures({
+      input,
+      pendingCalendarChangePresent: false,
+    });
+
+    const selection = await selectExecutiveToolPackForTurn({
+      input,
+      features,
+    });
+
+    expect(selection.mcpConnectionIds).toEqual(['mcp-conn-1']);
+
+    const [, init] = fetchMock.mock.calls[0] ?? [];
+    const body = JSON.parse(String(init?.body));
+    const selectorPrompt = body.messages?.[1]?.content as string;
+
+    expect(selectorPrompt).toContain('Selector notice:');
+    expect(selectorPrompt).toContain(
+      'The latest user message explicitly mentioned synced MCP server name(s): exa_mcp via exa.',
+    );
   });
 
   test('treats plain "sure" as a calendar commit confirmation', () => {

@@ -27,6 +27,17 @@ const TOOL_PACK_IDS = [
   'email_send_pack',
 ] as const satisfies readonly ToolPackId[];
 
+const MCP_ALIAS_NOISE_WORDS = new Set([
+  'mcp',
+  'server',
+  'servers',
+  'tool',
+  'tools',
+  'toolkit',
+  'workspace',
+  'lms',
+]);
+
 function buildAllPackSelection(params: {
   reasons: string[];
   reminders?: string[];
@@ -42,6 +53,15 @@ function buildAllPackSelection(params: {
 
 function normalizeText(value: string): string {
   return value.trim().toLowerCase().replace(/[.!?]+$/g, '');
+}
+
+function normalizeMcpMatchText(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function hasAnyPhrase(text: string, patterns: readonly string[]): boolean {
@@ -641,13 +661,100 @@ function formatRecentHistory(
     .join('\n');
 }
 
+type MatchedMcpServerHint = {
+  connectionId: string;
+  serverKey: string;
+  matchedAliases: string[];
+};
+
+function buildMcpAliasCandidates(pack: McpSelectableServerPack): string[] {
+  const aliases = new Set<string>();
+
+  const addAlias = (value: string) => {
+    const normalized = normalizeMcpMatchText(value);
+    if (!normalized || normalized.length < 2) return;
+    aliases.add(normalized);
+  };
+
+  const addFromSource = (value: string) => {
+    const normalized = normalizeMcpMatchText(value);
+    if (!normalized) return;
+
+    addAlias(normalized);
+
+    const strippedTokens = normalized
+      .split(' ')
+      .filter((token) => token && !MCP_ALIAS_NOISE_WORDS.has(token));
+
+    if (strippedTokens.length === 0) return;
+
+    const stripped = strippedTokens.join(' ');
+    addAlias(stripped);
+
+    if (strippedTokens.length === 1) {
+      addAlias(strippedTokens[0]!);
+    }
+  };
+
+  addFromSource(pack.serverKey);
+  addFromSource(pack.displayName);
+
+  return Array.from(aliases).sort((left, right) => right.length - left.length);
+}
+
+function hasExplicitAliasMatch(normalizedText: string, alias: string): boolean {
+  return ` ${normalizedText} `.includes(` ${alias} `);
+}
+
+function detectExplicitMcpServerMentions(params: {
+  userRequest: string;
+  mcpServerPacks: readonly McpSelectableServerPack[];
+}): MatchedMcpServerHint[] {
+  const normalizedUserRequest = normalizeMcpMatchText(params.userRequest);
+  if (!normalizedUserRequest) return [];
+
+  return params.mcpServerPacks
+    .map((pack) => {
+      const matchedAliases = buildMcpAliasCandidates(pack).filter((alias) =>
+        hasExplicitAliasMatch(normalizedUserRequest, alias),
+      );
+
+      if (matchedAliases.length === 0) {
+        return null;
+      }
+
+      return {
+        connectionId: pack.connectionId,
+        serverKey: pack.serverKey,
+        matchedAliases: matchedAliases.slice(0, 3),
+      } satisfies MatchedMcpServerHint;
+    })
+    .filter((hint): hint is MatchedMcpServerHint => Boolean(hint));
+}
+
+function buildExplicitMcpSelectorNotice(
+  matches: readonly MatchedMcpServerHint[],
+): string[] {
+  if (matches.length === 0) return [];
+
+  return [
+    '',
+    'Selector notice:',
+    `- The latest user message explicitly mentioned synced MCP server name(s): ${matches
+      .map((match) => `${match.serverKey} via ${match.matchedAliases.join(', ')}`)
+      .join('; ')}.`,
+    '- Treat this as a strong routing signal. Include those exact server keys in mcpServerKeys unless the surrounding context clearly rules them out.',
+  ];
+}
+
 function buildSelectorPrompt(params: {
   userRequest: string;
   features: ExecutiveTurnFeatures;
   conversationHistory: ConversationMessageDTO[];
   mcpServerPacks: readonly McpSelectableServerPack[];
+  explicitMcpMatches: readonly MatchedMcpServerHint[];
 }): string {
-  const { userRequest, features, conversationHistory, mcpServerPacks } = params;
+  const { userRequest, features, conversationHistory, mcpServerPacks, explicitMcpMatches } = params;
 
   return [
     'Pick one or more packIds for the user message.',
@@ -693,15 +800,13 @@ function buildSelectorPrompt(params: {
           ...mcpServerPacks.map(
             (pack) => `mcp_server:${pack.serverKey} — ${pack.packDescription}`,
           ),
+          ...buildExplicitMcpSelectorNotice(explicitMcpMatches),
           '',
           'MCP routing principles:',
-          '- Use mcp_server:<serverKey> when the user request involves capabilities provided by that external server.',
-          '- If the user explicitly names a server, vendor, tool, or says "use <server> mcp/tools", include that server in mcpServerKeys. Omitting it is incorrect.',
-          '- Do not require an exact one-word match. Requests like "use the Exa MCP", "try the Nia search tool again", or "check Canvas" still target that server.',
-          '- Treat plain-English capability requests as MCP routing signals. If a listed MCP server provides web or internet search, requests like "search the internet", "browse the web", or "look this up online" should route to that MCP server.',
-          '- If the recent conversation was already about a specific MCP server/tool and the user says "try again", "use that tool", "check the tools again", or similar, keep routing to that same server unless the user clearly changes target.',
-          '- Generic capability bans apply only when no matching MCP server is selected. If a listed MCP server provides the needed capability this turn, route to it instead of pretending the capability does not exist.',
-          '- When an MCP server is needed, choosing only native packIds is insufficient. You must also return the matching mcpServerKeys entry.',
+          '- Return mcp_server:<serverKey> whenever the request depends on a listed MCP server. Native packIds alone are not enough.',
+          '- Explicit server mentions and plain-English capability requests both count. Example: if a listed server provides web search, requests like "search the internet" or "browse the web" should route to that server.',
+          '- If the recent conversation was already about a specific MCP server/tool and the user says "try again", "use that tool", or similar, keep routing to that same server unless the user clearly changes target.',
+          '- Do not let generic capability bans override a matching listed MCP server. If the server is listed here and fits the request, route to it.',
           '- You may select both a native pack and one or more MCP server packs in the same turn.',
         ]
       : []),
@@ -725,9 +830,8 @@ function buildSelectorPrompt(params: {
     '"show me how you reply to my mom right now" → settings_mutation_pack',
     '"update my reply rules and remind me tomorrow at 9" → ["settings_mutation_pack", "reminder_alert_pack"]',
     '"yes send it" [draftCandidatePresent=true] → email_send_pack',
-    '"use exa mcp and search the internet for something" → core_recall_pack + mcp_server:exa',
-    '"browse the web for this" when a web-search MCP server is listed → include that mcp_server:<serverKey>',
-    '"try the nia mcp search tool again" right after a nia tool failure → core_recall_pack + mcp_server:nia',
+    '"use a synced MCP by name" → include the matching mcp_server:<serverKey>',
+    '"search the internet" when a synced MCP offers web search → include that mcp_server:<serverKey>',
     '',
     `State: draftCandidatePresent=${features.draftCandidatePresent}, explicitSendApproval=${features.explicitSendApproval}, pendingCalendarChangePresent=${features.pendingCalendarChangePresent}`,
     '',
@@ -745,6 +849,7 @@ async function callCerebrasSelector(params: {
   features: ExecutiveTurnFeatures;
   conversationHistory: ConversationMessageDTO[];
   mcpServerPacks: readonly McpSelectableServerPack[];
+  explicitMcpMatches: readonly MatchedMcpServerHint[];
   abortSignal?: AbortSignal;
 }): Promise<z.infer<typeof selectorOutputSchema>> {
   const apiKey = process.env.CEREBRAS_API_KEY?.trim();
@@ -776,6 +881,7 @@ async function callCerebrasSelector(params: {
           features: params.features,
           conversationHistory: params.conversationHistory,
           mcpServerPacks: params.mcpServerPacks,
+          explicitMcpMatches: params.explicitMcpMatches,
         }),
       },
     ],
@@ -910,6 +1016,10 @@ export async function selectExecutiveToolPackForTurn(params: {
     userId: params.input.userId,
     channel: params.features.channel,
   });
+  const explicitMcpMatches = detectExplicitMcpServerMentions({
+    userRequest: params.input.userRequest,
+    mcpServerPacks,
+  });
 
   if (!isSelectorLlmEnabled(params.features.channel)) {
     return buildAllPackSelection({
@@ -931,6 +1041,7 @@ export async function selectExecutiveToolPackForTurn(params: {
       features: params.features,
       conversationHistory: params.input.conversationHistory,
       mcpServerPacks,
+      explicitMcpMatches,
       abortSignal: params.input.abortSignal,
     });
 
