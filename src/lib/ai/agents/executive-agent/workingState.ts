@@ -23,9 +23,6 @@ function detectDraftMarkers(text: string): boolean {
 
 function mapPackToPrimaryDomain(packId: ToolPackId): ExecutivePrimaryDomain {
   switch (packId) {
-    case 'inbox_context_pack':
-      return 'inbox';
-    case 'calendar_query_pack':
     case 'calendar_mutation_pack':
       return 'calendar';
     case 'reminder_alert_pack':
@@ -35,7 +32,7 @@ function mapPackToPrimaryDomain(packId: ToolPackId): ExecutivePrimaryDomain {
     case 'email_send_pack':
       return 'email_send';
     default:
-      return 'memory';
+      return 'context';
   }
 }
 
@@ -48,7 +45,9 @@ function initialPhaseForPack(
   if (packId === 'settings_mutation_pack') return 'act';
   if (packId === 'calendar_mutation_pack') {
     if (features.pendingCalendarChangePresent) {
-      return features.pendingCalendarModifyIntent ? 'draft' : 'act';
+      return features.pendingCalendarConfirmIntent || features.pendingCalendarCancelIntent
+        ? 'act'
+        : 'draft';
     }
     return 'draft';
   }
@@ -68,20 +67,14 @@ function initialNextStep(
   }
   if (packId === 'calendar_mutation_pack') {
     if (features.pendingCalendarChangePresent) {
-      if (features.pendingCalendarModifyIntent) {
-        return 'Revise the pending calendar plan.';
+      if (features.pendingCalendarConfirmIntent || features.pendingCalendarCancelIntent) {
+        return 'Resolve the pending calendar change safely.';
       }
-      return 'Resolve the pending calendar change safely.';
+      return 'Revise the pending calendar plan safely.';
     }
     return 'Build one calendar change preview.';
   }
-  if (packId === 'calendar_query_pack') {
-    return 'Retrieve the minimum calendar context needed.';
-  }
-  if (packId === 'inbox_context_pack') {
-    return 'Retrieve the minimum inbox context needed.';
-  }
-  return 'Check memory first, then answer directly.';
+  return 'Gather the minimum safe context needed, then answer directly.';
 }
 
 function summarizeToolResult(toolName: string, result: unknown): string | null {

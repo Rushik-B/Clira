@@ -3,7 +3,7 @@ import type {
   ToolPackId,
 } from './types';
 
-export const EXECUTIVE_AGENT_PACK_VERSION = 'ea-packs-v2';
+export const EXECUTIVE_AGENT_PACK_VERSION = 'ea-packs-v3';
 
 export const EXECUTIVE_TOOL_NAMES = [
   'search_memory',
@@ -14,6 +14,7 @@ export const EXECUTIVE_TOOL_NAMES = [
   'read_email_pdf_attachment',
   'search_calendar',
   'check_calendar',
+  'get_reply_preferences',
   'plan_calendar_change',
   'commit_calendar_change',
   'add_email_alert',
@@ -24,52 +25,30 @@ export const EXECUTIVE_TOOL_NAMES = [
   'snooze_reminder',
   'dismiss_reminder',
   'cancel_reminder',
-  'get_reply_preferences',
   'manage_reply_preferences',
   'send_email',
 ] as const;
 
 export type ExecutiveToolName = (typeof EXECUTIVE_TOOL_NAMES)[number];
 
-const RAW_TOOL_PACKS: Record<ToolPackId, readonly ExecutiveToolName[]> = {
-  core_recall_pack: [
-    'search_memory',
-    'append_to_supermemory',
-    'send_progress_update',
-    'list_inbox_emails',
-  ],
-  inbox_context_pack: [
-    'search_memory',
-    'append_to_supermemory',
-    'send_progress_update',
-    'search_inbox_context',
-    'list_inbox_emails',
-    'read_email_pdf_attachment',
-    'search_calendar',
-  ],
-  calendar_query_pack: [
-    'search_memory',
-    'append_to_supermemory',
-    'send_progress_update',
-    'search_calendar',
-    'check_calendar',
-    'search_inbox_context',
-    'list_inbox_emails',
-    'read_email_pdf_attachment',
-  ],
+export const SAFE_CONTEXT_PACK_TOOLS = [
+  'search_memory',
+  'append_to_supermemory',
+  'send_progress_update',
+  'search_inbox_context',
+  'list_inbox_emails',
+  'read_email_pdf_attachment',
+  'search_calendar',
+  'check_calendar',
+  'get_reply_preferences',
+] as const satisfies readonly ExecutiveToolName[];
+
+const ACTION_PACK_TOOLS = {
   calendar_mutation_pack: [
-    'search_memory',
-    'append_to_supermemory',
-    'send_progress_update',
-    'search_calendar',
-    'check_calendar',
     'plan_calendar_change',
     'commit_calendar_change',
   ],
   reminder_alert_pack: [
-    'search_memory',
-    'append_to_supermemory',
-    'send_progress_update',
     'add_email_alert',
     'remove_email_alert',
     'list_email_alerts',
@@ -79,52 +58,90 @@ const RAW_TOOL_PACKS: Record<ToolPackId, readonly ExecutiveToolName[]> = {
     'dismiss_reminder',
     'cancel_reminder',
   ],
-  settings_mutation_pack: [
-    'search_memory',
-    'send_progress_update',
-    'get_reply_preferences',
-    'manage_reply_preferences',
-  ],
-  email_send_pack: [
-    'search_memory',
-    'append_to_supermemory',
-    'send_progress_update',
-    'search_inbox_context',
-    'read_email_pdf_attachment',
-    'send_email',
-  ],
+  settings_mutation_pack: ['manage_reply_preferences'],
+  email_send_pack: ['send_email'],
+} as const satisfies Record<
+  Exclude<ToolPackId, 'safe_context_pack'>,
+  readonly ExecutiveToolName[]
+>;
+
+const RAW_TOOL_PACKS: Record<ToolPackId, readonly ExecutiveToolName[]> = {
+  safe_context_pack: SAFE_CONTEXT_PACK_TOOLS,
+  ...ACTION_PACK_TOOLS,
 };
 
-function sortToolNames(
-  toolNames: readonly ExecutiveToolName[],
-): readonly ExecutiveToolName[] {
-  return [...toolNames].sort();
-}
+export const EXECUTIVE_TOOL_PACKS = RAW_TOOL_PACKS;
 
-export const EXECUTIVE_TOOL_PACKS = {
-  core_recall_pack: sortToolNames(RAW_TOOL_PACKS.core_recall_pack),
-  inbox_context_pack: sortToolNames(RAW_TOOL_PACKS.inbox_context_pack),
-  calendar_query_pack: sortToolNames(RAW_TOOL_PACKS.calendar_query_pack),
-  calendar_mutation_pack: sortToolNames(RAW_TOOL_PACKS.calendar_mutation_pack),
-  reminder_alert_pack: sortToolNames(RAW_TOOL_PACKS.reminder_alert_pack),
-  settings_mutation_pack: sortToolNames(RAW_TOOL_PACKS.settings_mutation_pack),
-  email_send_pack: sortToolNames(RAW_TOOL_PACKS.email_send_pack),
-} satisfies Record<ToolPackId, readonly ExecutiveToolName[]>;
+export const EXECUTIVE_PACK_ORDER = [
+  'safe_context_pack',
+  'calendar_mutation_pack',
+  'reminder_alert_pack',
+  'settings_mutation_pack',
+  'email_send_pack',
+] as const satisfies readonly ToolPackId[];
+
+const REQUESTABLE_ACTION_PACK_ORDER = [
+  'calendar_mutation_pack',
+  'reminder_alert_pack',
+  'settings_mutation_pack',
+  'email_send_pack',
+] as const satisfies readonly Exclude<ToolPackId, 'safe_context_pack'>[];
+
+const ACTION_PACK_REQUEST_SUMMARIES: Record<
+  Exclude<ToolPackId, 'safe_context_pack'>,
+  string
+> = {
+  calendar_mutation_pack:
+    'Calendar changes: plan or confirm create/update/delete calendar actions. Commit only works when a pending calendar change exists.',
+  reminder_alert_pack:
+    'Reminders and alerts: create, list, snooze, dismiss, cancel, and manage email alerts.',
+  settings_mutation_pack:
+    'Reply preference updates: store standing planner/style instructions and sender-specific reply rules.',
+  email_send_pack:
+    'Email send: send the already-approved draft only when explicit approval and a valid draft candidate exist.',
+};
+
+const TOOL_TO_PACK_ID = new Map<ExecutiveToolName, ToolPackId>();
+for (const packId of EXECUTIVE_PACK_ORDER) {
+  for (const toolName of EXECUTIVE_TOOL_PACKS[packId]) {
+    TOOL_TO_PACK_ID.set(toolName, packId);
+  }
+}
 
 export function getToolPackToolNames(packId: ToolPackId): readonly ExecutiveToolName[] {
   return EXECUTIVE_TOOL_PACKS[packId];
 }
 
-export function isReadOnlyPack(packId: ToolPackId): boolean {
-  return (
-    packId === 'core_recall_pack' ||
-    packId === 'inbox_context_pack' ||
-    packId === 'calendar_query_pack'
-  );
+export function getOwningPackForToolName(
+  toolName: string,
+): ToolPackId | null {
+  return (TOOL_TO_PACK_ID.get(toolName as ExecutiveToolName) ?? null);
 }
 
-function isResolutionIntent(features: ExecutiveTurnFeatures): boolean {
+export function isReadOnlyPack(packId: ToolPackId): boolean {
+  return packId === 'safe_context_pack';
+}
+
+function isPendingCalendarResolutionIntent(features: ExecutiveTurnFeatures): boolean {
   return features.pendingCalendarConfirmIntent || features.pendingCalendarCancelIntent;
+}
+
+export function listRequestableActionPackIds(
+  features: ExecutiveTurnFeatures,
+): Exclude<ToolPackId, 'safe_context_pack'>[] {
+  return REQUESTABLE_ACTION_PACK_ORDER.filter((packId) => {
+    if (packId === 'email_send_pack') {
+      return features.explicitSendApproval && features.draftCandidatePresent;
+    }
+
+    return true;
+  });
+}
+
+export function getActionPackRequestSummary(
+  packId: Exclude<ToolPackId, 'safe_context_pack'>,
+): string {
+  return ACTION_PACK_REQUEST_SUMMARIES[packId];
 }
 
 export function buildPackToolAllowlist(
@@ -132,37 +149,39 @@ export function buildPackToolAllowlist(
   features: ExecutiveTurnFeatures,
 ): readonly ExecutiveToolName[] {
   const allowlist = new Set<ExecutiveToolName>(getToolPackToolNames(packId));
-  const resolutionIntent = isResolutionIntent(features);
 
-  if (!features.explicitSendApproval || !features.draftCandidatePresent) {
-    allowlist.delete('send_email');
+  if (packId === 'email_send_pack') {
+    if (!features.explicitSendApproval || !features.draftCandidatePresent) {
+      allowlist.delete('send_email');
+    }
   }
 
-  // commit_calendar_change is available whenever a pending change exists and the user
-  // is not explicitly trying to modify the plan. The tool's own decision parameter
-  // ("confirm" | "cancel") is the real safety gate — the model must choose explicitly.
-  if (!features.pendingCalendarChangePresent || features.pendingCalendarModifyIntent) {
-    allowlist.delete('commit_calendar_change');
+  if (packId === 'calendar_mutation_pack') {
+    const resolutionIntent = isPendingCalendarResolutionIntent(features);
+
+    if (!features.pendingCalendarChangePresent || !resolutionIntent) {
+      allowlist.delete('commit_calendar_change');
+    }
+
+    if (features.pendingCalendarChangePresent && resolutionIntent) {
+      allowlist.delete('plan_calendar_change');
+    }
   }
 
-  // Remove plan_calendar_change unless:
-  // - regex detected mutation intent, OR
-  // - pending calendar change is being modified, OR
-  // - the selector explicitly chose calendar_mutation_pack (LLM detected intent from context)
-  if (
-    !features.calendarMutationIntent &&
-    !features.pendingCalendarModifyIntent &&
-    packId !== 'calendar_mutation_pack'
-  ) {
-    allowlist.delete('plan_calendar_change');
+  return getToolPackToolNames(packId).filter((toolName) => allowlist.has(toolName));
+}
+
+function getOrderedPackIdsForSelection(packIds: readonly ToolPackId[]): ToolPackId[] {
+  const packSet = new Set(packIds);
+  const ordered: ToolPackId[] = [];
+
+  for (const packId of EXECUTIVE_PACK_ORDER) {
+    if (packSet.has(packId)) {
+      ordered.push(packId);
+    }
   }
 
-  // Don't re-plan when user is confirming or cancelling an existing pending change.
-  if (features.pendingCalendarChangePresent && resolutionIntent) {
-    allowlist.delete('plan_calendar_change');
-  }
-
-  return [...allowlist].sort();
+  return ordered;
 }
 
 export function buildPackToolAllowlistForSelection(
@@ -171,11 +190,11 @@ export function buildPackToolAllowlistForSelection(
 ): readonly ExecutiveToolName[] {
   const allowlist = new Set<ExecutiveToolName>();
 
-  for (const packId of packIds) {
+  for (const packId of getOrderedPackIdsForSelection(packIds)) {
     for (const toolName of buildPackToolAllowlist(packId, features)) {
       allowlist.add(toolName);
     }
   }
 
-  return [...allowlist].sort();
+  return EXECUTIVE_TOOL_NAMES.filter((toolName) => allowlist.has(toolName));
 }

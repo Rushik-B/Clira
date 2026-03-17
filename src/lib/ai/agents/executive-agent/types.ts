@@ -22,6 +22,9 @@ import type { AiTraceContext } from '@/lib/ai/tracing';
 import type {
   McpToolExposure,
 } from '@/lib/services/mcp/types';
+import type {
+  McpSelectableServerPack,
+} from '@/lib/services/mcp/policy/service';
 
 export interface ExecutiveAgentInput {
   userId: string;
@@ -38,9 +41,7 @@ export interface ExecutiveAgentInput {
     burstId: string;
     classifierDecision?: 'supersede' | 'followup' | 'ambiguous' | null;
     priorPack?:
-      | 'core_recall_pack'
-      | 'inbox_context_pack'
-      | 'calendar_query_pack'
+      | 'safe_context_pack'
       | 'calendar_mutation_pack'
       | 'reminder_alert_pack'
       | 'settings_mutation_pack'
@@ -66,9 +67,7 @@ export interface ExecutiveAgentOutput {
 }
 
 export type ToolPackId =
-  | 'core_recall_pack'
-  | 'inbox_context_pack'
-  | 'calendar_query_pack'
+  | 'safe_context_pack'
   | 'calendar_mutation_pack'
   | 'reminder_alert_pack'
   | 'settings_mutation_pack'
@@ -85,8 +84,7 @@ export type ExecutiveWorkingStatePhase =
   | 'failed';
 
 export type ExecutivePrimaryDomain =
-  | 'memory'
-  | 'inbox'
+  | 'context'
   | 'calendar'
   | 'reminder'
   | 'settings'
@@ -114,25 +112,20 @@ export interface ExecutiveTurnFeatures {
   explicitSendApproval: boolean;
   draftCandidatePresent: boolean;
   pendingCalendarChangePresent: boolean;
-  calendarMutationIntent: boolean;
-  calendarQueryIntent: boolean;
-  workloadOverviewIntent: boolean;
-  reminderIntent: boolean;
-  alertIntent: boolean;
   channel: ProgressUpdateChannel;
   hasRecentPendingCalendarPreview: boolean;
   pendingCalendarConfirmIntent: boolean;
   pendingCalendarCancelIntent: boolean;
-  pendingCalendarModifyIntent: boolean;
   draftCandidateReason: string | null;
 }
 
-export interface PackSelection {
-  packId: ToolPackId;
+export interface ToolExposurePlan {
+  primaryPack: ToolPackId;
   packIds: ToolPackId[];
   mcpConnectionIds: string[];
   reasons: string[];
   reminders: string[];
+  repairAttempted: boolean;
 }
 
 export type ExecutivePromptMessage = {
@@ -179,7 +172,7 @@ export type ExecutiveRuntimeContext = {
   retrievalProfile: RetrievalProfile;
   selectedPack: ToolPackId;
   selectedPacks: ToolPackId[];
-  selectorReasons: string[];
+  exposureReasons: string[];
   turnFeatures: ExecutiveTurnFeatures;
   userTimezone: string;
   currentTimeUtc: string;
@@ -200,4 +193,6 @@ export type ExecutiveRuntimeContext = {
   ) => void;
   toolResultCache: ExecutiveToolResultReuseCache;
   mcpToolExposure?: McpToolExposure | null;
+  mcpSelectableServerPacks?: readonly McpSelectableServerPack[] | null;
+  requestableActionPackIds?: readonly Exclude<ToolPackId, 'safe_context_pack'>[] | null;
 };

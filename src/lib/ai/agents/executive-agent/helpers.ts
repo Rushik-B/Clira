@@ -151,6 +151,52 @@ export function extractUserFacingToolText(
   return null;
 }
 
+export function extractRequestedMcpConnectionIdsFromExecution(params: {
+  toolResults: unknown;
+  steps?: unknown;
+}): string[] {
+  const result = extractLatestToolResultFromExecution({
+    toolResults: params.toolResults,
+    steps: params.steps,
+    toolName: 'request_mcp_server_tools',
+  });
+
+  const requestedConnectionIds = Array.isArray(result?.requestedConnectionIds)
+    ? result.requestedConnectionIds.filter(
+        (value): value is string => typeof value === 'string' && value.length > 0,
+      )
+    : [];
+
+  return Array.from(new Set(requestedConnectionIds));
+}
+
+export function extractRequestedPackIdsFromExecution(params: {
+  toolResults: unknown;
+  steps?: unknown;
+}): ToolPackId[] {
+  const result = extractLatestToolResultFromExecution({
+    toolResults: params.toolResults,
+    steps: params.steps,
+    toolName: 'request_tool_pack_exposure',
+  });
+
+  const requestedPackIds = Array.isArray(result?.requestedPackIds)
+    ? result.requestedPackIds.filter(
+        (value): value is ToolPackId =>
+          typeof value === 'string' &&
+          [
+            'safe_context_pack',
+            'calendar_mutation_pack',
+            'reminder_alert_pack',
+            'settings_mutation_pack',
+            'email_send_pack',
+          ].includes(value),
+      )
+    : [];
+
+  return Array.from(new Set(requestedPackIds));
+}
+
 function extractLatestToolResultFromExecution(params: {
   toolResults: unknown;
   steps?: unknown;
@@ -258,10 +304,8 @@ export function buildTerminalFallbackResponse(
     context?.selectedPack === 'calendar_mutation_pack' ||
     Boolean(pendingChangeId) ||
     phase === 'await_approval' ||
-    context?.turnFeatures?.calendarMutationIntent === true ||
     context?.turnFeatures?.pendingCalendarConfirmIntent === true ||
-    context?.turnFeatures?.pendingCalendarCancelIntent === true ||
-    context?.turnFeatures?.pendingCalendarModifyIntent === true;
+    context?.turnFeatures?.pendingCalendarCancelIntent === true;
 
   if (isCalendarMutationFallbackTurn) {
 
@@ -290,12 +334,8 @@ export function buildTerminalFallbackResponse(
     return 'I still have the draft ready. Say "send it" when you want me to send it.';
   }
 
-  if (context?.selectedPack === 'calendar_query_pack') {
-    return 'I did not finish that calendar lookup cleanly. Ask again and I\'ll re-check it.';
-  }
-
-  if (context?.selectedPack === 'inbox_context_pack') {
-    return 'I did not finish that inbox lookup cleanly. Ask again and I\'ll re-check your email.';
+  if (context?.selectedPack === 'safe_context_pack') {
+    return 'I did not finish that cleanly. Ask again and I\'ll re-check the relevant context.';
   }
 
   return 'I did not finish that cleanly. Ask again and I\'ll retry it.';
@@ -906,6 +946,8 @@ type ToolTimingMetadata = {
 };
 
 const DEFER_ON_STALE_TOOLS = new Set([
+  'request_tool_pack_exposure',
+  'request_mcp_server_tools',
   'send_email',
   'plan_calendar_change',
   'commit_calendar_change',
