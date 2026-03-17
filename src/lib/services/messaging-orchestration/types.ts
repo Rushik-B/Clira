@@ -23,9 +23,7 @@ export type RelevanceClassification = {
 export type RunPhase = 'running' | 'commit_boundary' | 'completed';
 
 export type RunPackId =
-  | 'core_recall_pack'
-  | 'inbox_context_pack'
-  | 'calendar_query_pack'
+  | 'safe_context_pack'
   | 'calendar_mutation_pack'
   | 'reminder_alert_pack'
   | 'settings_mutation_pack'

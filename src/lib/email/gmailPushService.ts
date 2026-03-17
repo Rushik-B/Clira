@@ -818,7 +818,8 @@ export class GmailPushService {
                   email: {
                     from: emailData.from,
                     subject: emailData.subject,
-                    snippet: (emailData.snippet || emailData.body || '').slice(0, 500),
+                    // Use a larger window so decisive sentences are not truncated
+                    snippet: (emailData.snippet || emailData.body || '').slice(0, 5000),
                   },
                   alert: {
                     id: routerDecision.matchedAlertId,
