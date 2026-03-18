@@ -37,6 +37,7 @@ import {
   emitOrchestratorEvent,
   getMessagingOrchestrator,
   isDuplicateInboundFromAdapter,
+  isAbortError,
   type ChannelAdapter,
   type RunContext,
 } from '@/lib/services/messaging-orchestration';
@@ -67,19 +68,6 @@ function isVoiceMemoNoContent(transcript: string): boolean {
   const t = transcript.trim().toLowerCase();
   if (!t) return true;
   return VOICE_MEMO_NO_CONTENT_PHRASES.some((phrase) => t === phrase || t.startsWith(phrase));
-}
-
-function isAbortError(e: unknown): boolean {
-  if (e && typeof e === 'object') {
-    if ((e as { code?: unknown }).code === 'abort') return true;
-  }
-  if (e instanceof Error) {
-    return (
-      e.name === 'AbortError' ||
-      /abort|aborted|cancel|superseded/i.test(e.message ?? '')
-    );
-  }
-  return false;
 }
 
 function detectCommand(text: string): Command {
