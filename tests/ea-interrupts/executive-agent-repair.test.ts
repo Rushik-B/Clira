@@ -331,6 +331,68 @@ describe('Executive agent repair rerun', () => {
     });
   });
 
+  test('reruns into media delivery when the turn requests the media delivery pack', async () => {
+    let buildCount = 0;
+    buildExecutiveAgentToolsMock.mockImplementation(() => {
+      buildCount += 1;
+      return buildCount === 1
+        ? {
+            search_inbox_context: tool('search_inbox_context'),
+            request_tool_pack_exposure: tool('request_tool_pack_exposure'),
+          }
+        : {
+            search_inbox_context: tool('search_inbox_context'),
+            deliver_content_reference: tool('deliver_content_reference'),
+          };
+    });
+
+    callTextWithToolsMock
+      .mockResolvedValueOnce({
+        text: '',
+        toolCalls: [{ toolName: 'request_tool_pack_exposure' }],
+        toolResults: [
+          {
+            toolName: 'request_tool_pack_exposure',
+            result: {
+              ok: true,
+              requestedPackIds: ['media_delivery_pack'],
+              rerunRequired: true,
+            },
+          },
+        ],
+        steps: [{ toolCalls: [{ toolName: 'request_tool_pack_exposure' }] }],
+        toolBudget: { totalCalls: 1, perTool: { request_tool_pack_exposure: 1 } },
+      })
+      .mockResolvedValueOnce({
+        text: 'Delivered to Telegram.',
+        toolCalls: [{ toolName: 'deliver_content_reference' }],
+        toolResults: [
+          {
+            toolName: 'deliver_content_reference',
+            result: { success: true, message: 'Delivered.' },
+          },
+        ],
+        steps: [{ toolCalls: [{ toolName: 'deliver_content_reference' }] }],
+        toolBudget: { totalCalls: 1, perTool: { deliver_content_reference: 1 } },
+      });
+
+    const agent = new ExecutiveAgent();
+    const result = await agent.process(
+      buildInput({
+        userRequest: 'show me that pdf on telegram',
+      }),
+    );
+
+    expect(callTextWithToolsMock).toHaveBeenCalledTimes(2);
+    expect(result.status).toBe('ok');
+    expect(result.response).toBe('Delivered to Telegram.');
+    expect(result.metadata?.harness).toMatchObject({
+      repairAttempted: true,
+      repairExpandedPacks: ['media_delivery_pack'],
+      repairReason: 'requested_tool_pack_exposure',
+    });
+  });
+
   test('marks generic terminal fallback responses as degraded', async () => {
     buildExecutiveAgentToolsMock.mockImplementation(() => ({
       search_memory: tool('search_memory'),

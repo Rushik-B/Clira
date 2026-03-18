@@ -191,15 +191,16 @@ export function extractRequestedPackIdsFromExecution(params: {
   const requestedPackIds = Array.isArray(result?.requestedPackIds)
     ? result.requestedPackIds.filter(
         (value): value is ToolPackId =>
-          typeof value === 'string' &&
-          [
-            'safe_context_pack',
-            'calendar_mutation_pack',
-            'reminder_alert_pack',
-            'settings_mutation_pack',
-            'email_send_pack',
-          ].includes(value),
-      )
+      typeof value === 'string' &&
+      [
+        'safe_context_pack',
+        'calendar_mutation_pack',
+        'reminder_alert_pack',
+        'media_delivery_pack',
+        'settings_mutation_pack',
+        'email_send_pack',
+      ].includes(value),
+    )
     : [];
 
   return Array.from(new Set(requestedPackIds));
