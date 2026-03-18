@@ -94,6 +94,7 @@ export async function classifyMessageRelevance({
       schema: classifierSchema,
       prompt,
       temperature: 0,
+      providerOptions: { google: { thinkingConfig: { thinkingBudget: 0 } } },
       op: 'messaging-orchestration.relevance',
       concurrency: {
         key: 'messaging-orchestration.relevance',

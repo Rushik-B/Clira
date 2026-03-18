@@ -260,6 +260,7 @@ Body excerpt: ${truncatedBody}...`;
       prompt: userPrompt,
       schema: ReceivedEmailsInsightsSchema,
       temperature: 0.3,
+      providerOptions: { google: { thinkingConfig: { thinkingLevel: 'medium' } } },
       op: 'supermemory.profile.analyze-received',
       concurrency: { key: 'supermemory.profile', maxConcurrency: 3 },
       retry: { maxAttempts: 2 },
