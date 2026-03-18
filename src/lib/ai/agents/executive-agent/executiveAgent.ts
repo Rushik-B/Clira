@@ -25,18 +25,19 @@ import {
 import { formatDateTimeInTimeZone } from '@/lib/utils/timezone';
 import {
   MESSAGING_DEADLINE_MS,
+  MESSAGING_MAX_REPAIR_PASSES,
   MESSAGING_MAX_STEPS,
   MESSAGING_MAX_TOOL_CALLS_TOTAL,
   MESSAGING_TOOL_BUDGETS_BASE,
   resolveExecAgentThinkingLevel,
 } from './constants';
 import {
-  buildTerminalFallbackResponse,
   collectExecutedToolNames,
   collectOutOfPackToolNames,
   collectToolNamesFromExecution,
   extractRequestedPackIdsFromExecution,
   extractRequestedMcpConnectionIdsFromExecution,
+  resolveTerminalFallbackResponse,
   resolveProgressChannel,
   resolveRetrievalProfile,
   stripInternalMetadataFromAssistantResponse,
@@ -93,6 +94,15 @@ import {
   listSelectableMcpServerPacks,
   resolveMcpToolExposure,
 } from '@/lib/services/mcp/policy/service';
+
+function mergeUnique<T>(existing: readonly T[], additions: readonly T[]): T[] {
+  return Array.from(new Set([...existing, ...additions]));
+}
+
+function sameStringSet(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) return false;
+  return left.every((value) => right.includes(value));
+}
 
 export class ExecutiveAgent {
   async process(input: ExecutiveAgentInput): Promise<ExecutiveAgentOutput> {
@@ -462,7 +472,7 @@ export class ExecutiveAgent {
         }
 
         let response = (text || '').trim();
-        let responseSource: 'model' | 'synthesis' | 'fallback' = 'model';
+        let responseSource: 'model' | 'synthesis' | 'tool_result' | 'fallback' = 'model';
         if (
           !response &&
           steps.length > 0 &&
@@ -496,13 +506,17 @@ export class ExecutiveAgent {
           }
         }
         if (!response) {
-          response = buildTerminalFallbackResponse(toolResults, steps, {
+          const terminal = resolveTerminalFallbackResponse(toolResults, steps, {
             selectedPack: plan.primaryPack,
             workingState: workingStateController?.getState() ?? null,
             turnFeatures,
+            userRequest: input.userRequest,
           });
-          responseSource = 'fallback';
-          logger.info(`[executiveAgent] Empty model text, using fallback: ${response}`);
+          response = terminal.response;
+          responseSource = terminal.source === 'generic_fallback' ? 'fallback' : 'tool_result';
+          logger.info(
+            `[executiveAgent] Empty model text, using ${responseSource === 'fallback' ? 'fallback' : 'tool-backed terminal response'}: ${response}`,
+          );
         }
         const sanitizedResponse = stripInternalMetadataFromAssistantResponse(response);
         if (sanitizedResponse.stripped) {
@@ -525,13 +539,17 @@ export class ExecutiveAgent {
         }
         response = sanitizedResponse.response;
         if (!response) {
-          response = buildTerminalFallbackResponse(toolResults, steps, {
+          const terminal = resolveTerminalFallbackResponse(toolResults, steps, {
             selectedPack: plan.primaryPack,
             workingState: workingStateController?.getState() ?? null,
             turnFeatures,
+            userRequest: input.userRequest,
           });
-          responseSource = 'fallback';
-          logger.warn(`[executiveAgent] Sanitized response became empty, using fallback: ${response}`);
+          response = terminal.response;
+          responseSource = terminal.source === 'generic_fallback' ? 'fallback' : 'tool_result';
+          logger.warn(
+            `[executiveAgent] Sanitized response became empty, using ${responseSource === 'fallback' ? 'fallback' : 'tool-backed terminal response'}: ${response}`,
+          );
         }
         workingStateController.updateFromResponse(response);
 
@@ -554,90 +572,107 @@ export class ExecutiveAgent {
         };
       };
 
-      let passResult = await executePass(exposurePlan, 1);
-      const requestedPackIds = extractRequestedPackIdsFromExecution({
-        toolResults: passResult.toolResults,
-        steps: passResult.steps,
-      }).filter((packId) => !exposurePlan.packIds.includes(packId));
-      const requestedMcpConnectionIds = extractRequestedMcpConnectionIdsFromExecution({
-        toolResults: passResult.toolResults,
-        steps: passResult.steps,
-      }).filter((connectionId) => !exposurePlan.mcpConnectionIds.includes(connectionId));
+      let passIndex = 1;
+      let passResult = await executePass(exposurePlan, passIndex);
 
-      if (requestedPackIds.length > 0) {
-        repairAttempted = true;
-        repairReason = 'requested_tool_pack_exposure';
-        repairExpandedPacks = requestedPackIds;
-        exposurePlan = {
-          ...exposurePlan,
-          primaryPack: requestedPackIds[0] ?? exposurePlan.primaryPack,
-          packIds: Array.from(
-            new Set([...exposurePlan.packIds, ...requestedPackIds]),
-          ),
-          repairAttempted: true,
-        };
+      while (passIndex < MESSAGING_MAX_REPAIR_PASSES) {
+        const requestedPackIds = extractRequestedPackIdsFromExecution({
+          toolResults: passResult.toolResults,
+          steps: passResult.steps,
+        }).filter((packId) => !exposurePlan.packIds.includes(packId));
+        const requestedMcpConnectionIds = extractRequestedMcpConnectionIdsFromExecution({
+          toolResults: passResult.toolResults,
+          steps: passResult.steps,
+        }).filter((connectionId) => !exposurePlan.mcpConnectionIds.includes(connectionId));
 
-        logger.info('[executiveAgent] harness.action_pack_rerun', {
-          repairReason,
-          repairExpandedPacks,
-        });
+        let nextPlan = exposurePlan;
+        let nextRepairReason: string | null = null;
+        let expandedPackIds: ToolPackId[] = [];
+        let expandedMcpConnectionIds: string[] = [];
 
-        passResult = await executePass(exposurePlan, 2);
-      } else if (requestedMcpConnectionIds.length > 0) {
-        repairAttempted = true;
-        repairReason = 'requested_mcp_server_tools';
-        repairExpandedMcpConnectionIds = requestedMcpConnectionIds;
-        exposurePlan = {
-          ...exposurePlan,
-          mcpConnectionIds: Array.from(
-            new Set([...exposurePlan.mcpConnectionIds, ...requestedMcpConnectionIds]),
-          ),
-          repairAttempted: true,
-        };
-
-        logger.info('[executiveAgent] harness.mcp_selection_rerun', {
-          repairReason,
-          repairExpandedMcpConnectionIds,
-        });
-
-        passResult = await executePass(exposurePlan, 2);
-      } else {
-        const zeroToolActionStall =
-          passResult.toolNames.size === 0 &&
-          hasDeterministicActionIntent(activeTurnFeatures) &&
-          passResult.responseSource !== 'model';
-
-        if (passResult.outOfPackToolNames.size > 0 || zeroToolActionStall) {
+        if (requestedPackIds.length > 0 || requestedMcpConnectionIds.length > 0) {
           repairAttempted = true;
-          repairReason =
-            passResult.outOfPackToolNames.size > 0
-              ? 'out_of_pack_tool_reference'
-              : 'zero_tool_action_stall';
+          expandedPackIds = requestedPackIds;
+          expandedMcpConnectionIds = requestedMcpConnectionIds;
+          nextRepairReason =
+            requestedPackIds.length > 0 && requestedMcpConnectionIds.length > 0
+              ? 'requested_tool_pack_and_mcp_server_tools'
+              : requestedPackIds.length > 0
+                ? 'requested_tool_pack_exposure'
+                : 'requested_mcp_server_tools';
+          nextPlan = {
+            ...nextPlan,
+            primaryPack: requestedPackIds[0] ?? nextPlan.primaryPack,
+            packIds: mergeUnique(nextPlan.packIds, requestedPackIds),
+            mcpConnectionIds: mergeUnique(nextPlan.mcpConnectionIds, requestedMcpConnectionIds),
+            repairAttempted: true,
+          };
 
-          const repairExpansion = await expandExposurePlanForRepair({
-            input,
-            features: activeTurnFeatures,
-            plan: exposurePlan,
-            outOfPackToolNames: [...passResult.outOfPackToolNames],
-            reason:
+          logger.info('[executiveAgent] harness.exposure_rerun', {
+            repairReason: nextRepairReason,
+            repairExpandedPacks: expandedPackIds,
+            repairExpandedMcpConnectionIds: expandedMcpConnectionIds,
+            nextPassIndex: passIndex + 1,
+          });
+        } else {
+          const zeroToolActionStall =
+            passResult.toolNames.size === 0 &&
+            hasDeterministicActionIntent(activeTurnFeatures) &&
+            passResult.responseSource !== 'model';
+
+          if (passResult.outOfPackToolNames.size > 0 || zeroToolActionStall) {
+            repairAttempted = true;
+            nextRepairReason =
               passResult.outOfPackToolNames.size > 0
-                ? 'missing_tools'
-                : 'action_intent_stall',
-            mcpServerPacks: selectableMcpServerPacks,
-          });
+                ? 'out_of_pack_tool_reference'
+                : 'zero_tool_action_stall';
 
-          repairExpandedPacks = repairExpansion.expandedPackIds;
-          repairExpandedMcpConnectionIds = repairExpansion.expandedMcpConnectionIds;
-          exposurePlan = repairExpansion.plan;
+            const repairExpansion = await expandExposurePlanForRepair({
+              input,
+              features: activeTurnFeatures,
+              plan: exposurePlan,
+              outOfPackToolNames: [...passResult.outOfPackToolNames],
+              reason:
+                passResult.outOfPackToolNames.size > 0
+                  ? 'missing_tools'
+                  : 'action_intent_stall',
+              mcpServerPacks: selectableMcpServerPacks,
+            });
 
-          logger.info('[executiveAgent] harness.repair_rerun', {
-            repairReason,
-            repairExpandedPacks,
-            repairExpandedMcpConnectionIds,
-          });
+            expandedPackIds = repairExpansion.expandedPackIds;
+            expandedMcpConnectionIds = repairExpansion.expandedMcpConnectionIds;
+            nextPlan = repairExpansion.plan;
 
-          passResult = await executePass(exposurePlan, 2);
+            logger.info('[executiveAgent] harness.repair_rerun', {
+              repairReason: nextRepairReason,
+              repairExpandedPacks: expandedPackIds,
+              repairExpandedMcpConnectionIds: expandedMcpConnectionIds,
+              nextPassIndex: passIndex + 1,
+            });
+          }
         }
+
+        if (!nextRepairReason) {
+          break;
+        }
+
+        const planChanged =
+          nextPlan.primaryPack !== exposurePlan.primaryPack ||
+          !sameStringSet(nextPlan.packIds, exposurePlan.packIds) ||
+          !sameStringSet(nextPlan.mcpConnectionIds, exposurePlan.mcpConnectionIds);
+        if (!planChanged) {
+          break;
+        }
+
+        repairReason = nextRepairReason;
+        repairExpandedPacks = mergeUnique(repairExpandedPacks, expandedPackIds);
+        repairExpandedMcpConnectionIds = mergeUnique(
+          repairExpandedMcpConnectionIds,
+          expandedMcpConnectionIds,
+        );
+        exposurePlan = nextPlan;
+        passIndex += 1;
+        passResult = await executePass(exposurePlan, passIndex);
       }
 
       const metadata: Record<string, Prisma.InputJsonValue> = {};
@@ -691,7 +726,8 @@ export class ExecutiveAgent {
       return {
         response: passResult.response,
         memoryStored,
-        status: 'ok',
+        status: passResult.responseSource === 'fallback' ? 'degraded' : 'ok',
+        error: passResult.responseSource === 'fallback' ? 'terminal_fallback' : undefined,
         metadata: Object.keys(metadata).length > 0 ? (metadata as Prisma.InputJsonObject) : undefined,
       };
     } catch (error) {

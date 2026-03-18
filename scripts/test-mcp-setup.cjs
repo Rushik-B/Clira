@@ -215,7 +215,6 @@ async function main() {
             inputSchema: tool.inputSchema || {},
             annotations: tool.annotations || {},
             actionClass,
-            capabilityId: 'generic_read',
             latencyClass: 'FAST',
             safeForAutoUse: isRead,
             modelToolName,
@@ -232,7 +231,6 @@ async function main() {
             inputSchema: tool.inputSchema || {},
             annotations: tool.annotations || {},
             actionClass,
-            capabilityId: 'generic_read',
             latencyClass: 'FAST',
             safeForAutoUse: isRead,
             lastSyncedAt: new Date(),
@@ -291,7 +289,7 @@ async function main() {
     for (const m of manifests) {
       const autoUse = m.safeForAutoUse ? '(auto-use)' : '(needs confirmation)';
       console.log(`    ${m.modelToolName}`);
-      console.log(`      action: ${m.actionClass} | capability: ${m.capabilityId} | ${autoUse}`);
+      console.log(`      action: ${m.actionClass} | latency: ${m.latencyClass} | ${autoUse}`);
     }
 
     console.log('');

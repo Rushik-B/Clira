@@ -219,86 +219,256 @@ function extractLatestToolResultFromExecution(params: {
   return null;
 }
 
-export function buildTerminalFallbackResponse(
+type TerminalFallbackResolution = {
+  response: string;
+  source: 'tool_result' | 'working_state' | 'generic_fallback';
+};
+
+function normalizeSentence(value: string): string {
+  return value.replace(/\s+/g, ' ').trim();
+}
+
+function titleCaseItemLabel(value: string): string {
+  const normalized = normalizeSentence(value).replace(/[:.]+$/g, '');
+  if (!normalized) return '';
+
+  return normalized
+    .split(/\s+/)
+    .map((part) => {
+      if (/^[A-Z0-9-]+$/.test(part)) return part;
+      return part.charAt(0).toUpperCase() + part.slice(1).toLowerCase();
+    })
+    .join(' ');
+}
+
+function isDueDateLookupRequest(userRequest: string | undefined): boolean {
+  if (!userRequest) return false;
+  return /\bdue\b|\bdeadline\b|\bwhen is it due\b/i.test(userRequest);
+}
+
+function deriveCoursePrefix(userRequest: string | undefined, subject: string, bodyText: string): string | null {
+  const combined = `${userRequest ?? ''} ${subject} ${bodyText}`;
+  const match = combined.match(/\bCMPT\s*([0-9]{3,4})\b/i) ?? combined.match(/\b([0-9]{3,4})\b/);
+  if (!match) return null;
+  const courseNumber = match[1] ?? match[0];
+  if (!/^[0-9]{3,4}$/.test(courseNumber)) return null;
+  return `CMPT ${courseNumber}`;
+}
+
+function extractItemLabel(subject: string, bodyText: string): string | null {
+  const combined = `${subject}\n${bodyText}`;
+  const itemMatch = combined.match(/\b(assignment\s+\d+|project proposal|project milestone|milestone\s+\d+|assignment|project|milestone)\b/i);
+  if (!itemMatch) return null;
+  const label = titleCaseItemLabel(itemMatch[1]);
+  return label || null;
+}
+
+function extractDueDateAnswerFromText(
+  bodyText: string,
+  subject: string,
+  userRequest: string | undefined,
+): string | null {
+  const normalizedBody = normalizeSentence(bodyText);
+  if (!normalizedBody) return null;
+
+  const dueDateMatch =
+    normalizedBody.match(/\b(?:it\s+will\s+be\s+)?due\s+on\s+([^.!\n]+)/i) ??
+    normalizedBody.match(/\bis\s+due\s+on\s+([^.!\n]+)/i) ??
+    normalizedBody.match(/\bdue\s+([^.!\n]+)/i);
+  if (!dueDateMatch) return null;
+
+  const duePhrase = normalizeSentence(dueDateMatch[1]).replace(/[.]+$/g, '');
+  if (!duePhrase) return null;
+
+  const itemLabel = extractItemLabel(subject, normalizedBody);
+  const coursePrefix = deriveCoursePrefix(userRequest, subject, normalizedBody);
+  if (itemLabel && coursePrefix && !itemLabel.toLowerCase().includes(coursePrefix.toLowerCase())) {
+    return `${coursePrefix} ${itemLabel} is due on ${duePhrase}.`;
+  }
+  if (itemLabel) {
+    return `${itemLabel} is due on ${duePhrase}.`;
+  }
+  if (coursePrefix) {
+    return `${coursePrefix} is due on ${duePhrase}.`;
+  }
+  return `It is due on ${duePhrase}.`;
+}
+
+function extractSearchInboxContextAnswer(
+  result: Record<string, unknown> | null,
+  userRequest: string | undefined,
+): string | null {
+  if (!result || !isDueDateLookupRequest(userRequest)) return null;
+
+  const expandedThreads = Array.isArray(result.expandedThreads)
+    ? result.expandedThreads.filter(
+        (value): value is Record<string, unknown> =>
+          Boolean(value) && typeof value === 'object' && !Array.isArray(value),
+      )
+    : [];
+
+  for (const thread of expandedThreads) {
+    const messages = Array.isArray(thread.messages)
+      ? thread.messages.filter(
+          (value): value is Record<string, unknown> =>
+            Boolean(value) && typeof value === 'object' && !Array.isArray(value),
+        )
+      : [];
+
+    for (const message of messages) {
+      const bodyText = typeof message.bodyText === 'string' ? message.bodyText : '';
+      const subject = typeof message.subject === 'string' ? message.subject : '';
+      const answer = extractDueDateAnswerFromText(bodyText, subject, userRequest);
+      if (answer) return answer;
+    }
+  }
+
+  return null;
+}
+
+function extractSearchCalendarAnswer(
+  result: Record<string, unknown> | null,
+  userRequest: string | undefined,
+): string | null {
+  if (!result || !isDueDateLookupRequest(userRequest)) return null;
+
+  const events = Array.isArray(result.events)
+    ? result.events.filter(
+        (value): value is Record<string, unknown> =>
+          Boolean(value) && typeof value === 'object' && !Array.isArray(value),
+      )
+    : [];
+  if (events.length === 0) return null;
+
+  const event = events[0]!;
+  const name = typeof event.name === 'string' ? normalizeSentence(event.name) : 'That item';
+  const start = typeof event.start === 'string' ? normalizeSentence(event.start) : null;
+  if (!start) return null;
+  return `${name} is due on ${start}.`;
+}
+
+function extractToolBackedSafeContextResponse(params: {
+  toolResults: unknown;
+  steps?: unknown;
+  userRequest?: string;
+}): string | null {
+  const inboxResult = extractLatestToolResultFromExecution({
+    toolResults: params.toolResults,
+    steps: params.steps,
+    toolName: 'search_inbox_context',
+  });
+  const inboxAnswer = extractSearchInboxContextAnswer(inboxResult, params.userRequest);
+  if (inboxAnswer) return inboxAnswer;
+
+  const calendarResult = extractLatestToolResultFromExecution({
+    toolResults: params.toolResults,
+    steps: params.steps,
+    toolName: 'search_calendar',
+  });
+  return extractSearchCalendarAnswer(calendarResult, params.userRequest);
+}
+
+export function resolveTerminalFallbackResponse(
   toolResults: unknown,
   steps?: unknown,
   context?: {
     selectedPack?: ToolPackId | null;
     workingState?: ExecutiveWorkingState | null;
     turnFeatures?: ExecutiveTurnFeatures | null;
+    userRequest?: string | null;
   },
-): string {
-  const sendResult = extractLatestToolResultFromExecution({
-    toolResults,
-    steps,
-    toolName: 'send_email',
-  });
-  if (sendResult) {
-    const response = extractUserFacingToolText('send_email', sendResult);
-    if (response) return response;
-    return 'I could not send that email. Please try again.';
+): TerminalFallbackResolution {
+  const explicitToolResponse = (() => {
+    const sendResult = extractLatestToolResultFromExecution({
+      toolResults,
+      steps,
+      toolName: 'send_email',
+    });
+    if (sendResult) {
+      const response = extractUserFacingToolText('send_email', sendResult);
+      return response ?? 'I could not send that email. Please try again.';
+    }
+
+    const commitResult = extractLatestToolResultFromExecution({
+      toolResults,
+      steps,
+      toolName: 'commit_calendar_change',
+    });
+    if (commitResult) {
+      const response = extractUserFacingToolText('commit_calendar_change', commitResult);
+      return response ?? 'I could not complete that calendar change.';
+    }
+
+    const commitMcpResult = extractLatestToolResultFromExecution({
+      toolResults,
+      steps,
+      toolName: 'commit_mcp_action',
+    });
+    if (commitMcpResult) {
+      const response = extractUserFacingToolText('commit_mcp_action', commitMcpResult);
+      return response ?? 'I could not complete that external action.';
+    }
+
+    const cancelMcpResult = extractLatestToolResultFromExecution({
+      toolResults,
+      steps,
+      toolName: 'cancel_mcp_action',
+    });
+    if (cancelMcpResult) {
+      const response = extractUserFacingToolText('cancel_mcp_action', cancelMcpResult);
+      return response ?? 'I could not cancel that external action.';
+    }
+
+    const planResult = extractLatestToolResultFromExecution({
+      toolResults,
+      steps,
+      toolName: 'plan_calendar_change',
+    });
+    if (planResult) {
+      const response = extractUserFacingToolText('plan_calendar_change', planResult);
+      return response ?? 'I could not plan that calendar change. Please try again.';
+    }
+
+    const planMcpResult = extractLatestToolResultFromExecution({
+      toolResults,
+      steps,
+      toolName: 'plan_mcp_action',
+    });
+    if (planMcpResult) {
+      const response = extractUserFacingToolText('plan_mcp_action', planMcpResult);
+      return response ?? 'I could not stage that external action. Please try again.';
+    }
+
+    return null;
+  })();
+
+  if (explicitToolResponse) {
+    return {
+      response: explicitToolResponse,
+      source: 'tool_result',
+    };
   }
 
-  const commitResult = extractLatestToolResultFromExecution({
+  const safeContextAnswer = extractToolBackedSafeContextResponse({
     toolResults,
     steps,
-    toolName: 'commit_calendar_change',
+    userRequest: context?.userRequest ?? undefined,
   });
-  if (commitResult) {
-    const response = extractUserFacingToolText('commit_calendar_change', commitResult);
-    if (response) return response;
-    return 'I could not complete that calendar change.';
-  }
-
-  const commitMcpResult = extractLatestToolResultFromExecution({
-    toolResults,
-    steps,
-    toolName: 'commit_mcp_action',
-  });
-  if (commitMcpResult) {
-    const response = extractUserFacingToolText('commit_mcp_action', commitMcpResult);
-    if (response) return response;
-    return 'I could not complete that external action.';
-  }
-
-  const cancelMcpResult = extractLatestToolResultFromExecution({
-    toolResults,
-    steps,
-    toolName: 'cancel_mcp_action',
-  });
-  if (cancelMcpResult) {
-    const response = extractUserFacingToolText('cancel_mcp_action', cancelMcpResult);
-    if (response) return response;
-    return 'I could not cancel that external action.';
-  }
-
-  const planResult = extractLatestToolResultFromExecution({
-    toolResults,
-    steps,
-    toolName: 'plan_calendar_change',
-  });
-  if (planResult) {
-    const response = extractUserFacingToolText('plan_calendar_change', planResult);
-    if (response) return response;
-    return 'I could not plan that calendar change. Please try again.';
-  }
-
-  const planMcpResult = extractLatestToolResultFromExecution({
-    toolResults,
-    steps,
-    toolName: 'plan_mcp_action',
-  });
-  if (planMcpResult) {
-    const response = extractUserFacingToolText('plan_mcp_action', planMcpResult);
-    if (response) return response;
-    return 'I could not stage that external action. Please try again.';
+  if (safeContextAnswer) {
+    return {
+      response: safeContextAnswer,
+      source: 'tool_result',
+    };
   }
 
   const pendingChangeId = context?.workingState?.artifacts.pendingCalendarChangeId;
   const phase = context?.workingState?.phase;
   const workingStateUserFacingText = context?.workingState?.artifacts.lastUserFacingText?.trim();
   if (workingStateUserFacingText) {
-    return workingStateUserFacingText;
+    return {
+      response: workingStateUserFacingText,
+      source: 'working_state',
+    };
   }
 
   const isCalendarMutationFallbackTurn =
@@ -309,37 +479,73 @@ export function buildTerminalFallbackResponse(
     context?.turnFeatures?.pendingCalendarCancelIntent === true;
 
   if (isCalendarMutationFallbackTurn) {
-
     if (phase === 'await_approval' || pendingChangeId) {
-      return 'I have that calendar change staged. Reply "confirm" to apply it, or tell me what to change.';
+      return {
+        response: 'I have that calendar change staged. Reply "confirm" to apply it, or tell me what to change.',
+        source: 'working_state',
+      };
     }
 
     if (
       context?.turnFeatures?.pendingCalendarConfirmIntent ||
       context?.turnFeatures?.pendingCalendarCancelIntent
     ) {
-      return 'I still have that calendar change in flight, but the final step did not finish cleanly. Reply "confirm" to retry it or "cancel" to drop it.';
+      return {
+        response: 'I still have that calendar change in flight, but the final step did not finish cleanly. Reply "confirm" to retry it or "cancel" to drop it.',
+        source: 'working_state',
+      };
     }
 
     if (phase === 'clarify') {
-      return 'I need one more detail to finish that calendar change. Tell me which event or time you want.';
+      return {
+        response: 'I need one more detail to finish that calendar change. Tell me which event or time you want.',
+        source: 'working_state',
+      };
     }
 
-    return 'Tell me the calendar change you want, and I\'ll preview it before I do anything.';
+    return {
+      response: 'Tell me the calendar change you want, and I\'ll preview it before I do anything.',
+      source: 'working_state',
+    };
   }
 
   if (context?.selectedPack === 'email_send_pack') {
     if (context.turnFeatures?.explicitSendApproval) {
-      return 'I still have the draft. Reply "send it" and I\'ll retry the final send.';
+      return {
+        response: 'I still have the draft. Reply "send it" and I\'ll retry the final send.',
+        source: 'working_state',
+      };
     }
-    return 'I still have the draft ready. Say "send it" when you want me to send it.';
+    return {
+      response: 'I still have the draft ready. Say "send it" when you want me to send it.',
+      source: 'working_state',
+    };
   }
 
   if (context?.selectedPack === 'safe_context_pack') {
-    return 'I did not finish that cleanly. Ask again and I\'ll re-check the relevant context.';
+    return {
+      response: 'I did not finish that cleanly. Ask again and I\'ll re-check the relevant context.',
+      source: 'generic_fallback',
+    };
   }
 
-  return 'I did not finish that cleanly. Ask again and I\'ll retry it.';
+  return {
+    response: 'I did not finish that cleanly. Ask again and I\'ll retry it.',
+    source: 'generic_fallback',
+  };
+}
+
+export function buildTerminalFallbackResponse(
+  toolResults: unknown,
+  steps?: unknown,
+  context?: {
+    selectedPack?: ToolPackId | null;
+    workingState?: ExecutiveWorkingState | null;
+    turnFeatures?: ExecutiveTurnFeatures | null;
+    userRequest?: string | null;
+  },
+): string {
+  return resolveTerminalFallbackResponse(toolResults, steps, context).response;
 }
 
 const TIMESTAMP_METADATA_LINE_PATTERN = /^\[Timestamp\]\s+/i;

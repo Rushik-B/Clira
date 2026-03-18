@@ -61,7 +61,7 @@ export interface ExecutiveAgentInput {
 export interface ExecutiveAgentOutput {
   response: string;
   memoryStored: boolean;
-  status: 'ok' | 'fallback';
+  status: 'ok' | 'degraded' | 'fallback';
   error?: string;
   metadata?: Prisma.InputJsonObject;
 }

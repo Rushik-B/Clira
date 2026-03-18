@@ -248,4 +248,30 @@ describe('buildTerminalFallbackResponse', () => {
       'I have that calendar change staged. Reply "confirm" to apply it, or tell me what to change.',
     );
   });
+
+  test('extracts a due date from expanded inbox tool results before using the generic fallback', () => {
+    const response = buildTerminalFallbackResponse([
+      {
+        toolName: 'search_inbox_context',
+        result: {
+          expandedThreads: [
+            {
+              messages: [
+                {
+                  subject: 'Assignment 1 Posted: CMPT410 D100 Machine Learning / CMPT726 G100 Machine Learning',
+                  bodyText:
+                    'Assignment 1 has been posted under Files -> Assignments -> Assignment 1. It will be due on Tuesday, March 24, 2026.',
+                },
+              ],
+            },
+          ],
+        },
+      },
+    ], [], {
+      selectedPack: 'safe_context_pack',
+      userRequest: 'when is it due?? 410',
+    });
+
+    expect(response).toBe('CMPT 410 Assignment 1 is due on Tuesday, March 24, 2026.');
+  });
 });

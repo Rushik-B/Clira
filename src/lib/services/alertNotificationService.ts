@@ -434,11 +434,13 @@ export async function triggerAlertNotification(input: AlertNotificationInput): P
 
     if (traceContext) {
       await finalizeAiTraceRun(traceContext, {
-        status: 'OK',
+        status: result.status === 'ok' ? 'OK' : 'FALLBACK',
         outputPreview: deriveOutputPreview(result.response),
+        errorMessage: result.status === 'ok' ? null : result.error ?? 'Executive Agent fallback',
         metadata: {
           alertId: input.alert.id,
           channels: deliveredChannels,
+          agentStatus: result.status,
         },
       });
     }

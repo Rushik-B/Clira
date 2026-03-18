@@ -20,6 +20,8 @@ export const CALENDAR_SEARCH_MIN_BUDGET_MS = 35_000;
 export const MESSAGING_MAX_STEPS = 30;
 /** Total tool calls per run. Per-tool limits in MESSAGING_TOOL_BUDGETS_BASE must stay below this. */
 export const MESSAGING_MAX_TOOL_CALLS_TOTAL = 70;
+/** Maximum number of exec-agent passes after exposure/repair reruns. */
+export const MESSAGING_MAX_REPAIR_PASSES = 6;
 export const PENDING_CALENDAR_CHANGE_TTL_MS = 10 * 60 * 1000;
 
 /** Per-tool call limits. Sum of used tools is also capped by MESSAGING_MAX_TOOL_CALLS_TOTAL. */

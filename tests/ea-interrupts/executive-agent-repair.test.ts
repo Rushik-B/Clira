@@ -158,6 +158,11 @@ function tool(name: string) {
 describe('Executive agent repair rerun', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    callTextWithToolsMock.mockReset();
+    callTextWithMessagesMock.mockReset();
+    buildExecutiveAgentToolsMock.mockReset();
+    resolveMcpToolExposureMock.mockReset();
+    listSelectableMcpServerPacksMock.mockReset();
     callTextWithMessagesMock.mockResolvedValue({ text: '' });
     resolveMcpToolExposureMock.mockResolvedValue({
       selectedConnectionIds: [],
@@ -258,6 +263,140 @@ describe('Executive agent repair rerun', () => {
     expect(result.metadata?.harness).toMatchObject({
       repairAttempted: false,
     });
+  });
+
+  test('chains repair reruns when the turn requests pack exposure and then MCP exposure', async () => {
+    buildExecutiveAgentToolsMock.mockImplementation(() => ({
+      search_inbox_context: tool('search_inbox_context'),
+      request_tool_pack_exposure: tool('request_tool_pack_exposure'),
+      request_mcp_server_tools: tool('request_mcp_server_tools'),
+    }));
+
+    callTextWithToolsMock
+      .mockResolvedValueOnce({
+        text: '',
+        toolCalls: [{ toolName: 'request_tool_pack_exposure' }],
+        toolResults: [
+          {
+            toolName: 'request_tool_pack_exposure',
+            result: {
+              ok: true,
+              requestedPackIds: ['reminder_alert_pack'],
+              rerunRequired: true,
+            },
+          },
+        ],
+        steps: [],
+        toolBudget: { totalCalls: 1, perTool: { request_tool_pack_exposure: 1 } },
+      })
+      .mockResolvedValueOnce({
+        text: '',
+        toolCalls: [{ toolName: 'request_mcp_server_tools' }],
+        toolResults: [
+          {
+            toolName: 'request_mcp_server_tools',
+            result: {
+              ok: true,
+              requestedConnectionIds: ['canvas-1'],
+              rerunRequired: true,
+            },
+          },
+        ],
+        steps: [],
+        toolBudget: { totalCalls: 1, perTool: { request_mcp_server_tools: 1 } },
+      })
+      .mockResolvedValueOnce({
+        text: 'CMPT 354 Assignment 3 is due on Sunday, March 22, 2026.',
+        toolCalls: [],
+        toolResults: [],
+        steps: [],
+        toolBudget: { totalCalls: 0, perTool: {} },
+      });
+
+    const agent = new ExecutiveAgent();
+    const result = await agent.process(
+      buildInput({
+        userRequest: 'figure this out and then set the reminder',
+      }),
+    );
+
+    expect(callTextWithToolsMock).toHaveBeenCalledTimes(3);
+    expect(result.status).toBe('ok');
+    expect(result.response).toBe('CMPT 354 Assignment 3 is due on Sunday, March 22, 2026.');
+    expect(result.metadata?.harness).toMatchObject({
+      repairAttempted: true,
+      repairExpandedPacks: ['reminder_alert_pack'],
+      repairExpandedMcpConnectionIds: ['canvas-1'],
+      repairReason: 'requested_mcp_server_tools',
+    });
+  });
+
+  test('marks generic terminal fallback responses as degraded', async () => {
+    buildExecutiveAgentToolsMock.mockImplementation(() => ({
+      search_memory: tool('search_memory'),
+    }));
+
+    callTextWithToolsMock.mockResolvedValue({
+      text: '',
+      toolCalls: [],
+      toolResults: [],
+      steps: [],
+      toolBudget: { totalCalls: 0, perTool: {} },
+    });
+    callTextWithMessagesMock.mockResolvedValue({ text: '' });
+
+    const agent = new ExecutiveAgent();
+    const result = await agent.process(
+      buildInput({
+        userRequest: 'what is diwali',
+      }),
+    );
+
+    expect(result.status).toBe('degraded');
+    expect(result.error).toBe('terminal_fallback');
+    expect(result.response).toBe("I did not finish that cleanly. Ask again and I'll re-check the relevant context.");
+  });
+
+  test('uses tool-backed due date answers instead of ending degraded', async () => {
+    buildExecutiveAgentToolsMock.mockImplementation(() => ({
+      search_inbox_context: tool('search_inbox_context'),
+    }));
+
+    callTextWithToolsMock.mockResolvedValue({
+      text: '',
+      toolCalls: [{ toolName: 'search_inbox_context' }],
+      toolResults: [
+        {
+          toolName: 'search_inbox_context',
+          result: {
+            expandedThreads: [
+              {
+                messages: [
+                  {
+                    subject: 'Assignment 1 Posted: CMPT410 D100 Machine Learning / CMPT726 G100 Machine Learning',
+                    bodyText:
+                      'Assignment 1 has been posted under Files -> Assignments -> Assignment 1. It will be due on Tuesday, March 24, 2026.',
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      ],
+      steps: [],
+      toolBudget: { totalCalls: 1, perTool: { search_inbox_context: 1 } },
+    });
+    callTextWithMessagesMock.mockResolvedValue({ text: '' });
+
+    const agent = new ExecutiveAgent();
+    const result = await agent.process(
+      buildInput({
+        userRequest: 'when is it due?? 410',
+      }),
+    );
+
+    expect(result.status).toBe('ok');
+    expect(result.response).toBe('CMPT 410 Assignment 1 is due on Tuesday, March 24, 2026.');
   });
 
 });
