@@ -5,7 +5,7 @@
  * to process updates per chat without race conditions.
  */
 
-import { Bot, Context, GrammyError, HttpError } from 'grammy';
+import { Bot, Context, GrammyError, HttpError, InputFile } from 'grammy';
 import { sequentialize } from '@grammyjs/runner';
 import type { UserFromGetMe } from '@grammyjs/types/manage';
 import { prisma } from '@/lib/prisma';
@@ -28,6 +28,12 @@ export interface TelegramClientConfig {
 export interface TelegramSendMessageResponse {
   messageId: string;
 }
+
+type TelegramSendBinaryParams = {
+  data: Buffer;
+  filename?: string | null;
+  caption?: string | null;
+};
 
 export interface TelegramInboundMessage {
   updateId: number;
@@ -334,6 +340,44 @@ export class TelegramClient {
       parse_mode: 'HTML',
       link_preview_options: { is_disabled: true },
     });
+    return { messageId: String(sent.message_id) };
+  }
+
+  async sendDocument(
+    chatId: string,
+    params: TelegramSendBinaryParams,
+  ): Promise<TelegramSendMessageResponse> {
+    const sent = await this.bot.api.sendDocument(
+      toTelegramChatId(chatId),
+      new InputFile(params.data, params.filename ?? 'attachment'),
+      {
+        ...(params.caption?.trim()
+          ? {
+              caption: normalizeMarkdownForTelegram(params.caption),
+              parse_mode: 'HTML',
+            }
+          : {}),
+      },
+    );
+    return { messageId: String(sent.message_id) };
+  }
+
+  async sendPhoto(
+    chatId: string,
+    params: TelegramSendBinaryParams,
+  ): Promise<TelegramSendMessageResponse> {
+    const sent = await this.bot.api.sendPhoto(
+      toTelegramChatId(chatId),
+      new InputFile(params.data, params.filename ?? 'image'),
+      {
+        ...(params.caption?.trim()
+          ? {
+              caption: normalizeMarkdownForTelegram(params.caption),
+              parse_mode: 'HTML',
+            }
+          : {}),
+      },
+    );
     return { messageId: String(sent.message_id) };
   }
 
