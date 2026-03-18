@@ -27,6 +27,8 @@ function mapPackToPrimaryDomain(packId: ToolPackId): ExecutivePrimaryDomain {
       return 'calendar';
     case 'reminder_alert_pack':
       return 'reminder';
+    case 'media_delivery_pack':
+      return 'delivery';
     case 'settings_mutation_pack':
       return 'settings';
     case 'email_send_pack':
@@ -42,6 +44,7 @@ function initialPhaseForPack(
 ): ExecutiveWorkingStatePhase {
   if (packId === 'email_send_pack') return 'act';
   if (packId === 'reminder_alert_pack') return 'act';
+  if (packId === 'media_delivery_pack') return 'act';
   if (packId === 'settings_mutation_pack') return 'act';
   if (packId === 'calendar_mutation_pack') {
     if (features.pendingCalendarChangePresent) {
@@ -61,6 +64,9 @@ function initialNextStep(
   if (packId === 'email_send_pack') return 'Send the approved draft.';
   if (packId === 'reminder_alert_pack') {
     return 'Complete the requested reminder or alert action.';
+  }
+  if (packId === 'media_delivery_pack') {
+    return 'Deliver the requested original file to the user safely.';
   }
   if (packId === 'settings_mutation_pack') {
     return 'Update the reply preference docs safely.';

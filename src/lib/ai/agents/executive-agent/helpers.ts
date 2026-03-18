@@ -392,6 +392,7 @@ function summarizeWorkingStateCoverage(
     if (
       step === 'search_inbox_context' ||
       step === 'list_inbox_emails' ||
+      step === 'read_email_attachment_content' ||
       step === 'read_email_pdf_attachment'
     ) {
       coverage.add('inbox');

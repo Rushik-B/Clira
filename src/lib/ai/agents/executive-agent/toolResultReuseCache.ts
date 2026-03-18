@@ -5,6 +5,7 @@ import type {
 const TOOL_RESULT_TTL_MS = {
   search_inbox_context: 10 * 60 * 1000,
   list_inbox_emails: 10 * 60 * 1000,
+  read_email_attachment_content: 10 * 60 * 1000,
   read_email_pdf_attachment: 10 * 60 * 1000,
   search_calendar: 5 * 60 * 1000,
   check_calendar: 5 * 60 * 1000,
@@ -14,6 +15,7 @@ const TOOL_RESULT_TTL_MS = {
 const CACHEABLE_TOOL_NAMES = [
   'search_inbox_context',
   'list_inbox_emails',
+  'read_email_attachment_content',
   'read_email_pdf_attachment',
   'search_calendar',
   'check_calendar',
@@ -234,7 +236,7 @@ function normalizeToolArgs(toolName: CacheableToolName, args: unknown): unknown 
     };
   }
 
-  if (toolName === 'read_email_pdf_attachment') {
+  if (toolName === 'read_email_attachment_content' || toolName === 'read_email_pdf_attachment') {
     return {
       ...normalized,
       mailboxEmail: normalizeCaseInsensitiveString(normalized.mailboxEmail),

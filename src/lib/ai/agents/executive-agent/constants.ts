@@ -48,6 +48,7 @@ export const MESSAGING_TOOL_BUDGETS_BASE: Record<string, number> = {
   deliver_content_reference: 4,
   send_email: 1,
   send_progress_update: 3,
+  read_email_attachment_content: 10,
   read_email_pdf_attachment: 10,
 };
 

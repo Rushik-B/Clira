@@ -111,6 +111,15 @@ function buildContext(): ExecutiveRuntimeContext {
           set_ok: 0,
           set_skipped_non_cacheable: 0,
         },
+        read_email_attachment_content: {
+          history_hit: 0,
+          runtime_hit: 0,
+          miss_not_found: 0,
+          miss_expired: 0,
+          miss_invalidated: 0,
+          set_ok: 0,
+          set_skipped_non_cacheable: 0,
+        },
         read_email_pdf_attachment: {
           history_hit: 0,
           runtime_hit: 0,

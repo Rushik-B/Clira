@@ -44,6 +44,7 @@ export interface ExecutiveAgentInput {
       | 'safe_context_pack'
       | 'calendar_mutation_pack'
       | 'reminder_alert_pack'
+      | 'media_delivery_pack'
       | 'settings_mutation_pack'
       | 'email_send_pack'
       | null;
@@ -70,6 +71,7 @@ export type ToolPackId =
   | 'safe_context_pack'
   | 'calendar_mutation_pack'
   | 'reminder_alert_pack'
+  | 'media_delivery_pack'
   | 'settings_mutation_pack'
   | 'email_send_pack';
 
@@ -87,6 +89,7 @@ export type ExecutivePrimaryDomain =
   | 'context'
   | 'calendar'
   | 'reminder'
+  | 'delivery'
   | 'settings'
   | 'email_send';
 
@@ -156,6 +159,13 @@ export interface PromptContext {
 
 export type SearchInboxContextArgs = InboxSearchToolArgs;
 export type ListInboxEmailsArgs = ListInboxEmailsToolArgs;
+export type ReadEmailAttachmentContentArgs = {
+  messageId: string;
+  mailboxId?: string;
+  mailboxEmail?: string;
+  attachmentId?: string;
+  attachmentFilename?: string;
+};
 export type ReadEmailPdfAttachmentArgs = {
   messageId: string;
   mailboxId?: string;
