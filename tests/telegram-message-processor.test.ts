@@ -39,6 +39,10 @@ vi.mock('@/lib/ai/describeIncomingImage', () => ({
   describeIncomingImage: vi.fn(),
 }));
 
+vi.mock('@/lib/ai/extractIncomingPdfText', () => ({
+  extractIncomingPdfText: vi.fn(),
+}));
+
 vi.mock('@/lib/ai/transcribeVoiceMemo', () => ({
   transcribeVoiceMemo: vi.fn(),
 }));
@@ -74,6 +78,7 @@ vi.mock('@/lib/services/messaging-orchestration', () => ({
 
 import { prisma } from '@/lib/prisma';
 import { describeIncomingImage } from '@/lib/ai/describeIncomingImage';
+import { extractIncomingPdfText } from '@/lib/ai/extractIncomingPdfText';
 import { processTelegramMessage } from '@/lib/services/telegram/messageProcessor';
 
 describe('processTelegramMessage', () => {
@@ -194,6 +199,66 @@ describe('processTelegramMessage', () => {
     expect(mockPrepareRunWithAdapter).toHaveBeenCalledWith(
       expect.objectContaining({
         userRequest: expect.stringContaining('Detailed image description:\n\nImage shows an invoice and due date.'),
+      }),
+    );
+  });
+
+  test('formats pdf content into the agent request with filename and caption', async () => {
+    mockTelegramClient.getFileBuffer.mockResolvedValue({
+      data: Buffer.from('pdf-bytes'),
+      mimeType: 'application/pdf',
+    });
+    vi.mocked(extractIncomingPdfText).mockResolvedValue(
+      [
+        'Invoice for March',
+        'Account: ACME Co.',
+        'Total due: $400',
+      ].join('\n'),
+    );
+
+    await processTelegramMessage({
+      updateId: 3,
+      messageId: '103',
+      chatId: 'chat-1',
+      telegramUserId: 'tg-user-1',
+      senderName: 'Rushik',
+      text: '',
+      timestamp: 1_710_000_003,
+      pdfFileId: 'pdf-1',
+      pdfMimeType: 'application/pdf',
+      pdfFilename: 'invoice.pdf',
+      pdfCaption: 'Pull out the amount due',
+    });
+
+    expect(extractIncomingPdfText).toHaveBeenCalledWith(
+      Buffer.from('pdf-bytes'),
+      'application/pdf',
+      expect.objectContaining({
+        channelLabel: 'Telegram',
+        filename: 'invoice.pdf',
+        userCaption: 'Pull out the amount due',
+      }),
+    );
+    expect(mockPrepareRunWithAdapter).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userRequest: expect.stringContaining('User sent a PDF on Telegram.'),
+      }),
+    );
+    expect(mockPrepareRunWithAdapter).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userRequest: expect.stringContaining('Filename: invoice.pdf'),
+      }),
+    );
+    expect(mockPrepareRunWithAdapter).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userRequest: expect.stringContaining('User caption: Pull out the amount due'),
+      }),
+    );
+    expect(mockPrepareRunWithAdapter).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userRequest: expect.stringContaining(
+          'Raw PDF text:\n\nInvoice for March\nAccount: ACME Co.\nTotal due: $400',
+        ),
       }),
     );
   });

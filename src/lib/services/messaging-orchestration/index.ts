@@ -27,6 +27,8 @@ export {
   isDuplicateInboundFromAdapter,
 } from './channelAdapters';
 
+export { isAbortError } from './isAbortError';
+
 export type {
   BurstState,
   ChannelAdapter,

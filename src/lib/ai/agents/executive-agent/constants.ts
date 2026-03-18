@@ -30,6 +30,7 @@ export const MESSAGING_TOOL_BUDGETS_BASE: Record<string, number> = {
   cancel_reminder: 50,
   send_email: 1,
   send_progress_update: 3,
+  read_email_pdf_attachment: 10,
 };
 
 export const MESSAGING_INBOX_CALL_LIMITS: Record<'quick' | 'deep', number> = {

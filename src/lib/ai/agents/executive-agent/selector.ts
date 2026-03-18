@@ -82,7 +82,6 @@ function hasToolResult(
 function detectDraftCandidate(history: ConversationMessageDTO[]): {
   present: boolean;
   reason: string | null;
-  hasRecentSendSuccess: boolean;
 } {
   const assistantMessages = getRecentAssistantMessages(history, 6);
   let latestSendSuccessIndex = -1;
@@ -114,14 +113,12 @@ function detectDraftCandidate(history: ConversationMessageDTO[]): {
       return {
         present: false,
         reason: 'later send_email success found after latest draft candidate',
-        hasRecentSendSuccess: true,
       };
     }
 
     return {
       present: true,
       reason: 'recent assistant draft markers found',
-      hasRecentSendSuccess: latestSendSuccessIndex !== -1,
     };
   }
 
@@ -131,7 +128,6 @@ function detectDraftCandidate(history: ConversationMessageDTO[]): {
       latestSendSuccessIndex !== -1
         ? 'recent send_email success found but no unsent draft markers remain'
         : 'no recent assistant draft markers found',
-    hasRecentSendSuccess: latestSendSuccessIndex !== -1,
   };
 }
 
@@ -145,15 +141,6 @@ function hasRecentPendingCalendarPreview(history: ConversationMessageDTO[]): boo
         typeof result.pendingChange === 'object' &&
         result.pendingChange !== null,
     ),
-  );
-}
-
-function hasRecentCalendarContext(history: ConversationMessageDTO[]): boolean {
-  return getRecentAssistantMessages(history, 4).some(
-    (message) =>
-      hasToolResult(message, 'check_calendar') ||
-      hasToolResult(message, 'search_calendar') ||
-      hasToolResult(message, 'plan_calendar_change'),
   );
 }
 
@@ -225,11 +212,49 @@ export function extractExecutiveTurnFeatures(params: {
       'cancel that',
     ]);
 
+  const explicitCalendarApproval =
+    isExactShortReply(latestMessage, [
+      'yes',
+      'y',
+      'yeah',
+      'yep',
+      'yup',
+      'sure',
+      'ok',
+      'okay',
+      'k',
+      'alright',
+      'alright then',
+      'sounds good',
+      'perfect',
+      'great',
+      'works',
+      'works for me',
+      'confirm',
+      'approved',
+      'approve',
+      'ship it',
+      'send it',
+      'go ahead',
+      'go for it',
+      'do it',
+      'lock it in',
+      'yea',
+    ]) ||
+    hasAnyPhrase(latestMessage, [
+      'confirm',
+      'approve it',
+      'approved',
+      'go ahead',
+      'go for it',
+      'lock it in',
+      'yes do it',
+      'please do it',
+    ]);
+
   const pendingCalendarConfirmIntent =
     params.pendingCalendarChangePresent &&
-    (explicitSendApproval ||
-      hasAnyPhrase(latestMessage, ['confirm', 'approved', 'approve']) ||
-      isExactShortReply(latestMessage, ['sure', 'do it']));
+    explicitCalendarApproval;
 
   const pendingCalendarCancelIntent =
     params.pendingCalendarChangePresent &&
@@ -340,74 +365,20 @@ export function extractExecutiveTurnFeatures(params: {
         'what should i work on',
       ]));
 
-  const recallIntent =
-    !emailIntent &&
-    !calendarMutationIntent &&
-    !calendarQueryIntent &&
-    /\b(?:remember|recall|my manager|my professor|my stats professor|who is my|what is my|told you|did i tell you|again)\b/.test(
-      latestMessage,
-    );
-
-  const ambiguousEmailLike =
-    !emailIntent &&
-    !calendarMutationIntent &&
-    (mentionsCommunicationContent ||
-      /\b(?:alex|jake|sarah)\b/.test(latestMessage));
-
-  const ambiguousCalendarLike =
-    !calendarMutationIntent &&
-    !ambiguousEmailLike &&
-    /\b(?:meeting|calendar|event|events|availability|tomorrow|today|friday|monday|next week)\b/.test(
-      latestMessage,
-    );
-
-  const followupCalendarApprovalIntent =
-    !params.pendingCalendarChangePresent &&
-    !calendarMutationIntent &&
-    (params.input.runContext?.classifierDecision ?? null) === 'followup' &&
-    isExactShortReply(latestMessage, [
-      'yes',
-      'y',
-      'yeah',
-      'yep',
-      'yup',
-      'sure',
-      'ok',
-      'okay',
-      'confirm',
-      'approved',
-      'approve',
-      'go ahead',
-      'do it',
-      'lock it in',
-      'yea',
-    ]) &&
-    hasRecentCalendarContext(params.input.conversationHistory);
-
   return {
     explicitSendApproval,
-    explicitSendDecline,
     draftCandidatePresent: draftCandidate.present,
     pendingCalendarChangePresent: params.pendingCalendarChangePresent,
-    calendarMutationIntent:
-      calendarMutationIntent ||
-      pendingCalendarModifyIntent ||
-      followupCalendarApprovalIntent,
+    calendarMutationIntent: calendarMutationIntent || pendingCalendarModifyIntent,
     calendarQueryIntent,
     workloadOverviewIntent,
-    emailIntent,
     reminderIntent,
     alertIntent,
-    recallIntent,
-    classifierDecision: params.input.runContext?.classifierDecision ?? null,
     channel: params.input.channel,
-    hasRecentSendSuccess: draftCandidate.hasRecentSendSuccess,
     hasRecentPendingCalendarPreview: pendingPreviewPresent,
     pendingCalendarConfirmIntent,
     pendingCalendarCancelIntent,
     pendingCalendarModifyIntent,
-    ambiguousCalendarLike,
-    ambiguousEmailLike,
     draftCandidateReason: draftCandidate.reason,
   };
 }
@@ -517,21 +488,6 @@ function isSelectorLlmEnabled(channel: ExecutiveTurnFeatures['channel']): boolea
   return globalFlag === 'true';
 }
 
-/**
- * Mirrors reminder copy used by deterministic pack selection so LLM-selected
- * read-only packs preserve the same user-facing constraints.
- */
-function getDefaultPackReminders(packId: ToolPackId): string[] {
-  if (
-    packId === 'core_recall_pack' ||
-    packId === 'inbox_context_pack' ||
-    packId === 'calendar_query_pack'
-  ) {
-    return ['Only context tools are available this turn.'];
-  }
-  return [];
-}
-
 function getDefaultPackRemindersForSelection(packIds: readonly ToolPackId[]): string[] {
   return packIds.every((packId) =>
     packId === 'core_recall_pack' ||
@@ -540,70 +496,6 @@ function getDefaultPackRemindersForSelection(packIds: readonly ToolPackId[]): st
   )
     ? ['Only context tools are available this turn.']
     : [];
-}
-
-function maybeInheritPriorPackSelection(params: {
-  input: ExecutiveAgentInput;
-  features: ExecutiveTurnFeatures;
-  selection: PackSelection;
-}): PackSelection {
-  if (params.selection.packId !== 'core_recall_pack') {
-    return params.selection;
-  }
-
-  if (params.features.classifierDecision !== 'followup') {
-    return params.selection;
-  }
-
-  const priorPack = params.input.runContext?.priorPack;
-  if (!priorPack) {
-    return params.selection;
-  }
-
-  return buildSelection(
-    priorPack,
-    ['inherited prior pack for follow-up turn'],
-    getDefaultPackReminders(priorPack),
-  );
-}
-
-/**
- * Bypass LLM routing for flows that are safety-critical or already explicit.
- * These branches are handled deterministically to avoid accidental escalation.
- *
- * Keep this list narrow. Reminder and alert turns should still be eligible for
- * LLM routing because they can overlap with calendar or inbox work in the same
- * user message.
- */
-function shouldBypassLlmSelector(features: ExecutiveTurnFeatures): boolean {
-  return (
-    (features.explicitSendApproval && features.draftCandidatePresent) ||
-    (features.pendingCalendarChangePresent &&
-      (features.pendingCalendarConfirmIntent ||
-        features.pendingCalendarCancelIntent ||
-        features.pendingCalendarModifyIntent))
-  );
-}
-
-const SELECTOR_BURST_CACHE_MAX = 256;
-const selectorBurstPackCache = new Map<string, ToolPackId[]>();
-
-function getSelectorBurstCacheKey(
-  channel: ExecutiveTurnFeatures['channel'],
-  burstId?: string,
-): string | null {
-  if (!burstId) return null;
-  return `${channel}:${burstId}`;
-}
-
-function setCachedBurstPack(cacheKey: string, packIds: readonly ToolPackId[]): void {
-  selectorBurstPackCache.set(cacheKey, uniquePackIds(packIds));
-  if (selectorBurstPackCache.size > SELECTOR_BURST_CACHE_MAX) {
-    const firstKey = selectorBurstPackCache.keys().next().value as string | undefined;
-    if (firstKey) {
-      selectorBurstPackCache.delete(firstKey);
-    }
-  }
 }
 
 /**
@@ -810,9 +702,12 @@ async function callCerebrasSelector(params: {
   );
 }
 
-export function selectExecutiveToolPack(
+/**
+ * Bypass LLM routing only for flows that must stay deterministic.
+ */
+function selectDeterministicBypassSelection(
   features: ExecutiveTurnFeatures,
-): PackSelection {
+): PackSelection | null {
   if (features.explicitSendApproval && features.draftCandidatePresent) {
     const packIds: ToolPackId[] = ['email_send_pack'];
     if (features.calendarMutationIntent) {
@@ -853,102 +748,20 @@ export function selectExecutiveToolPack(
     );
   }
 
-  const requestedPacks: ToolPackId[] = [];
-  const requestedReasons: string[] = [];
-
-  if (features.calendarMutationIntent) {
-    requestedPacks.push('calendar_mutation_pack');
-    requestedReasons.push('latest turn clearly requests calendar mutation behavior');
-  }
-
-  if (features.reminderIntent || features.alertIntent) {
-    requestedPacks.push('reminder_alert_pack');
-    requestedReasons.push(
-      features.reminderIntent
-        ? 'latest turn is reminder-oriented'
-        : 'latest turn is alert-oriented',
-    );
-  }
-
-  if (features.workloadOverviewIntent) {
-    requestedPacks.push('calendar_query_pack');
-    requestedReasons.push('latest turn asks for workload/deadline overview');
-  } else if (features.calendarQueryIntent) {
-    requestedPacks.push('calendar_query_pack');
-    requestedReasons.push('latest turn is calendar-oriented but read-only');
-  }
-
-  if (features.emailIntent) {
-    requestedPacks.push('inbox_context_pack');
-    requestedReasons.push('latest turn is email/comms-oriented without send approval');
-  }
-
-  if (features.recallIntent) {
-    requestedPacks.push('core_recall_pack');
-    requestedReasons.push('latest turn is recall-oriented');
-  }
-
-  const uniqueRequestedPacks = uniquePackIds(requestedPacks);
-  if (uniqueRequestedPacks.length > 0) {
-    return buildSelection(
-      uniqueRequestedPacks,
-      requestedReasons,
-      getDefaultPackRemindersForSelection(uniqueRequestedPacks),
-    );
-  }
-
-  if (
-    features.classifierDecision === 'ambiguous' &&
-    features.ambiguousCalendarLike
-  ) {
-    return buildSelection(
-      'calendar_query_pack',
-      ['ambiguous turn failed open to calendar read tools'],
-      ['Only context tools are available this turn.'],
-    );
-  }
-
-  if (
-    features.classifierDecision === 'ambiguous' &&
-    features.ambiguousEmailLike
-  ) {
-    return buildSelection(
-      'inbox_context_pack',
-      ['ambiguous turn failed open to inbox read tools'],
-      ['Only context tools are available this turn.'],
-    );
-  }
-
-  return buildSelection(
-    'core_recall_pack',
-    ['defaulted to smallest recall pack'],
-    ['Only context tools are available this turn.'],
-  );
+  return null;
 }
 
 export async function selectExecutiveToolPackForTurn(params: {
   input: ExecutiveAgentInput;
   features: ExecutiveTurnFeatures;
 }): Promise<PackSelection> {
-  // Deterministic selection is retained only for explicit safety-critical bypass
-  // flows. When the LLM selector is unavailable or errors, expose every pack and
-  // rely on per-tool safety gates further down the stack.
-  const deterministic = maybeInheritPriorPackSelection({
-    input: params.input,
-    features: params.features,
-    selection: selectExecutiveToolPack(params.features),
-  });
-  const cacheKey = getSelectorBurstCacheKey(
-    params.features.channel,
-    params.input.runContext?.burstId,
-  );
-
   if (!isSelectorLlmEnabled(params.features.channel)) {
     return buildAllPackSelection(['selector unavailable; exposed all packs']);
   }
 
-  if (shouldBypassLlmSelector(params.features)) {
-    return deterministic;
+  const bypassSelection = selectDeterministicBypassSelection(params.features);
+  if (bypassSelection) {
+    return bypassSelection;
   }
 
   try {
@@ -970,9 +783,6 @@ export async function selectExecutiveToolPackForTurn(params: {
         llmPacks: llmPackIds,
         safePacks: safePackIds,
       });
-    }
-    if (cacheKey) {
-      setCachedBurstPack(cacheKey, safePackIds);
     }
 
     return buildSelection(

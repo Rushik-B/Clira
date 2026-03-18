@@ -11,6 +11,10 @@ import {
 import { runCalendarSearch } from '@/lib/ai/agents/calendarSearchSubagent';
 import { runCalendarCreatorAgent, type AvailableCalendar } from '@/lib/ai/agents/calendarCreatorAgent';
 import {
+  buildCalendarCompletionMessage,
+  describeGoogleCalendarEvent,
+} from '@/lib/ai/calendar-user-facing';
+import {
   type CalendarMutationTarget,
   buildMutationCandidates,
   createClarifyCalendarPlan,
@@ -31,6 +35,7 @@ import {
 import {
   type GoogleEventTime,
   isCalendarScopeError,
+  applyGoogleReminderLimit,
   normalizeUpdateDraftTimesForPatch,
   runWithSubagentBudget,
   stripUndefined,
@@ -984,6 +989,8 @@ export function buildCalendarMutationTools({
                 eventId: string | null | undefined;
                 htmlLink?: string | null;
                 summary: string;
+                start: GoogleEventTime | null | undefined;
+                end: GoogleEventTime | null | undefined;
               }> = [];
               const failures: Array<{ index: number; summary: string; message: string }> = [];
 
@@ -1017,7 +1024,8 @@ export function buildCalendarMutationTools({
 
                 // Strip calendarId from the draft before building requestBody
                 // (calendarId is a path param for Google API, not an event field)
-                const { calendarId: _draftCalId, ...draftWithoutCalendarId } = draft as Record<string, unknown>;
+                const draftForApi = applyGoogleReminderLimit(draft);
+                const { calendarId: _draftCalId, ...draftWithoutCalendarId } = draftForApi as Record<string, unknown>;
 
                 const requestBody = stripUndefined({
                   ...draftWithoutCalendarId,
@@ -1045,6 +1053,8 @@ export function buildCalendarMutationTools({
                     eventId: event.id,
                     htmlLink: event.htmlLink,
                     summary,
+                    start: event.start as GoogleEventTime | null | undefined,
+                    end: event.end as GoogleEventTime | null | undefined,
                   });
 
                   await prisma.actionHistory.create({
@@ -1082,9 +1092,20 @@ export function buildCalendarMutationTools({
               if (createdEvents.length > 0) {
                 await markPendingConsumed();
                 const status = failures.length > 0 ? 'partial' : 'created';
-                const message = failures.length > 0
-                  ? `Created ${createdEvents.length} event(s), but ${failures.length} failed.`
-                  : `Created ${createdEvents.length} calendar event(s).`;
+                const message = buildCalendarCompletionMessage({
+                  action: 'create',
+                  items: createdEvents.map((event) =>
+                    describeGoogleCalendarEvent(
+                      {
+                        summary: event.summary,
+                        start: event.start,
+                        end: event.end,
+                      },
+                      userTimezone,
+                    ),
+                  ),
+                  failureCount: failures.length,
+                });
                 return {
                   ok: failures.length === 0,
                   status,
@@ -1122,6 +1143,8 @@ export function buildCalendarMutationTools({
                   eventId: string | null | undefined;
                   htmlLink?: string | null;
                   summary: string;
+                  start: GoogleEventTime | null | undefined;
+                  end: GoogleEventTime | null | undefined;
                 }> = [];
                 const failures: Array<{ index: number; summary: string; message: string }> = [];
 
@@ -1195,8 +1218,9 @@ export function buildCalendarMutationTools({
                         }
                       : undefined;
 
+                    const patchForApi = applyGoogleReminderLimit(normalizedDraft.patch);
                     const requestBody = stripUndefined({
-                      ...normalizedDraft.patch,
+                      ...patchForApi,
                       extendedProperties: {
                         private: {
                           ...(currentEvent.extendedProperties?.private ?? {}),
@@ -1223,6 +1247,8 @@ export function buildCalendarMutationTools({
                       eventId: updatedEvent.id,
                       htmlLink: updatedEvent.htmlLink,
                       summary,
+                      start: (updatedEvent.start ?? currentEvent.start) as GoogleEventTime | null | undefined,
+                      end: (updatedEvent.end ?? currentEvent.end) as GoogleEventTime | null | undefined,
                     });
 
                     await prisma.actionHistory.create({
@@ -1260,9 +1286,20 @@ export function buildCalendarMutationTools({
                 if (updatedEvents.length > 0) {
                   await markPendingConsumed();
                   const status = failures.length > 0 ? 'partial' : 'updated';
-                  const message = failures.length > 0
-                    ? `Updated ${updatedEvents.length} event(s), but ${failures.length} failed.`
-                    : `Updated ${updatedEvents.length} calendar event(s).`;
+                  const message = buildCalendarCompletionMessage({
+                    action: 'update',
+                    items: updatedEvents.map((event) =>
+                      describeGoogleCalendarEvent(
+                        {
+                          summary: event.summary,
+                          start: event.start,
+                          end: event.end,
+                        },
+                        userTimezone,
+                      ),
+                    ),
+                    failureCount: failures.length,
+                  });
                   return {
                     ok: failures.length === 0,
                     status,
@@ -1346,8 +1383,9 @@ export function buildCalendarMutationTools({
                   }
                 : undefined;
 
+              const patchForApi = applyGoogleReminderLimit(normalizedDraft.patch);
               const requestBody = stripUndefined({
-                ...normalizedDraft.patch,
+                ...patchForApi,
                 extendedProperties: {
                   private: {
                     ...(currentEvent.extendedProperties?.private ?? {}),
@@ -1397,7 +1435,19 @@ export function buildCalendarMutationTools({
               return {
                 ok: true,
                 status: 'updated',
-                message: 'Updated the calendar event.',
+                message: buildCalendarCompletionMessage({
+                  action: 'update',
+                  items: [
+                    describeGoogleCalendarEvent(
+                      {
+                        summary: updatedEvent.summary ?? currentEvent.summary ?? '(No title)',
+                        start: (updatedEvent.start ?? currentEvent.start) as GoogleEventTime | null | undefined,
+                        end: (updatedEvent.end ?? currentEvent.end) as GoogleEventTime | null | undefined,
+                      },
+                      userTimezone,
+                    ),
+                  ],
+                }),
                 eventId: updatedEvent.id,
                 htmlLink: updatedEvent.htmlLink,
                 summary: updatedEvent.summary ?? currentEvent.summary ?? '(No title)',
@@ -1409,6 +1459,8 @@ export function buildCalendarMutationTools({
                 const deletedEvents: Array<{
                   eventId: string;
                   summary: string;
+                  start: GoogleEventTime | null | undefined;
+                  end: GoogleEventTime | null | undefined;
                 }> = [];
                 const failures: Array<{ index: number; summary: string; message: string }> = [];
 
@@ -1436,6 +1488,8 @@ export function buildCalendarMutationTools({
                     deletedEvents.push({
                       eventId: target.eventId,
                       summary,
+                      start: currentEvent.start as GoogleEventTime | null | undefined,
+                      end: currentEvent.end as GoogleEventTime | null | undefined,
                     });
 
                     await prisma.actionHistory.create({
@@ -1472,9 +1526,20 @@ export function buildCalendarMutationTools({
                 if (deletedEvents.length > 0) {
                   await markPendingConsumed();
                   const status = failures.length > 0 ? 'partial' : 'deleted';
-                  const message = failures.length > 0
-                    ? `Deleted ${deletedEvents.length} event(s), but ${failures.length} failed.`
-                    : `Deleted ${deletedEvents.length} calendar event(s).`;
+                  const message = buildCalendarCompletionMessage({
+                    action: 'delete',
+                    items: deletedEvents.map((event) =>
+                      describeGoogleCalendarEvent(
+                        {
+                          summary: event.summary,
+                          start: event.start,
+                          end: event.end,
+                        },
+                        userTimezone,
+                      ),
+                    ),
+                    failureCount: failures.length,
+                  });
                   return {
                     ok: failures.length === 0,
                     status,
@@ -1552,7 +1617,19 @@ export function buildCalendarMutationTools({
               return {
                 ok: true,
                 status: 'deleted',
-                message: 'Deleted the calendar event.',
+                message: buildCalendarCompletionMessage({
+                  action: 'delete',
+                  items: [
+                    describeGoogleCalendarEvent(
+                      {
+                        summary: currentEvent.summary ?? '(No title)',
+                        start: currentEvent.start as GoogleEventTime | null | undefined,
+                        end: currentEvent.end as GoogleEventTime | null | undefined,
+                      },
+                      userTimezone,
+                    ),
+                  ],
+                }),
                 eventId: pendingPayload.resolvedTarget.eventId,
                 summary: currentEvent.summary ?? '(No title)',
               };

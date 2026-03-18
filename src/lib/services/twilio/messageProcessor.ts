@@ -36,6 +36,7 @@ import {
   emitOrchestratorEvent,
   getMessagingOrchestrator,
   isDuplicateInboundFromAdapter,
+  isAbortError,
   type ChannelAdapter,
   type RunContext,
 } from '@/lib/services/messaging-orchestration';
@@ -54,27 +55,6 @@ export interface ProcessMessageResult {
 
 /** Commands that trigger special handling instead of agent invocation */
 type Command = 'send' | 'save' | 'clear' | 'cancel' | 'help' | null;
-
-function isAbortError(e: unknown): boolean {
-  if (e && typeof e === 'object') {
-    const code = (e as { code?: unknown }).code;
-    if (
-      code === 'abort' ||
-      code === 'ABORT_ERR' ||
-      code === 'ERR_ABORTED' ||
-      code === 'ERR_CANCELED'
-    ) {
-      return true;
-    }
-  }
-  if (e instanceof Error) {
-    return (
-      e.name === 'AbortError' ||
-      /\babort(?:ed)?\b/i.test(e.message ?? '')
-    );
-  }
-  return false;
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Command Detection
@@ -641,7 +621,7 @@ async function runExecutiveAgent(
 
     return {
       success: false,
-      response: "Hmm, something went wrong on my end. Can you try that again?",
+      response: "I did not finish that cleanly. Ask again and I'll retry it.",
       error: message,
     };
   }

@@ -6,6 +6,7 @@ import type {
   ExecutiveWorkingStatePhase,
   ToolPackId,
 } from './types';
+import { extractUserFacingToolText } from './helpers';
 
 function uniquePush(items: string[], value: string | null | undefined): string[] {
   if (!value || items.includes(value)) return items;
@@ -228,6 +229,7 @@ export function createWorkingStateController(initialState: ExecutiveWorkingState
     updateFromToolResult(toolName: string, result: unknown) {
       const toolSummary = summarizeToolResult(toolName, result);
       const learnedFact = deriveFact(toolName, result);
+      const userFacingText = extractUserFacingToolText(toolName, result);
 
       state = {
         ...state,
@@ -237,6 +239,7 @@ export function createWorkingStateController(initialState: ExecutiveWorkingState
           ...state.artifacts,
           lastTool: toolName,
           lastToolSummary: toolSummary ?? undefined,
+          lastUserFacingText: userFacingText ?? state.artifacts.lastUserFacingText,
         },
       };
 
