@@ -32,6 +32,7 @@ import {
   resolveExecAgentThinkingLevel,
 } from './constants';
 import {
+  buildTerminalFallbackResponse,
   collectExecutedToolNames,
   collectOutOfPackToolNames,
   collectToolNamesFromExecution,
