@@ -285,12 +285,10 @@ export async function triggerReminderNotification(input: ReminderNotificationInp
 
   const agent = getExecutiveAgent();
   const systemMessage =
-    `REMINDER DELIVERY: The user asked to be reminded.\n` +
+    `REMINDER DELIVERY\n` +
     `Title: "${reminder.title}"\n` +
     (reminder.context ? `Context: ${reminder.context}\n` : '') +
-    `Scheduled for: ${dueAt.toISOString()}\n\n` +
-    'Notify the user naturally and concisely. Treat this as on-time delivery (within ~1 min of scheduled time); do not say "in X minutes" or "X minutes ago". ' +
-    'Offer to snooze or dismiss if appropriate. If the user responds with a snooze or dismiss request, use the reminder tools.';
+    `Scheduled for: ${dueAt.toISOString()}`;
 
   if (whatsappConversation) {
     await whatsappConversationManager.addMessage(whatsappConversation.id, {

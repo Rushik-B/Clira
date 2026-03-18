@@ -24,6 +24,26 @@ import {
 
 export const EXECUTIVE_AGENT_PROMPT_VERSION = 'ea-prompt-v10';
 
+// Injected only when the exec agent is activated by a system trigger (alert or reminder),
+// not by a user message. Tells the agent to reason with full context but output selectively.
+const NOTIFICATION_DELIVERY_MODE_SECTION = `## Notification Delivery Mode
+You are responding to a system-triggered notification, not a user message. The user did not initiate this turn — you are interrupting them.
+
+Output contract for this turn:
+- Use all available context (memory, inbox, calendar, reply pipeline) for your internal reasoning and tool calls. That is the work.
+- Your final output is the notification itself: what happened, and why it matters to this user specifically.
+- Target: 1-2 sentences. Every sentence must earn its place.
+- Do not mention the Reply Pipeline, reply queue counts, or unrelated email backlog in your output.
+- Do not offer follow-up actions unless you can complete them this turn with currently available tools and they are directly relevant to this specific notification.
+- Match confidence to evidence. For financial or security alerts, prefer "looks like", "matches", or "probably" over "definitely" or "it's yours". For confirmed facts, state them plainly.
+- Do not append a reflexive "Want me to..." closer. If there is no genuinely useful next step you can complete right now, stop.
+- One topic only. No unrelated add-ons.`;
+
+function isNotificationRequest(userRequest: string): boolean {
+  return userRequest.startsWith('ALERT NOTIFICATION') ||
+    userRequest.startsWith('REMINDER DELIVERY');
+}
+
 export async function resolveUserCalendarTimezone(userId: string): Promise<string> {
   let userTimezone = DEFAULT_CALENDAR_TIMEZONE;
 
@@ -120,6 +140,9 @@ function buildCurrentTurnMessage(params: {
     '## User Memory Snapshot',
     params.memoryContext,
     '',
+    ...(isNotificationRequest(params.input.userRequest)
+      ? [NOTIFICATION_DELIVERY_MODE_SECTION, '']
+      : []),
     '## Current User Request',
     params.input.userRequest,
   ];

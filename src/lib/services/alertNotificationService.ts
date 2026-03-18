@@ -239,13 +239,11 @@ export async function triggerAlertNotification(input: AlertNotificationInput): P
 
   const agent = getExecutiveAgent();
   const systemMessage =
-    `ALERT NOTIFICATION: An email matching the user's alert has arrived.\n` +
-    `Alert: "${input.alert.description}"\n` +
+    `ALERT NOTIFICATION\n` +
+    `Alert rule: "${input.alert.description}"\n` +
     `From: ${input.email.from}\n` +
     `Subject: ${input.email.subject}\n` +
-    `Preview: ${input.email.snippet}\n\n` +
-    'Notify the user about this email. Be helpful - you can offer to draft a reply, ' +
-    'search for related emails, or just inform them. Keep it concise and friendly.';
+    `Preview: ${input.email.snippet}`;
 
   let traceContext: AiTraceContext | undefined;
 
