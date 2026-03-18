@@ -474,11 +474,21 @@ export class ExecutiveAgent {
 
         let response = (text || '').trim();
         let responseSource: 'model' | 'synthesis' | 'tool_result' | 'fallback' = 'model';
+        const requestedPackIds = extractRequestedPackIdsFromExecution({
+          toolResults,
+          steps,
+        }).filter((packId) => !plan.packIds.includes(packId));
+        const requestedMcpConnectionIds = extractRequestedMcpConnectionIdsFromExecution({
+          toolResults,
+          steps,
+        }).filter((connectionId) => !(plan.mcpConnectionIds ?? []).includes(connectionId));
+        const rerunRequired = requestedPackIds.length > 0 || requestedMcpConnectionIds.length > 0;
         if (
           !response &&
           steps.length > 0 &&
           Array.isArray(messagesWhenEmpty) &&
-          messagesWhenEmpty.length > 0
+          messagesWhenEmpty.length > 0 &&
+          !rerunRequired
         ) {
           const synthesisSystem =
             (promptSystemPrompt ?? '') +
@@ -493,7 +503,7 @@ export class ExecutiveAgent {
               op: `${resolvedChannel}.executive.synthesis`,
               concurrency: { key: `${resolvedChannel}.executive`, maxConcurrency: 4 },
               retry: { maxAttempts: 3, baseDelayMs: 500 },
-              providerOptions,
+              providerOptions: { google: { thinkingConfig: { thinkingBudget: 0 } } },
               traceContext: input.traceContext,
             });
             const synthesized = (synthesis.text || '').trim();
