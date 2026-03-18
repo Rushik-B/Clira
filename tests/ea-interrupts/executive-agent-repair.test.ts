@@ -399,4 +399,48 @@ describe('Executive agent repair rerun', () => {
     expect(result.response).toBe('CMPT 410 Assignment 1 is due on Tuesday, March 24, 2026.');
   });
 
+  test('uses timeout synthesis when a deadline hits after partial progress', async () => {
+    buildExecutiveAgentToolsMock.mockImplementation(() => ({
+      search_inbox_context: {
+        description: 'search_inbox_context',
+        inputSchema: {},
+        execute: async () => ({
+          summary: 'Found one likely match in inbox search.',
+          matchedCount: 1,
+        }),
+      },
+      search_memory: tool('search_memory'),
+    }));
+
+    callTextWithToolsMock.mockImplementationOnce(async ({ tools }) => {
+      await tools.search_inbox_context.execute({});
+      throw new Error('Deadline exceeded');
+    });
+    callTextWithMessagesMock.mockResolvedValueOnce({
+      text: 'I found one matching inbox result, but I ran out of time before I could verify the exact tweet. Give me the sender or one exact phrase from it.',
+    });
+
+    const agent = new ExecutiveAgent();
+    const result = await agent.process(
+      buildInput({
+        userRequest: 'show me the tweet',
+      }),
+    );
+
+    const timeoutSynthesisCall = callTextWithMessagesMock.mock.calls[0]?.[0];
+    expect(callTextWithMessagesMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        op: 'twilio.executive.timeout_synthesis',
+      }),
+    );
+    expect(timeoutSynthesisCall?.messages?.[0]?.content).toContain('Recent tool trace summary:');
+    expect(timeoutSynthesisCall?.messages?.[0]?.content).toContain('Recent tool execution snapshots:');
+    expect(timeoutSynthesisCall?.messages?.[0]?.content).toContain('tool=search_inbox_context');
+    expect(timeoutSynthesisCall?.messages?.[0]?.content).toContain('Found one likely match in inbox search.');
+    expect(result.status).toBe('fallback');
+    expect(result.response).toBe(
+      'I found one matching inbox result, but I ran out of time before I could verify the exact tweet. Give me the sender or one exact phrase from it.',
+    );
+  });
+
 });

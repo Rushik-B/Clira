@@ -109,6 +109,13 @@ export function extractUserFacingToolText(
     return typeof message === 'string' && message.trim() ? message : null;
   }
 
+  if (toolName === 'deliver_content_reference') {
+    const message = resolved.message;
+    if (typeof message === 'string' && message.trim()) return message;
+    if (resolved.success === true) return 'Delivered.';
+    return null;
+  }
+
   if (toolName === 'commit_calendar_change') {
     const message = resolved.message;
     if (typeof message === 'string' && message.trim()) return message;
@@ -368,6 +375,138 @@ function extractToolBackedSafeContextResponse(params: {
   return extractSearchCalendarAnswer(calendarResult, params.userRequest);
 }
 
+function joinHumanList(items: readonly string[]): string {
+  if (items.length === 0) return '';
+  if (items.length === 1) return items[0]!;
+  if (items.length === 2) return `${items[0]} and ${items[1]}`;
+  return `${items.slice(0, -1).join(', ')}, and ${items[items.length - 1]}`;
+}
+
+function summarizeWorkingStateCoverage(
+  completedSteps: readonly string[],
+  selectedPack?: ToolPackId | null,
+): string[] {
+  const coverage = new Set<string>();
+
+  for (const step of completedSteps) {
+    if (
+      step === 'search_inbox_context' ||
+      step === 'list_inbox_emails' ||
+      step === 'read_email_pdf_attachment'
+    ) {
+      coverage.add('inbox');
+      continue;
+    }
+
+    if (
+      step === 'search_calendar' ||
+      step === 'check_calendar' ||
+      step === 'plan_calendar_change' ||
+      step === 'commit_calendar_change'
+    ) {
+      coverage.add('calendar');
+      continue;
+    }
+
+    if (step === 'search_memory' || step === 'append_to_supermemory') {
+      coverage.add('memory');
+      continue;
+    }
+
+    if (
+      step === 'add_reminder' ||
+      step === 'list_reminders' ||
+      step === 'snooze_reminder' ||
+      step === 'dismiss_reminder' ||
+      step === 'cancel_reminder' ||
+      step === 'add_email_alert' ||
+      step === 'remove_email_alert' ||
+      step === 'list_email_alerts'
+    ) {
+      coverage.add('reminders');
+      continue;
+    }
+
+    if (step === 'send_email') {
+      coverage.add('draft');
+      continue;
+    }
+  }
+
+  if (coverage.size === 0) {
+    if (selectedPack === 'safe_context_pack') return ['context'];
+    if (selectedPack === 'reminder_alert_pack') return ['reminders'];
+    if (selectedPack === 'media_delivery_pack') return ['delivery'];
+    if (selectedPack === 'settings_mutation_pack') return ['settings'];
+  }
+
+  return [...coverage];
+}
+
+function buildTimedOutWorkingStateResponse(context?: {
+  selectedPack?: ToolPackId | null;
+  workingState?: ExecutiveWorkingState | null;
+  timedOut?: boolean;
+}): string | null {
+  if (!context?.timedOut) return null;
+
+  const workingState = context.workingState;
+  const coverage = summarizeWorkingStateCoverage(
+    workingState?.completedSteps ?? [],
+    context.selectedPack,
+  );
+  const facts = (workingState?.factsLearned ?? [])
+    .map((fact) => fact.trim())
+    .filter((fact) => fact.length > 0)
+    .slice(0, 2);
+  const lastToolSummary = workingState?.artifacts.lastToolSummary?.trim();
+
+  const sentences: string[] = [];
+  if (coverage.length > 0) {
+    sentences.push(`I hit a time limit, but I did check your ${joinHumanList(coverage)}.`);
+  } else {
+    sentences.push('I hit a time limit before I could finish cleanly.');
+  }
+
+  if (facts.length > 0) {
+    sentences.push(`What I found so far: ${facts.join(' ')}`);
+  } else if (lastToolSummary) {
+    sentences.push(`I got as far as ${lastToolSummary}.`);
+  }
+
+  if (context.selectedPack === 'safe_context_pack') {
+    sentences.push(
+      'Give me one narrower clue, like the sender, exact phrase, or timeframe, and I will keep going.',
+    );
+    return sentences.join(' ');
+  }
+
+  if (context.selectedPack === 'reminder_alert_pack') {
+    sentences.push(
+      'Tell me the exact item or timing you want next, and I will continue from there.',
+    );
+    return sentences.join(' ');
+  }
+
+  if (context.selectedPack === 'media_delivery_pack') {
+    sentences.push('Tell me which file and destination you want, and I will retry the delivery.');
+    return sentences.join(' ');
+  }
+
+  if (context.selectedPack === 'calendar_mutation_pack') {
+    sentences.push('Tell me the exact event or time to focus on, and I will continue from there.');
+    return sentences.join(' ');
+  }
+
+  if (context.selectedPack === 'email_send_pack') {
+    sentences.push('If you still want this sent, tell me what to keep or change in the draft.');
+    return sentences.join(' ');
+  }
+
+  sentences.push('Ask again with one tighter detail, and I will pick it up from there.');
+  return sentences.join(' ');
+}
+
 export function resolveTerminalFallbackResponse(
   toolResults: unknown,
   steps?: unknown,
@@ -376,6 +515,7 @@ export function resolveTerminalFallbackResponse(
     workingState?: ExecutiveWorkingState | null;
     turnFeatures?: ExecutiveTurnFeatures | null;
     userRequest?: string | null;
+    timedOut?: boolean;
   },
 ): TerminalFallbackResolution {
   const explicitToolResponse = (() => {
@@ -387,6 +527,16 @@ export function resolveTerminalFallbackResponse(
     if (sendResult) {
       const response = extractUserFacingToolText('send_email', sendResult);
       return response ?? 'I could not send that email. Please try again.';
+    }
+
+    const deliveryResult = extractLatestToolResultFromExecution({
+      toolResults,
+      steps,
+      toolName: 'deliver_content_reference',
+    });
+    if (deliveryResult) {
+      const response = extractUserFacingToolText('deliver_content_reference', deliveryResult);
+      return response ?? 'I found the file, but I could not deliver it.';
     }
 
     const commitResult = extractLatestToolResultFromExecution({
@@ -471,6 +621,14 @@ export function resolveTerminalFallbackResponse(
     };
   }
 
+  const timedOutResponse = buildTimedOutWorkingStateResponse(context);
+  if (timedOutResponse) {
+    return {
+      response: timedOutResponse,
+      source: 'working_state',
+    };
+  }
+
   const isCalendarMutationFallbackTurn =
     context?.selectedPack === 'calendar_mutation_pack' ||
     Boolean(pendingChangeId) ||
@@ -543,6 +701,7 @@ export function buildTerminalFallbackResponse(
     workingState?: ExecutiveWorkingState | null;
     turnFeatures?: ExecutiveTurnFeatures | null;
     userRequest?: string | null;
+    timedOut?: boolean;
   },
 ): string {
   return resolveTerminalFallbackResponse(toolResults, steps, context).response;
@@ -1156,6 +1315,7 @@ const DEFER_ON_STALE_TOOLS = new Set([
   'request_tool_pack_exposure',
   'request_mcp_server_tools',
   'send_email',
+  'deliver_content_reference',
   'plan_calendar_change',
   'commit_calendar_change',
   'plan_mcp_action',
@@ -1171,6 +1331,7 @@ const DEFER_ON_STALE_TOOLS = new Set([
 
 const DEFER_ON_PENDING_STEER_TOOLS = new Set([
   'send_email',
+  'deliver_content_reference',
   'commit_calendar_change',
   'commit_mcp_action',
 ]);

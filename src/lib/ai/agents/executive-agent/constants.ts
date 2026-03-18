@@ -15,6 +15,7 @@ export const MESSAGING_TOOL_RESPONSE_BUFFER_MS = 3_500;
 export const MESSAGING_FIRST_TOOL_MAX_BUDGET_MS = 30_000;
 export const MESSAGING_SUBSEQUENT_TOOL_RESERVE_MS = 15_000;
 export const MESSAGING_MIN_SUBAGENT_BUDGET_MS = 8_000;
+export const MESSAGING_TIMEOUT_SYNTHESIS_BUDGET_MS = 2_500;
 export const PLAN_CALENDAR_CHANGE_MIN_BUDGET_MS = 35_000;
 export const CALENDAR_SEARCH_MIN_BUDGET_MS = 35_000;
 export const MESSAGING_MAX_STEPS = 30;
@@ -44,6 +45,7 @@ export const MESSAGING_TOOL_BUDGETS_BASE: Record<string, number> = {
   snooze_reminder: 50,
   dismiss_reminder: 50,
   cancel_reminder: 50,
+  deliver_content_reference: 4,
   send_email: 1,
   send_progress_update: 3,
   read_email_pdf_attachment: 10,

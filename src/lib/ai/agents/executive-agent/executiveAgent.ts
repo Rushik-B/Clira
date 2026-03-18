@@ -28,6 +28,7 @@ import {
   MESSAGING_MAX_REPAIR_PASSES,
   MESSAGING_MAX_STEPS,
   MESSAGING_MAX_TOOL_CALLS_TOTAL,
+  MESSAGING_TIMEOUT_SYNTHESIS_BUDGET_MS,
   MESSAGING_TOOL_BUDGETS_BASE,
   resolveExecAgentThinkingLevel,
 } from './constants';
@@ -77,6 +78,7 @@ import {
   buildAiTraceMetadata,
   wrapToolsWithAiTracing,
 } from '@/lib/ai/tracing';
+import { extractToolCallsSummary } from '@/lib/ai/agents/executiveToolCallSummary';
 import {
   buildHarnessMetadata,
   buildOrchestrationMetadata,
@@ -95,6 +97,7 @@ import {
   listSelectableMcpServerPacks,
   resolveMcpToolExposure,
 } from '@/lib/services/mcp/policy/service';
+import type { ExecutiveWorkingState } from './types';
 
 function mergeUnique<T>(existing: readonly T[], additions: readonly T[]): T[] {
   return Array.from(new Set([...existing, ...additions]));
@@ -103,6 +106,101 @@ function mergeUnique<T>(existing: readonly T[], additions: readonly T[]): T[] {
 function sameStringSet(left: readonly string[], right: readonly string[]): boolean {
   if (left.length !== right.length) return false;
   return left.every((value) => right.includes(value));
+}
+
+type PartialToolExecution = {
+  passIndex: number;
+  toolName: string;
+  args: unknown;
+  result: unknown;
+  observedAtMs: number;
+};
+
+function compactJson(value: unknown, maxChars = 500): string {
+  try {
+    const serialized = JSON.stringify(value);
+    if (!serialized) return 'null';
+    if (serialized.length <= maxChars) return serialized;
+    return `${serialized.slice(0, Math.max(0, maxChars - 3))}...`;
+  } catch {
+    return '"[unserializable]"';
+  }
+}
+
+function buildTimeoutSynthesisMessages(params: {
+  userRequest: string;
+  selectedPack: ToolPackId | null;
+  workingState: ExecutiveWorkingState | null;
+  partialToolExecutions: PartialToolExecution[];
+}) {
+  const workingState = params.workingState;
+  const completedSteps = (workingState?.completedSteps ?? []).slice(0, 8);
+  const factsLearned = (workingState?.factsLearned ?? []).slice(0, 4);
+  const artifacts = workingState?.artifacts ?? {};
+  const recentExecutions = params.partialToolExecutions.slice(-6);
+  const toolExecutionSummary = extractToolCallsSummary({
+    toolCalls: recentExecutions.map((event) => ({
+      toolName: event.toolName,
+      args: event.args,
+    })),
+    toolResults: recentExecutions.map((event) => ({
+      toolName: event.toolName,
+      result: event.result,
+    })),
+  });
+
+  const snapshotLines = [
+    `User request: ${params.userRequest}`,
+    `Selected pack: ${params.selectedPack ?? 'unknown'}`,
+    `Phase when time ran out: ${workingState?.phase ?? 'unknown'}`,
+    completedSteps.length > 0
+      ? `Completed steps: ${completedSteps.join(', ')}`
+      : 'Completed steps: none recorded',
+    factsLearned.length > 0
+      ? `Facts learned: ${factsLearned.join(' | ')}`
+      : 'Facts learned: none recorded',
+    artifacts.lastToolSummary
+      ? `Last tool summary: ${artifacts.lastToolSummary}`
+      : 'Last tool summary: none recorded',
+    artifacts.lastUserFacingText
+      ? `Last user-facing tool text: ${artifacts.lastUserFacingText}`
+      : 'Last user-facing tool text: none recorded',
+    workingState?.nextStep
+      ? `Next step when interrupted: ${workingState.nextStep}`
+      : 'Next step when interrupted: none recorded',
+    toolExecutionSummary
+      ? `Recent tool trace summary: ${toolExecutionSummary}`
+      : 'Recent tool trace summary: none recorded',
+  ];
+
+  if (recentExecutions.length > 0) {
+    snapshotLines.push('Recent tool execution snapshots:');
+    for (const event of recentExecutions) {
+      snapshotLines.push(
+        `- pass=${event.passIndex} tool=${event.toolName} args=${compactJson(event.args, 220)} result=${compactJson(event.result, 420)}`,
+      );
+    }
+  }
+
+  return [
+    {
+      role: 'user' as const,
+      content: snapshotLines.join('\n'),
+    },
+  ];
+}
+
+function hasUsefulTimeoutSynthesisContext(workingState: ExecutiveWorkingState | null): boolean {
+  if (!workingState) return false;
+  if ((workingState.factsLearned ?? []).length > 0) return true;
+  if ((workingState.completedSteps ?? []).length > 0) return true;
+  if (typeof workingState.artifacts.lastUserFacingText === 'string' && workingState.artifacts.lastUserFacingText.trim()) {
+    return true;
+  }
+  if (typeof workingState.artifacts.lastToolSummary === 'string' && workingState.artifacts.lastToolSummary.trim()) {
+    return true;
+  }
+  return false;
 }
 
 export class ExecutiveAgent {
@@ -137,6 +235,8 @@ export class ExecutiveAgent {
     let repairReason: string | null = null;
     let repairExpandedPacks: ToolPackId[] = [];
     let repairExpandedMcpConnectionIds: string[] = [];
+    let timeoutSynthesisResponse: string | null = null;
+    const partialToolExecutions: PartialToolExecution[] = [];
 
     try {
       const resolvedUserTimezone = await resolveUserCalendarTimezone(input.userId);
@@ -358,6 +458,16 @@ export class ExecutiveAgent {
           hasPendingSteer,
           onToolResult: (toolName, args, result, observedAtMs) => {
             workingStateController?.updateFromToolResult(toolName, result);
+            partialToolExecutions.push({
+              passIndex,
+              toolName,
+              args,
+              result,
+              observedAtMs,
+            });
+            if (partialToolExecutions.length > 24) {
+              partialToolExecutions.splice(0, partialToolExecutions.length - 24);
+            }
 
             if (
               toolName === 'append_to_supermemory' &&
@@ -786,14 +896,57 @@ export class ExecutiveAgent {
         metadata.orchestration = orchestrationMetadata;
       }
 
-      return {
-        response: isDeadline
-          ? 'I hit a time limit. Should I check your inbox or your calendar?'
-          : buildTerminalFallbackResponse([], [], {
+      if (
+        isDeadline &&
+        !input.abortSignal?.aborted &&
+        hasUsefulTimeoutSynthesisContext(currentWorkingStateController?.getState() ?? null)
+      ) {
+        const timeoutSynthesisAbort = createDeadlineController({
+          abortSignal: input.abortSignal,
+          deadlineMs: MESSAGING_TIMEOUT_SYNTHESIS_BUDGET_MS,
+        });
+        try {
+          const synthesis = await callTextWithMessages({
+            model: models.execAgent(),
+            system:
+              'You are writing the final user reply after the executive agent ran out of time. Use only the gathered state provided in the message. Give the user any concrete info already found. If the result is incomplete, say that plainly and ask for exactly one short clarification or narrowing detail. Do not claim actions or facts that are not in the provided state.',
+            messages: buildTimeoutSynthesisMessages({
+              userRequest: input.userRequest,
               selectedPack: primaryPack,
               workingState: currentWorkingStateController?.getState() ?? null,
-              turnFeatures,
+              partialToolExecutions,
             }),
+            temperature: 0.2,
+            abortSignal: timeoutSynthesisAbort.signal ?? input.abortSignal,
+            op: `${resolvedChannel}.executive.timeout_synthesis`,
+            concurrency: { key: `${resolvedChannel}.executive`, maxConcurrency: 4 },
+            retry: { maxAttempts: 1, baseDelayMs: 250 },
+            providerOptions: { google: { thinkingConfig: { thinkingBudget: 0 } } },
+            traceContext: input.traceContext,
+          });
+          const text = (synthesis.text || '').trim();
+          if (text) {
+            timeoutSynthesisResponse = text;
+          }
+        } catch (timeoutSynthesisError) {
+          logger.warn('[executiveAgent] Timeout synthesis failed, using terminal fallback', {
+            err: timeoutSynthesisError,
+          });
+        } finally {
+          timeoutSynthesisAbort.cleanup();
+        }
+      }
+
+      return {
+        response:
+          timeoutSynthesisResponse ??
+          buildTerminalFallbackResponse([], [], {
+            selectedPack: primaryPack,
+            workingState: currentWorkingStateController?.getState() ?? null,
+            turnFeatures,
+            userRequest: input.userRequest,
+            timedOut: isDeadline,
+          }),
         memoryStored,
         status: 'fallback',
         error: message,
