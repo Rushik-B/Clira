@@ -42,6 +42,7 @@ import {
 } from '@/lib/services/messaging-orchestration';
 import {
   buildInlineBufferProvenance,
+  createStoredContentReference,
   extractContentFromBuffer,
   ingestWebChatUploads,
   formatMessagingMediaForAgent,
@@ -417,6 +418,20 @@ export async function processWhatsAppMessage(
     try {
       if (message.audioMediaId) {
         const media = await whatsappClient.getMediaBuffer(message.audioMediaId);
+        const contentReference = await createStoredContentReference({
+          userId,
+          buffer: media.data,
+          mimeHint: media.mimeType,
+          trustClass: 'user_provided',
+          provenance: buildInlineBufferProvenance({
+            sourceLabel: 'WhatsApp voice memo',
+            sourceKind: 'whatsapp_media',
+            channel: 'whatsapp',
+            conversationId: conversation.id,
+            messageId,
+            attachmentId: message.audioMediaId,
+          }),
+        });
         const extraction = await extractContentFromBuffer({
           buffer: media.data,
           mimeType: media.mimeType,
@@ -455,7 +470,11 @@ export async function processWhatsAppMessage(
           };
         }
 
-        inboundMetadata = { senderName, fromVoiceMemo: true };
+        inboundMetadata = {
+          senderName,
+          fromVoiceMemo: true,
+          contentRefIds: [contentReference.contentRefId],
+        };
 
         logger.info('[messageProcessor] Voice memo transcribed', {
           waId: `${waId.slice(0, 4)}****`,
@@ -466,6 +485,20 @@ export async function processWhatsAppMessage(
       } else if (message.imageMediaId) {
         const media = await whatsappClient.getMediaBuffer(message.imageMediaId!);
         const caption = message.imageCaption?.trim();
+        const contentReference = await createStoredContentReference({
+          userId,
+          buffer: media.data,
+          mimeHint: media.mimeType,
+          trustClass: 'user_provided',
+          provenance: buildInlineBufferProvenance({
+            sourceLabel: 'WhatsApp image',
+            sourceKind: 'whatsapp_media',
+            channel: 'whatsapp',
+            conversationId: conversation.id,
+            messageId,
+            attachmentId: message.imageMediaId,
+          }),
+        });
         const extraction = await extractContentFromBuffer({
           buffer: media.data,
           mimeType: media.mimeType,
@@ -489,7 +522,12 @@ export async function processWhatsAppMessage(
           extraction,
           caption,
         });
-        inboundMetadata = { senderName, fromImage: true, imageCaption: message.imageCaption ?? null };
+        inboundMetadata = {
+          senderName,
+          fromImage: true,
+          imageCaption: message.imageCaption ?? null,
+          contentRefIds: [contentReference.contentRefId],
+        };
 
         logger.info('[messageProcessor] Image described', {
           waId: `${waId.slice(0, 4)}****`,
@@ -501,6 +539,21 @@ export async function processWhatsAppMessage(
       } else {
         const media = await whatsappClient.getMediaBuffer(message.pdfMediaId!);
         const caption = message.pdfCaption?.trim();
+        const contentReference = await createStoredContentReference({
+          userId,
+          buffer: media.data,
+          displayName: message.pdfFilename ?? null,
+          mimeHint: message.pdfMimeType ?? media.mimeType,
+          trustClass: 'user_provided',
+          provenance: buildInlineBufferProvenance({
+            sourceLabel: 'WhatsApp PDF',
+            sourceKind: 'whatsapp_media',
+            channel: 'whatsapp',
+            conversationId: conversation.id,
+            messageId,
+            attachmentId: message.pdfMediaId,
+          }),
+        });
         const extraction = await extractContentFromBuffer({
           buffer: media.data,
           mimeType: message.pdfMimeType ?? media.mimeType,
@@ -531,6 +584,7 @@ export async function processWhatsAppMessage(
           fromPdf: true,
           pdfFilename: message.pdfFilename ?? null,
           pdfCaption: message.pdfCaption ?? null,
+          contentRefIds: [contentReference.contentRefId],
         };
 
         logger.info('[messageProcessor] PDF extracted', {

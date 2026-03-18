@@ -40,6 +40,7 @@ import {
 } from '@/lib/services/messaging-orchestration';
 import {
   buildInlineBufferProvenance,
+  createStoredContentReference,
   extractContentFromBuffer,
   formatMessagingMediaForAgent,
   renderContentExtractionForLegacyText,
@@ -424,6 +425,20 @@ export async function processTelegramMessage(
     try {
       if (message.voiceFileId) {
         const media = await telegramClient.getFileBuffer(message.voiceFileId);
+        const contentReference = await createStoredContentReference({
+          userId: link.userId,
+          buffer: media.data,
+          mimeHint: message.voiceMimeType ?? media.mimeType,
+          trustClass: 'user_provided',
+          provenance: buildInlineBufferProvenance({
+            sourceLabel: 'Telegram voice memo',
+            sourceKind: 'telegram_media',
+            channel: 'telegram',
+            conversationId: conversation.id,
+            messageId,
+            attachmentId: message.voiceFileId,
+          }),
+        });
         const extraction = await extractContentFromBuffer({
           buffer: media.data,
           mimeType: message.voiceMimeType ?? media.mimeType,
@@ -454,10 +469,28 @@ export async function processTelegramMessage(
             error: 'Voice memo transcription empty',
           };
         }
-        inboundMetadata = { senderName, fromVoiceMemo: true };
+        inboundMetadata = {
+          senderName,
+          fromVoiceMemo: true,
+          contentRefIds: [contentReference.contentRefId],
+        };
       } else if (message.imageFileId) {
         const media = await telegramClient.getFileBuffer(message.imageFileId!);
         const caption = message.imageCaption?.trim();
+        const contentReference = await createStoredContentReference({
+          userId: link.userId,
+          buffer: media.data,
+          mimeHint: message.imageMimeType ?? media.mimeType,
+          trustClass: 'user_provided',
+          provenance: buildInlineBufferProvenance({
+            sourceLabel: 'Telegram image',
+            sourceKind: 'telegram_media',
+            channel: 'telegram',
+            conversationId: conversation.id,
+            messageId,
+            attachmentId: message.imageFileId,
+          }),
+        });
         const extraction = await extractContentFromBuffer({
           buffer: media.data,
           mimeType: message.imageMimeType ?? media.mimeType,
@@ -482,10 +515,30 @@ export async function processTelegramMessage(
           extraction,
           caption,
         });
-        inboundMetadata = { senderName, fromImage: true, imageCaption: message.imageCaption ?? null };
+        inboundMetadata = {
+          senderName,
+          fromImage: true,
+          imageCaption: message.imageCaption ?? null,
+          contentRefIds: [contentReference.contentRefId],
+        };
       } else {
         const media = await telegramClient.getFileBuffer(message.pdfFileId!);
         const caption = message.pdfCaption?.trim();
+        const contentReference = await createStoredContentReference({
+          userId: link.userId,
+          buffer: media.data,
+          displayName: message.pdfFilename ?? null,
+          mimeHint: message.pdfMimeType ?? media.mimeType,
+          trustClass: 'user_provided',
+          provenance: buildInlineBufferProvenance({
+            sourceLabel: 'Telegram PDF',
+            sourceKind: 'telegram_media',
+            channel: 'telegram',
+            conversationId: conversation.id,
+            messageId,
+            attachmentId: message.pdfFileId,
+          }),
+        });
         const extraction = await extractContentFromBuffer({
           buffer: media.data,
           mimeType: message.pdfMimeType ?? media.mimeType,
@@ -517,6 +570,7 @@ export async function processTelegramMessage(
           fromPdf: true,
           pdfFilename: message.pdfFilename ?? null,
           pdfCaption: message.pdfCaption ?? null,
+          contentRefIds: [contentReference.contentRefId],
         };
       }
     } catch (error) {
