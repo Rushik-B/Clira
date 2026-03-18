@@ -6,6 +6,14 @@ import { models } from '@/lib/ai/models';
 import { ReplyRouterDecisionSchema, type ReplyRouterDecisionDTO } from '@/lib/ai/schemas/schemas';
 import { prisma } from '@/lib/prisma';
 import { logger } from '@/lib/logger';
+import { createGmailServiceForUser } from '@/lib/security/getUserGmailCredentials';
+import {
+  EmailRouterService,
+  type EmailToRoute,
+  type RouterDecision,
+} from '@/lib/email/emailRouterService';
+import { GmailLabelClassifier } from '@/lib/services/utils/gmailLabelClassifier';
+import { updateFolderEmailCount } from '@/lib/services/onboarding-services/utils/folderLabelUtils';
 
 export type ReplyRouterAgentInput = {
   userId: string;
@@ -18,6 +26,41 @@ export type ReplyRouterAgentInput = {
    * Useful for deterministic testing (Injection Harness).
    */
   strict?: boolean;
+};
+
+export type ReplyRouterRealtimeLabelStatus =
+  | 'applied'
+  | 'already-applied'
+  | 'preserved-existing-custom-label'
+  | 'skipped-auto-sorting-disabled'
+  | 'skipped-missing-mailbox'
+  | 'degraded-unsorted'
+  | 'degraded-missing-label'
+  | 'error';
+
+export type ReplyRouterRealtimeLabelingResult = {
+  status: ReplyRouterRealtimeLabelStatus;
+  reason: string;
+  decision?: RouterDecision;
+  label?: {
+    id: string;
+    name: string;
+    color?: string;
+    gmailLabelId?: string;
+  };
+  preservedCustomLabels?: string[];
+  emailSortId?: string;
+};
+
+export type ReplyRouterRealtimeInput = ReplyRouterAgentInput & {
+  mailboxId?: string;
+  mailboxEmail?: string;
+  emailId?: string;
+};
+
+export type ReplyRouterRealtimeResult = {
+  replyDecision: ReplyRouterDecisionDTO;
+  labeling: ReplyRouterRealtimeLabelingResult;
 };
 
 function asCsv(values: string[] | undefined): string {
@@ -102,5 +145,267 @@ export class ReplyRouterAgent {
       };
     }
   }
-}
 
+  async evaluateRealtimeRouting(input: ReplyRouterRealtimeInput): Promise<ReplyRouterRealtimeResult> {
+    const routerDecision = await this.evaluate(input);
+    const replyDecision = input.filterResult.shouldReply
+      ? routerDecision
+      : {
+          ...routerDecision,
+          shouldReply: false,
+          reason: `Reply policy blocked draft generation: ${input.filterResult.reason}`,
+        };
+
+    const labeling = await this.applyRealtimeLabeling(input);
+    return {
+      replyDecision,
+      labeling,
+    };
+  }
+
+  private async applyRealtimeLabeling(
+    input: ReplyRouterRealtimeInput,
+  ): Promise<ReplyRouterRealtimeLabelingResult> {
+    if (!input.mailboxId) {
+      return {
+        status: 'skipped-missing-mailbox',
+        reason: 'Mailbox context missing; skipping realtime label routing.',
+      };
+    }
+
+    try {
+      const userSettings = await prisma.userSettings.findUnique({
+        where: { userId: input.userId },
+        select: { autoSortingEnabled: true },
+      });
+
+      if (!userSettings?.autoSortingEnabled) {
+        return {
+          status: 'skipped-auto-sorting-disabled',
+          reason: 'Automatic sorting is disabled for this user.',
+        };
+      }
+
+      const currentLabelIds = Array.isArray(input.message.labelIds)
+        ? input.message.labelIds.filter(Boolean)
+        : [];
+      const labelAnalysis = GmailLabelClassifier.hasCustomLabels(currentLabelIds);
+      if (labelAnalysis.hasCustom) {
+        return {
+          status: 'preserved-existing-custom-label',
+          reason: 'Email already has custom Gmail labels; preserving existing organization.',
+          preservedCustomLabels: labelAnalysis.customLabels,
+        };
+      }
+
+      const emailRouter = new EmailRouterService();
+      const routeDecision = await emailRouter.routeSingleEmail(
+        input.userId,
+        this.toEmailToRoute(input),
+        input.mailboxId,
+      );
+
+      if (!routeDecision.labelId || routeDecision.labelName === 'Unsorted') {
+        return {
+          status: 'degraded-unsorted',
+          reason: routeDecision.reasoning || 'Realtime label routing returned no actionable label.',
+          decision: routeDecision,
+        };
+      }
+
+      const label = await prisma.label.findFirst({
+        where: {
+          id: routeDecision.labelId,
+          userId: input.userId,
+          mailboxId: input.mailboxId,
+        },
+        select: {
+          id: true,
+          name: true,
+          color: true,
+          gmailLabelId: true,
+        },
+      });
+      const normalizedLabel = label
+        ? {
+            id: label.id,
+            name: label.name,
+            color: label.color || undefined,
+            gmailLabelId: label.gmailLabelId || undefined,
+          }
+        : undefined;
+
+      if (!label || !label.gmailLabelId) {
+        return {
+          status: 'degraded-missing-label',
+          reason: `Resolved label "${routeDecision.labelName}" is missing a Gmail label id.`,
+          decision: routeDecision,
+        };
+      }
+
+      let status: ReplyRouterRealtimeLabelStatus = 'already-applied';
+      let reason = `Label "${label.name}" was already present on the Gmail message.`;
+
+      if (!currentLabelIds.includes(label.gmailLabelId)) {
+        const gmailResult = await createGmailServiceForUser({
+          userId: input.userId,
+          mailboxId: input.mailboxId,
+          purpose: 'reply-router:realtime-labeling',
+          requester: 'ReplyRouterAgent.evaluateRealtimeRouting',
+        });
+
+        if (!gmailResult) {
+          return {
+            status: 'error',
+            reason: 'Gmail service unavailable; unable to apply realtime label.',
+            decision: routeDecision,
+            label: normalizedLabel,
+          };
+        }
+
+        await gmailResult.gmail.modifyLabelsOnEmail(input.message.messageId, [label.gmailLabelId], []);
+        status = 'applied';
+        reason = `Applied label "${label.name}" in realtime router path.`;
+      }
+
+      const persisted = await this.upsertRealtimeEmailSort({
+        input,
+        decision: routeDecision,
+        label,
+      });
+
+      await this.recalculateFolderCounts(
+        input.userId,
+        persisted.previousLabelId,
+        label.id,
+      );
+
+      if (status === 'applied') {
+        await prisma.actionHistory.create({
+          data: {
+            userId: input.userId,
+            actionType: 'EMAIL_EDITED',
+            actionSummary: `Auto-labeled with "${label.name}"`,
+            actionDetails: {
+              emailId: input.emailId,
+              gmailMessageId: input.message.messageId,
+              labelName: label.name,
+              gmailLabelId: label.gmailLabelId,
+              reasoning: routeDecision.reasoning,
+              source: 'reply-router-realtime',
+            },
+            emailReference: input.emailId,
+            confidence: routeDecision.confidence,
+            undoable: false,
+            metadata: {
+              source: 'reply-router-realtime',
+              labelId: label.id,
+            },
+          },
+        });
+      }
+
+      return {
+        status,
+        reason,
+        decision: routeDecision,
+        label: normalizedLabel,
+        emailSortId: persisted.emailSortId,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      logger.error(`[replyRouterAgent] Realtime labeling failed: ${message}`);
+      return {
+        status: 'error',
+        reason: `Realtime labeling failed: ${message}`,
+      };
+    }
+  }
+
+  private toEmailToRoute(input: ReplyRouterRealtimeInput): EmailToRoute {
+    return {
+      gmailMessageId: input.message.messageId,
+      from: input.message.from,
+      subject: input.message.subject,
+      snippet: pruneEmailContentForRouting({
+        subject: input.message.subject,
+        body: input.message.body,
+      }).prunedBody.slice(0, 500),
+      body: input.message.body,
+      to: input.message.to,
+      cc: input.message.cc || [],
+      labels: input.message.labelIds || [],
+      mailboxId: input.mailboxId,
+    };
+  }
+
+  private buildRealtimeSortDedupeKey(input: ReplyRouterRealtimeInput): string {
+    return `router_realtime:${input.mailboxId}:${input.message.messageId}`;
+  }
+
+  private async upsertRealtimeEmailSort(params: {
+    input: ReplyRouterRealtimeInput;
+    decision: RouterDecision;
+    label: { id: string };
+  }): Promise<{ emailSortId: string; previousLabelId?: string }> {
+    const { input, decision, label } = params;
+    const dedupeKey = this.buildRealtimeSortDedupeKey(input);
+
+    const existing = await prisma.emailSort.findUnique({
+      where: { dedupeKey },
+      select: { id: true, labelId: true },
+    });
+
+    const emailSort = await prisma.emailSort.upsert({
+      where: { dedupeKey },
+      update: {
+        userId: input.userId,
+        mailboxId: input.mailboxId,
+        labelId: label.id,
+        gmailMessageId: input.message.messageId,
+        confidence: decision.confidence,
+        reasoning: decision.reasoning,
+        source: 'router_realtime',
+        sortedAt: new Date(),
+      },
+      create: {
+        userId: input.userId,
+        mailboxId: input.mailboxId,
+        labelId: label.id,
+        gmailMessageId: input.message.messageId,
+        confidence: decision.confidence,
+        reasoning: decision.reasoning,
+        source: 'router_realtime',
+        dedupeKey,
+      },
+      select: { id: true },
+    });
+
+    return {
+      emailSortId: emailSort.id,
+      previousLabelId: existing?.labelId,
+    };
+  }
+
+  private async recalculateFolderCounts(
+    userId: string,
+    previousLabelId: string | undefined,
+    currentLabelId: string,
+  ): Promise<void> {
+    const touchedLabelIds = Array.from(
+      new Set([previousLabelId, currentLabelId].filter((value): value is string => !!value)),
+    );
+
+    await Promise.all(
+      touchedLabelIds.map(async (labelId) => {
+        const count = await prisma.emailSort.count({
+          where: {
+            userId,
+            labelId,
+          },
+        });
+        await updateFolderEmailCount(labelId, count);
+      }),
+    );
+  }
+}

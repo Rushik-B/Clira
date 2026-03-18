@@ -2,14 +2,13 @@ import { prisma } from '../prisma';
 import { GmailService } from './gmail';
 import { ReplyGeneratorService } from '../services/core/replyGenerator';
 import { emitQueueEvent } from '@/lib/events/queueEvents';
-import { EmailRoutingService } from '@/lib/services/emailRoutingService';
-import { EmailFilterService, EmailMessage } from './emailFilterService';
+import { EmailFilterService, EmailMessage, isHardSkipFilterResult } from './emailFilterService';
 import { ReplyRouterAgent } from '@/lib/ai/agents/replyRouterAgent';
-import { FeatureFlags } from '@/lib/services/utils/featureFlags';
 import { createGmailServiceForUser } from '@/lib/security/getUserGmailCredentials';
 import { encryptEmailContent, encryptThreadContent, decryptEmailContent, decryptEmails, decryptThreadContent } from '@/lib/security/emailCrypto';
 import { triggerAlertNotification } from '@/lib/services/alertNotificationService';
 import { enqueueInboxIndexJob } from '@/lib/services/inbox-search';
+import { reconcileResolvedGeneratedDrafts } from '@/lib/services/queue/reconcileResolvedGeneratedDrafts';
 // AI queue label removed: no longer creating/applying a dedicated Gmail label
 import type { AiTraceContext } from '@/lib/ai/tracing';
 import {
@@ -48,6 +47,16 @@ export class GmailPushService {
     this.gmail = null;
   }
 
+  private isHistoryIdNewer(candidate: string | null | undefined, current: string | null | undefined): boolean {
+    if (!candidate) return false;
+    if (!current) return true;
+
+    try {
+      return BigInt(candidate) > BigInt(current);
+    } catch {
+      return candidate !== current;
+    }
+  }
   private async prepareGmailClient({
     userId,
     mailboxId,
@@ -103,6 +112,20 @@ export class GmailPushService {
         throw new Error('GmailPushService requires userId and mailboxId to setup push notifications');
       }
 
+      const mailboxRecord = await prisma.mailbox.findUnique({
+        where: { id: mailboxId },
+        select: {
+          emailAddress: true,
+          gmailHistoryId: true,
+        },
+      });
+
+      if (!mailboxRecord?.emailAddress) {
+        throw new Error(`Mailbox ${mailboxId} not found while setting up Gmail push notifications`);
+      }
+
+      const previousHistoryId = mailboxRecord.gmailHistoryId || null;
+
       const context = await createGmailServiceForUser({
         userId,
         mailboxId,
@@ -140,14 +163,32 @@ export class GmailPushService {
       
       console.log(`✅ Push notifications setup - historyId: ${response.data.historyId}, expiration: ${response.data.expiration}`);
       
-      // Store the initial history ID to avoid processing old emails on first notification
       if (response.data.historyId) {
-        await this.updateLastHistoryId(mailboxId, response.data.historyId);
-        console.log(`📧 Stored initial history ID ${response.data.historyId} for mailbox ${mailboxId}`);
-        
-        // **IMPORTANT**: Do NOT fetch any emails during initial setup
-        // This prevents processing emails before onboarding is complete
-        console.log(`🚫 Skipping email fetch during initial push setup for mailbox ${mailboxId}`);
+        const newHistoryId = String(response.data.historyId);
+
+        if (previousHistoryId && this.isHistoryIdNewer(newHistoryId, previousHistoryId)) {
+          console.log(
+            `📬 Gmail watch renewed for mailbox ${mailboxId}; catching up history gap ${previousHistoryId} → ${newHistoryId}`,
+          );
+
+          try {
+            await this.processPushNotification({
+              emailAddress: mailboxRecord.emailAddress,
+              historyId: newHistoryId,
+            });
+          } catch (catchUpError) {
+            console.error(
+              `❌ Failed to catch up Gmail history gap for mailbox ${mailboxId}; preserving previous checkpoint ${previousHistoryId}`,
+              catchUpError,
+            );
+          }
+        } else {
+          await this.updateLastHistoryId(mailboxId, newHistoryId);
+          console.log(`📧 Stored initial history ID ${newHistoryId} for mailbox ${mailboxId}`);
+
+          // Do not fetch historical mail on first watch setup.
+          console.log(`🚫 Skipping email fetch during initial push setup for mailbox ${mailboxId}`);
+        }
       }
 
       if (response.data.expiration) {
@@ -695,37 +736,6 @@ export class GmailPushService {
               
               console.log(`🔒 Marked email ${savedEmail.id} as processing`);
               
-              // Predict label (for UI scoping) — used if we emit events later
-              let predictedLabelId: string | undefined;
-              let predictedLabelName: string | undefined;
-              let predictedLabelColor: string | undefined;
-              let predictedGmailLabelId: string | undefined;
-              try {
-                const router = new EmailRoutingService();
-                const route = await router.routeEmail(user.id, {
-                  from: emailData.from,
-                  subject: emailData.subject,
-                  to: emailData.to || [],
-                  cc: emailData.cc || [],
-                });
-                if (route?.labelId) {
-                  const label = await prisma.label.findFirst({
-                    where: { id: route.labelId, userId: user.id },
-                    select: { id: true, name: true, color: true, gmailLabelId: true },
-                  });
-                  if (label) {
-                    predictedLabelId = label.id;
-                    predictedLabelName = label.name;
-                    predictedLabelColor = label.color || '#6B7280';
-                    predictedGmailLabelId = label.gmailLabelId || undefined;
-                  }
-                }
-              } catch (e) {
-                console.warn(`⚠️ Label prediction failed for email ${savedEmail.id}:`, e);
-              }
-
-              const queueLabelId = predictedLabelId;
-              
               // Apply email filtering
               const emailMessage: EmailMessage = {
                 messageId: emailData.messageId,
@@ -761,8 +771,8 @@ export class GmailPushService {
               );
               
               console.log(`🔬 DEBUG: Filter result - shouldReply: ${filterResult.shouldReply}, reason: ${filterResult.reason}`);
-              
-                              if (!filterResult.shouldReply) {
+
+              if (!filterResult.shouldReply && isHardSkipFilterResult(filterResult)) {
                 console.log(`🚫 Email filtered: ${filterResult.reason}`);
                 
                 // Store filter reason in action history for transparency
@@ -788,22 +798,37 @@ export class GmailPushService {
                 
                 continue;
               }
-              
-              console.log(`✅ Email passed filters: ${filterResult.reason}`);
+
+              console.log(
+                filterResult.shouldReply
+                  ? `✅ Email passed reply policy: ${filterResult.reason}`
+                  : `🏷️ Email blocked for draft generation but still eligible for labeling: ${filterResult.reason}`,
+              );
 
               // Stage 1 (Router): LLM-based second-pass evaluator to prevent unnecessary drafts
-              // Runs after deterministic filter has allowed the email
+              // Existing evaluate() behavior is preserved; realtime labeling uses the new router entrypoint.
               const router = new ReplyRouterAgent();
-              const routerDecision = await router.evaluate({
+              const routerResult = await router.evaluateRealtimeRouting({
                 userId: user.id,
                 userEmail: userDetails.email,
+                emailId: savedEmail.id,
+                mailboxId: mailbox.id,
+                mailboxEmail: mailbox.emailAddress,
                 message: emailMessage,
                 filterResult,
                 strict: false,
               });
+              const routerDecision = routerResult.replyDecision;
+              const queueLabelId = routerResult.labeling.label?.id;
+              const predictedLabelName = routerResult.labeling.label?.name;
+              const predictedLabelColor = routerResult.labeling.label?.color || '#6B7280';
+              const predictedGmailLabelId = routerResult.labeling.label?.gmailLabelId;
 
               console.log(
                 `🧭 Router decision - shouldReply: ${routerDecision.shouldReply}, reason: ${routerDecision.reason}`,
+              );
+              console.log(
+                `🏷️ Router labeling - status: ${routerResult.labeling.status}, reason: ${routerResult.labeling.reason}`,
               );
 
               if (routerDecision.shouldNotify && routerDecision.matchedAlertId) {
@@ -817,7 +842,8 @@ export class GmailPushService {
                   email: {
                     from: emailData.from,
                     subject: emailData.subject,
-                    snippet: (emailData.snippet || emailData.body || '').slice(0, 500),
+                    // Use a larger window so decisive sentences are not truncated
+                    snippet: (emailData.snippet || emailData.body || '').slice(0, 5000),
                   },
                   alert: {
                     id: routerDecision.matchedAlertId,
@@ -847,6 +873,7 @@ export class GmailPushService {
                       autoFiltered: true,
                       filterReason: filterResult.reason,
                       routerBlocked: true,
+                      labelingStatus: routerResult.labeling.status,
                     },
                   },
                 });
@@ -900,7 +927,12 @@ export class GmailPushService {
                   mailboxId: mailbox.id,
                   mailboxEmail: mailbox.emailAddress,
                   gmailMessageId: emailData.gmailMessageId,
-                  currentLabelIds: emailData.labelIds || [],
+                  currentLabelIds: Array.from(
+                    new Set([
+                      ...(emailData.labelIds || []),
+                      ...(predictedGmailLabelId ? [predictedGmailLabelId] : []),
+                    ]),
+                  ),
                   traceContext,
                   incomingEmail: {
                     from: emailData.from,
@@ -1426,77 +1458,34 @@ export class GmailPushService {
       // Ensure token is valid before attempting any Gmail operations
       await this.ensureAuthenticated();
 
-      // Find the latest incoming email in this thread that has a generated reply but no feedback
-      const unprocessedRecord = await prisma.email.findFirst({
-        where: {
-          mailboxId,
-          thread: { userId, mailboxId },
-          gmailThreadId: sentEmail.gmailThreadId,
-          isSent: false,
-          feedback: null,
-          generatedDraft: { isNot: null },
-        },
-        include: { generatedDraft: true, thread: true },
-        orderBy: { createdAt: 'desc' }, // Get the most recent one
-      });
-
-      if (!unprocessedRecord) {
-        console.log(`📤 No unprocessed AI replies found for thread ${sentEmail.gmailThreadId}`);
+      if (!this.gmailService) {
+        console.warn(`⚠️ Gmail service unavailable during sent-email reconciliation for thread ${sentEmail.gmailThreadId}`);
         return;
       }
 
-      const unprocessedEmail = await decryptEmailContent({ email: unprocessedRecord, userId });
+      const resolvedAt = sentEmail.date instanceof Date
+        ? sentEmail.date
+        : new Date(sentEmail.date ?? Date.now());
 
-      console.log(`📤 Found unprocessed AI reply for email ${unprocessedEmail.id}, marking as externally handled`);
+      const reconciliation = await reconcileResolvedGeneratedDrafts({
+        userId,
+        mailboxId,
+        gmailThreadId: sentEmail.gmailThreadId,
+        resolvedAt,
+        sentMessageId: sentEmail.messageId,
+        source: 'gmail-push-external-send',
+        gmail: this.gmailService,
+      });
 
-      // Create feedback entry to mark as handled externally
-      await prisma.feedback.upsert({
-        where: { emailId: unprocessedEmail.id },
-        update: {
-          action: 'ACCEPTED',
-          editDelta: {
-            external: true,
-            sentVia: 'gmail_client',
-            repliedAt: new Date().toISOString(),
-            sentEmailId: sentEmail.messageId,
-        },
-      },
-      create: {
-        userId: userId,
-        emailId: unprocessedEmail.id,
-        action: 'ACCEPTED',
-        editDelta: {
-          external: true,
-          sentVia: 'gmail_client', 
-          repliedAt: new Date().toISOString(),
-          sentEmailId: sentEmail.messageId,
-        },
-      },
-    });
-
-    // If there's a Gmail draft ID, we can try to clean it up (optional)
-    if (unprocessedEmail.generatedDraft?.gmailDraftId) {
-      try {
-        console.log(`📤 Attempting to clean up Gmail draft ${unprocessedEmail.generatedDraft.gmailDraftId}`);
-        await this.ensureAuthenticated();
-        await this.gmail.users.drafts.delete({
-          userId: 'me',
-          id: unprocessedEmail.generatedDraft.gmailDraftId,
-        });
-        
-        // Remove draft metadata to keep pointers accurate
-        await prisma.generatedDraft.delete({
-          where: { id: unprocessedEmail.generatedDraft.id },
-        });
-        
-        console.log(`✅ Cleaned up Gmail draft ${unprocessedEmail.generatedDraft.gmailDraftId}`);
-      } catch (draftCleanupError) {
-        console.warn(`⚠️ Failed to clean up Gmail draft ${unprocessedEmail.generatedDraft.gmailDraftId}:`, draftCleanupError);
-        // Don't fail the whole process if draft cleanup fails
+      if (reconciliation.candidateCount === 0) {
+        console.log(`📤 No pending AI drafts found for thread ${sentEmail.gmailThreadId}`);
+        return;
       }
-    }
 
-      console.log(`✅ Marked AI reply for email ${unprocessedEmail.id} as handled externally`);
+      console.log(`✅ Reconciled sent-email thread ${sentEmail.gmailThreadId}`, {
+        mailboxId,
+        ...reconciliation,
+      });
       
     } catch (error) {
       console.error(`❌ Error handling sent email for reply resolution:`, error);

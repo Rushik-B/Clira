@@ -25,6 +25,28 @@ type CacheSource = 'history' | 'runtime';
 type MutationToolName = 'append_to_supermemory' | 'commit_calendar_change';
 type CacheMissReason = 'not_found' | 'expired' | 'invalidated';
 
+const MCP_TOOL_PREFIX = 'mcp__';
+const MCP_RESULT_TTL_MS = 5 * 60 * 1000;
+
+function isMcpToolName(value: string): boolean {
+  return value.startsWith(MCP_TOOL_PREFIX);
+}
+
+function isMcpMutationToolName(value: unknown): value is 'commit_mcp_action' {
+  return value === 'commit_mcp_action';
+}
+
+type McpCacheStatKey =
+  | 'history_hit'
+  | 'runtime_hit'
+  | 'miss_not_found'
+  | 'miss_expired'
+  | 'miss_invalidated'
+  | 'set_ok'
+  | 'set_skipped_non_cacheable';
+
+export type McpToolResultCacheStats = Record<McpCacheStatKey, number>;
+
 type CacheEntry = {
   result: unknown;
   storedAtMs: number;
@@ -242,6 +264,17 @@ function buildToolCacheKey(toolName: CacheableToolName, args: unknown): string {
   const normalizedArgs = normalizeToolArgs(toolName, args);
   return `${toolName}::${stableSerialize(normalizedArgs)}`;
 }
+
+function buildMcpCacheKey(modelToolName: string, args: unknown): string {
+  const normalized = normalizeValue(args);
+  return `mcp::${modelToolName}::${stableSerialize(normalized)}`;
+}
+
+type ExtractedMcpToolResult = {
+  modelToolName: string;
+  args: unknown;
+  result: unknown;
+};
 
 function readAnyToolName(record: Record<string, unknown>): string | null {
   const toolName = record.toolName ?? record.name ?? record.tool;
@@ -564,6 +597,87 @@ function extractToolResultsFromMessage(params: {
   return extracted;
 }
 
+function extractMcpToolResultsFromMessage(params: {
+  metadata: Record<string, unknown>;
+}): ExtractedMcpToolResult[] {
+  if (!Array.isArray(params.metadata.toolResults)) {
+    return [];
+  }
+
+  const toolCalls = parseToolCalls(params.metadata);
+  const callArgsById = new Map<string, unknown>();
+  const callArgsByTool = new Map<string, unknown[]>();
+
+  for (const toolCall of toolCalls) {
+    if (!isMcpToolName(toolCall.toolName)) continue;
+
+    if (toolCall.callId) {
+      callArgsById.set(toolCall.callId, toolCall.args);
+    }
+
+    const existing = callArgsByTool.get(toolCall.toolName) ?? [];
+    existing.push(toolCall.args);
+    callArgsByTool.set(toolCall.toolName, existing);
+  }
+
+  const extracted: ExtractedMcpToolResult[] = [];
+
+  for (const rawResult of params.metadata.toolResults) {
+    if (!isRecord(rawResult)) continue;
+    const toolName = readAnyToolName(rawResult);
+    if (!toolName || !isMcpToolName(toolName)) continue;
+
+    const args = resolveResultArgs({
+      rawResult,
+      toolName,
+      callArgsById,
+      callArgsByTool,
+    });
+    if (args === undefined) continue;
+
+    const result = rawResult.result;
+    if (!isResultCacheable(result)) continue;
+
+    extracted.push({ modelToolName: toolName, args: normalizeValue(args), result });
+  }
+
+  return extracted;
+}
+
+function applyMcpMutationCutoffFromHistory(params: {
+  metadata: Record<string, unknown>;
+  storedAtMs: number;
+  mcpInvalidationCutoffMs: { value: number | null };
+}): void {
+  if (!Array.isArray(params.metadata.toolResults)) return;
+
+  for (const rawResult of params.metadata.toolResults) {
+    if (!isRecord(rawResult)) continue;
+    const toolName = readAnyToolName(rawResult);
+    if (!isMcpMutationToolName(toolName)) continue;
+
+    const result = rawResult.result;
+    if (!isRecord(result) || result.ok !== true) continue;
+
+    const existing = params.mcpInvalidationCutoffMs.value;
+    if (!isFiniteNumber(existing) || params.storedAtMs > existing) {
+      params.mcpInvalidationCutoffMs.value = params.storedAtMs;
+    }
+  }
+}
+
+function buildInitialMcpStats(): McpToolResultCacheStats {
+  return {
+    history_hit: 0,
+    runtime_hit: 0,
+    miss_not_found: 0,
+    miss_expired: 0,
+    miss_invalidated: 0,
+    set_ok: 0,
+    set_skipped_non_cacheable: 0,
+  };
+}
+
 function attachCacheMetadata(result: unknown, metadata: CacheMetadata): unknown {
   const cloned = cloneValue(result);
   if (isRecord(cloned)) {
@@ -625,14 +739,21 @@ export type ExecutiveToolResultReuseCache = {
   set: (toolName: CacheableToolName, args: unknown, result: unknown) => void;
   noteMutation: (toolName: MutationToolName, storedAtMs: number) => void;
   getStats: () => ExecutiveToolResultCacheStats;
+  getMcp: <T = unknown>(modelToolName: string, args: unknown) => T | null;
+  setMcp: (modelToolName: string, args: unknown, result: unknown) => void;
+  noteMcpMutation: (storedAtMs: number) => void;
+  getMcpStats: () => McpToolResultCacheStats;
 };
 
 export function createExecutiveToolResultReuseCache(params: {
   conversationHistory: ConversationMessageDTO[];
 }): ExecutiveToolResultReuseCache {
   const cache = new Map<string, CacheEntry>();
+  const mcpCache = new Map<string, CacheEntry>();
   const stats = buildInitialStats();
+  const mcpStats = buildInitialMcpStats();
   const invalidationCutoffsByTool: ToolInvalidationCutoffs = {};
+  const mcpInvalidationCutoffMs: { value: number | null } = { value: null };
 
   for (const message of params.conversationHistory) {
     if (message.role !== 'ASSISTANT') continue;
@@ -647,6 +768,12 @@ export function createExecutiveToolResultReuseCache(params: {
       cutoffs: invalidationCutoffsByTool,
     });
 
+    applyMcpMutationCutoffFromHistory({
+      metadata: message.metadata,
+      storedAtMs: createdAtMs,
+      mcpInvalidationCutoffMs,
+    });
+
     const extracted = extractToolResultsFromMessage({
       metadata: message.metadata,
     });
@@ -659,6 +786,24 @@ export function createExecutiveToolResultReuseCache(params: {
       }
 
       cache.set(key, {
+        result: cloneValue(item.result),
+        storedAtMs: createdAtMs,
+        source: 'history',
+      });
+    }
+
+    const mcpExtracted = extractMcpToolResultsFromMessage({
+      metadata: message.metadata,
+    });
+
+    for (const item of mcpExtracted) {
+      const key = buildMcpCacheKey(item.modelToolName, item.args);
+      const existing = mcpCache.get(key);
+      if (existing && existing.storedAtMs >= createdAtMs) {
+        continue;
+      }
+
+      mcpCache.set(key, {
         result: cloneValue(item.result),
         storedAtMs: createdAtMs,
         source: 'history',
@@ -737,5 +882,67 @@ export function createExecutiveToolResultReuseCache(params: {
       });
     },
     getStats: () => cloneStats(stats),
+    getMcp: <T = unknown>(modelToolName: string, args: unknown): T | null => {
+      const key = buildMcpCacheKey(modelToolName, args);
+      const entry = mcpCache.get(key);
+      if (!entry) {
+        mcpStats.miss_not_found += 1;
+        return null;
+      }
+
+      const nowMs = Date.now();
+      const ageMs = nowMs - entry.storedAtMs;
+      if (ageMs < 0 || ageMs > MCP_RESULT_TTL_MS) {
+        mcpCache.delete(key);
+        mcpStats.miss_expired += 1;
+        return null;
+      }
+
+      if (
+        isFiniteNumber(mcpInvalidationCutoffMs.value) &&
+        entry.storedAtMs < mcpInvalidationCutoffMs.value
+      ) {
+        mcpCache.delete(key);
+        mcpStats.miss_invalidated += 1;
+        return null;
+      }
+
+      if (entry.source === 'history') {
+        mcpStats.history_hit += 1;
+      } else {
+        mcpStats.runtime_hit += 1;
+      }
+
+      const withMetadata = attachCacheMetadata(entry.result, {
+        hit: true,
+        source: entry.source,
+        ageMs,
+        maxAgeMs: MCP_RESULT_TTL_MS,
+        cachedAt: new Date(entry.storedAtMs).toISOString(),
+      });
+
+      return withMetadata as T;
+    },
+    setMcp: (modelToolName: string, args: unknown, result: unknown): void => {
+      if (!isResultCacheable(result)) {
+        mcpStats.set_skipped_non_cacheable += 1;
+        return;
+      }
+
+      const key = buildMcpCacheKey(modelToolName, args);
+      mcpCache.set(key, {
+        result: cloneValue(result),
+        storedAtMs: Date.now(),
+        source: 'runtime',
+      });
+      mcpStats.set_ok += 1;
+    },
+    noteMcpMutation: (storedAtMs: number): void => {
+      const existing = mcpInvalidationCutoffMs.value;
+      if (!isFiniteNumber(existing) || storedAtMs > existing) {
+        mcpInvalidationCutoffMs.value = storedAtMs;
+      }
+    },
+    getMcpStats: () => ({ ...mcpStats }),
   };
 }

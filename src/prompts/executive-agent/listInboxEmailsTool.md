@@ -17,6 +17,8 @@ Examples:
 - Show me all emails from Alice this week -> `filters.sender="Alice"` with `filters.relativeWindow="last_7_days"`
 - Open the exact message -> `filters.messageId="abc123"`
 
+Parallelism: If you are calling other tools in the same turn that do not depend on this tool's result, call them ALL in the same step. There is no penalty for parallel calls; every sequential step adds latency.
+
 Invalid patterns:
 - Do not use this tool for broad inbox sweeps without strong narrowing.
 - Do not use this tool as a replacement for ranked search.

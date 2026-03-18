@@ -17,13 +17,32 @@ import type {
 import { getDateOnlyInTimezone } from '@/lib/utils/timezone';
 import { logger } from '@/lib/logger';
 import { buildRunContextPromptFragment } from '@/lib/services/messaging-orchestration';
+import {
+  fetchReplyPipelineSnapshot,
+  formatReplyPipelineInstruction,
+} from './replyPipelineContext';
 
-export const EXECUTIVE_AGENT_PROMPT_VERSION = 'ea-prompt-v3';
+export const EXECUTIVE_AGENT_PROMPT_VERSION = 'ea-prompt-v10';
+
+export async function resolveUserCalendarTimezone(userId: string): Promise<string> {
+  let userTimezone = DEFAULT_CALENDAR_TIMEZONE;
+
+  try {
+    const userSettings = await prisma.userSettings.findUnique({
+      where: { userId },
+      select: { calendarTimezone: true },
+    });
+    userTimezone = userSettings?.calendarTimezone || DEFAULT_CALENDAR_TIMEZONE;
+  } catch (error) {
+    logger.debug('[executiveAgent] Failed to fetch user settings for timezone:', error);
+  }
+
+  return userTimezone;
+}
 
 function buildCurrentTurnMessage(params: {
   input: ExecutiveAgentInput;
   channel: ProgressUpdateChannel;
-  currentTimeUtc: string;
   currentTimeUserTz: string;
   dayOfWeek: string;
   currentDateUserTzDateOnly: string;
@@ -32,13 +51,17 @@ function buildCurrentTurnMessage(params: {
   memoryContext: string;
   runContextFragment: string;
   pendingCalendarInstruction: string;
+  replyPipelineInstruction: string;
   harnessReminders: string[];
+  actionPackSummaryLines: string[];
+  mcpToolSummaryLines: string[];
+  mcpDegradedSummaryLines: string[];
+  mcpAvailableServerLines: string[];
 }): string {
   const sections = [
     '## Current Turn Context',
     `Current time (right now): ${params.currentTimeUserTz} (${params.dayOfWeek})`,
     `User-local date (YYYY-MM-DD): ${params.currentDateUserTzDateOnly}`,
-    `UTC: ${params.currentTimeUtc}`,
     `Timezone: ${params.userTimezone}`,
     `Messaging channel: ${params.channel}`,
     `User: ${params.input.userEmail}`,
@@ -46,9 +69,47 @@ function buildCurrentTurnMessage(params: {
     '',
     params.runContextFragment,
     '',
+    '## Capability Model This Turn',
+    '- Safe context tools for memory, inbox, calendar, PDF reads, progress updates, and reply preference reads are available every turn.',
+    '- Only action tools already exposed this turn are callable right now.',
+    '- "Available Action Packs" are candidates you may request with request_tool_pack_exposure when safe context is not enough.',
+    '- Only MCP tools listed under "MCP Tools This Turn" are callable right now.',
+    '- "Available MCP Server Packs" are candidates you may request with request_mcp_server_tools when native tools are insufficient.',
+    '',
     '## Pending Calendar State',
     params.pendingCalendarInstruction,
     '',
+    '## Reply Pipeline Status',
+    params.replyPipelineInstruction,
+    '',
+    ...(params.actionPackSummaryLines.length > 0
+      ? [
+          '## Available Action Packs',
+          ...params.actionPackSummaryLines.map((line) => `- ${line}`),
+          '',
+        ]
+      : []),
+    ...(params.mcpToolSummaryLines.length > 0
+      ? [
+          '## MCP Tools This Turn',
+          ...params.mcpToolSummaryLines.map((line) => `- ${line}`),
+          '',
+        ]
+      : []),
+    ...(params.mcpAvailableServerLines.length > 0
+      ? [
+          '## Available MCP Server Packs',
+          ...params.mcpAvailableServerLines.map((line) => `- ${line}`),
+          '',
+        ]
+      : []),
+    ...(params.mcpDegradedSummaryLines.length > 0
+      ? [
+          '## MCP Degraded Tools',
+          ...params.mcpDegradedSummaryLines.map((line) => `- ${line}`),
+          '',
+        ]
+      : []),
     ...(params.harnessReminders.length > 0
       ? [
           '## Harness Reminders',
@@ -72,26 +133,20 @@ export async function buildExecutiveAgentPrompt(
   options?: {
     pendingCalendarInstruction?: string;
     harnessReminders?: string[];
+    actionPackSummaryLines?: string[];
+    mcpToolSummaryLines?: string[];
+    mcpDegradedSummaryLines?: string[];
+    mcpAvailableServerLines?: string[];
   },
 ): Promise<PromptContext> {
   const systemPrompt = readPromptFile('whatsapp/executiveAgentPrompt.md');
 
-  // Fetch user settings for timezone
-  let userTimezone = DEFAULT_CALENDAR_TIMEZONE;
-  try {
-    const userSettings = await prisma.userSettings.findUnique({
-      where: { userId: input.userId },
-      select: { calendarTimezone: true },
-    });
-    userTimezone = userSettings?.calendarTimezone || DEFAULT_CALENDAR_TIMEZONE;
-  } catch (error) {
-    logger.debug('[executiveAgent] Failed to fetch user settings for timezone:', error);
-  }
+  const userTimezone = await resolveUserCalendarTimezone(input.userId);
   const now = new Date();
   const currentTimeUtc = now.toISOString();
-  let currentDateUserTzDateOnly = currentTimeUtc.split('T')[0]!;
+  let currentDateUserTzDateOnly = now.toISOString().split('T')[0]!;
 
-  let currentTimeUserTz = currentTimeUtc;
+  let currentTimeUserTz = now.toISOString();
   let dayOfWeek = '';
 
   try {
@@ -126,9 +181,12 @@ export async function buildExecutiveAgentPrompt(
     currentDateUserTzDateOnly = getDateOnlyInTimezone(now, DEFAULT_CALENDAR_TIMEZONE);
   }
 
-  // Keep this memory snapshot generic and compact so it doesn't churn on every
-  // request. Detailed recall should go through search_memory at runtime.
+  // Fetch memory snapshot and reply pipeline status in parallel.
+  // Memory: compact snapshot for context; detailed recall via search_memory at runtime.
+  // Pipeline: tells the agent which threads already have auto-generated drafts.
   let memoryContext = '(No memories stored yet)';
+  const pipelineSnapshotPromise = fetchReplyPipelineSnapshot(input.userId);
+
   if (isSupermemoryConfigured()) {
     try {
       const memories = await gatherMemoryContextForReply({
@@ -146,6 +204,9 @@ export async function buildExecutiveAgentPrompt(
       logger.debug('[executiveAgent] Failed to fetch memory context:', error);
     }
   }
+
+  const pipelineSnapshot = await pipelineSnapshotPromise;
+  const replyPipelineInstruction = formatReplyPipelineInstruction(pipelineSnapshot);
 
   // Calculate time since last message (if any)
   let timeSinceLastMessage = '';
@@ -166,13 +227,14 @@ export async function buildExecutiveAgentPrompt(
   return {
     systemPrompt,
     messages: [
-      ...formatConversationHistoryAsMessages(input.conversationHistory),
+      ...formatConversationHistoryAsMessages(input.conversationHistory, {
+        userTimezone,
+      }),
       {
         role: 'user',
         content: buildCurrentTurnMessage({
           input,
           channel,
-          currentTimeUtc,
           currentTimeUserTz,
           dayOfWeek,
           currentDateUserTzDateOnly,
@@ -182,7 +244,12 @@ export async function buildExecutiveAgentPrompt(
           runContextFragment,
           pendingCalendarInstruction:
             options?.pendingCalendarInstruction ?? 'No active pending calendar change exists.',
+          replyPipelineInstruction,
           harnessReminders: options?.harnessReminders ?? [],
+          actionPackSummaryLines: options?.actionPackSummaryLines ?? [],
+          mcpToolSummaryLines: options?.mcpToolSummaryLines ?? [],
+          mcpDegradedSummaryLines: options?.mcpDegradedSummaryLines ?? [],
+          mcpAvailableServerLines: options?.mcpAvailableServerLines ?? [],
         }),
       },
     ],

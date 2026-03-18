@@ -3,6 +3,7 @@ import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth/auth';
 import { prisma } from '@/lib/prisma';
 import { FeatureFlags } from '@/lib/services/utils/featureFlags';
+import { getEmailMappingRuleValue } from '@/lib/services/utils/emailMappingRuleValue';
 import redis, { safeRedisOperation } from '@/lib/services/utils/redis';
 
 /**
@@ -81,7 +82,7 @@ export async function GET(
       rules: rules.map(rule => ({
         id: rule.id,
         type: rule.mappingType,
-        value: getRuleValue(rule),
+        value: getEmailMappingRuleValue(rule),
         createdAt: rule.createdAt,
         updatedAt: rule.updatedAt
       }))
@@ -92,24 +93,6 @@ export async function GET(
     return NextResponse.json({ 
       error: 'Failed to fetch folder rules' 
     }, { status: 500 });
-  }
-}
-
-// Helper function to get the appropriate value based on rule type
-function getRuleValue(rule: any): string {
-  switch (rule.mappingType) {
-    case 'EMAIL':
-      return rule.emailAddress;
-    case 'DOMAIN':
-      return rule.domain || rule.emailAddress;
-    case 'SUBJECT':
-    case 'SUBJECT_CONTAINS':
-    case 'SUBJECT_STARTS_WITH':
-    case 'SUBJECT_ENDS_WITH':
-    case 'SUBJECT_REGEX':
-      return rule.subjectPattern || '';
-    default:
-      return rule.emailAddress || rule.domain || rule.subjectPattern || '';
   }
 }
 
@@ -270,7 +253,7 @@ export async function POST(
       rule: {
         id: newRule.id,
         type: newRule.mappingType,
-        value: getRuleValue(newRule),
+        value: getEmailMappingRuleValue(newRule),
         createdAt: newRule.createdAt
       },
       folder: {
@@ -407,7 +390,7 @@ export async function DELETE(
       data: { isActive: false }
     });
 
-    const ruleValue = getRuleValue(rule);
+    const ruleValue = getEmailMappingRuleValue(rule);
     console.log(`✅ Successfully deleted rule: ${rule.mappingType} "${ruleValue}" from ${rule.label.name}`);
 
     // Invalidate cache version (best-effort)
@@ -553,7 +536,7 @@ export async function PUT(
       }
     });
 
-    const ruleValue = getRuleValue(updatedRule);
+    const ruleValue = getEmailMappingRuleValue(updatedRule);
     console.log(`✅ Successfully updated rule: ${updatedRule.mappingType} "${ruleValue}" in ${rule.label.name}`);
 
     // Invalidate bulk rules cache version (best-effort)

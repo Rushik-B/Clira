@@ -38,12 +38,6 @@ const cronJobs: CronJobConfig[] = [
     path: '/api/cron/reminders',
   },
   {
-    name: 'sort',
-    schedule: process.env.CRON_SORT_SCHEDULE || '0 */2 * * *',
-    method: 'POST',
-    path: '/api/cron/sort',
-  },
-  {
     name: 'renew-gmail-watches',
     schedule: process.env.CRON_RENEW_GMAIL_WATCHES_SCHEDULE || '0 6 * * *',
     method: 'GET',

@@ -2,6 +2,13 @@ import { prisma } from '@/lib/prisma';
 import { logger } from '@/lib/logger';
 import { getExecutiveAgent } from '@/lib/ai/agents/executiveAgent';
 import {
+  createAiTraceRoot,
+  deriveOutputPreview,
+  deriveRunStatusFromError,
+  finalizeAiTraceRun,
+  type AiTraceContext,
+} from '@/lib/ai/tracing';
+import {
   getWhatsAppClient,
   getConversationManager as getWhatsAppConversationManager,
 } from '@/lib/services/whatsapp';
@@ -240,6 +247,8 @@ export async function triggerAlertNotification(input: AlertNotificationInput): P
     'Notify the user about this email. Be helpful - you can offer to draft a reply, ' +
     'search for related emails, or just inform them. Keep it concise and friendly.';
 
+  let traceContext: AiTraceContext | undefined;
+
   try {
     const whatsappConversationManager = getWhatsAppConversationManager();
     const telegramConversationManager = getTelegramConversationManager();
@@ -265,6 +274,19 @@ export async function triggerAlertNotification(input: AlertNotificationInput): P
       telegramConversation,
       whatsappConversationManager,
       telegramConversationManager,
+    });
+
+    traceContext = await createAiTraceRoot({
+      pipeline: 'alert-notification',
+      userId: input.userId,
+      channel: primaryChannel,
+      conversationId: primaryConversationId,
+      label: 'alert-notification',
+      inputPreview: systemMessage,
+      metadata: {
+        alertId: input.alert.id,
+        email: input.email,
+      },
     });
 
     if (whatsappConversation) {
@@ -303,6 +325,7 @@ export async function triggerAlertNotification(input: AlertNotificationInput): P
       channel: primaryChannel,
       conversationHistory,
       progressContext: buildNotificationProgressContext(primaryChannel, primaryConversationId),
+      traceContext,
     });
 
     const deliveredChannels: Array<'whatsapp' | 'telegram'> = [];
@@ -384,6 +407,17 @@ export async function triggerAlertNotification(input: AlertNotificationInput): P
     }
 
     if (deliveredChannels.length === 0) {
+      if (traceContext) {
+        await finalizeAiTraceRun(traceContext, {
+          status: 'FALLBACK',
+          outputPreview: deriveOutputPreview(result.response),
+          errorMessage: 'no-delivery-channel',
+          metadata: {
+            alertId: input.alert.id,
+            channelsTried: deliveredChannels,
+          },
+        });
+      }
       await prisma.actionHistory.create({
         data: {
           userId: input.userId,
@@ -397,6 +431,19 @@ export async function triggerAlertNotification(input: AlertNotificationInput): P
     }
 
     logger.info(`[alertNotification] Sent notification for alert ${input.alert.id}`);
+
+    if (traceContext) {
+      await finalizeAiTraceRun(traceContext, {
+        status: result.status === 'ok' ? 'OK' : 'FALLBACK',
+        outputPreview: deriveOutputPreview(result.response),
+        errorMessage: result.status === 'ok' ? null : result.error ?? 'Executive Agent fallback',
+        metadata: {
+          alertId: input.alert.id,
+          channels: deliveredChannels,
+          agentStatus: result.status,
+        },
+      });
+    }
 
     await prisma.actionHistory.create({
       data: {
@@ -414,5 +461,15 @@ export async function triggerAlertNotification(input: AlertNotificationInput): P
     });
   } catch (error) {
     logger.error('[alertNotification] Failed:', error);
+    if (traceContext) {
+      await finalizeAiTraceRun(traceContext, {
+        status: deriveRunStatusFromError(error),
+        outputPreview: null,
+        errorMessage: error instanceof Error ? error.message : String(error),
+        metadata: {
+          alertId: input.alert.id,
+        },
+      });
+    }
   }
 }

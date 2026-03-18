@@ -15,9 +15,6 @@ import { prisma } from '@/lib/prisma';
 import { logger } from '@/lib/logger';
 import type { Prisma } from '@prisma/client';
 import { getExecutiveAgent, type ExecutiveAgentOutput } from '@/lib/ai/agents/executiveAgent';
-import { transcribeVoiceMemo } from '@/lib/ai/transcribeVoiceMemo';
-import { describeIncomingImage } from '@/lib/ai/describeIncomingImage';
-import { extractIncomingPdfText } from '@/lib/ai/extractIncomingPdfText';
 import type { ProgressUpdateContext } from '@/lib/ai/tools/sendProgressUpdate';
 import {
   createAiTraceRoot,
@@ -36,11 +33,17 @@ import {
   buildOrchestrationMessageMetadata,
   emitOrchestratorEvent,
   getMessagingOrchestrator,
-  isDuplicateInboundFromAdapter,
+  getDuplicateInboundMessageIdFromAdapter,
   isAbortError,
   type ChannelAdapter,
   type RunContext,
 } from '@/lib/services/messaging-orchestration';
+import {
+  buildInlineBufferProvenance,
+  extractContentFromBuffer,
+  formatMessagingMediaForAgent,
+  renderContentExtractionForLegacyText,
+} from '@/lib/services/content-ingestion';
 
 export interface ProcessMessageResult {
   success: boolean;
@@ -351,14 +354,14 @@ export async function processTelegramMessage(
     return { success: true, response: '' };
   }
 
-  const dedupe = await isDuplicateInboundFromAdapter(
+  const duplicateMessageId = await getDuplicateInboundMessageIdFromAdapter(
     adapter,
     (id) => conversationManager.hasInboundMessageWithTelegramMessageId(id),
   );
-  if (dedupe.isDuplicate) {
+  if (duplicateMessageId) {
     logger.info('[telegramProcessor] Duplicate inbound Telegram message ID detected, skipping', {
       chatId,
-      messageId: dedupe.messageId,
+      messageId: duplicateMessageId,
     });
     return { success: true, response: '' };
   }
@@ -421,7 +424,23 @@ export async function processTelegramMessage(
     try {
       if (message.voiceFileId) {
         const media = await telegramClient.getFileBuffer(message.voiceFileId);
-        effectiveText = await transcribeVoiceMemo(media.data, message.voiceMimeType ?? media.mimeType);
+        const extraction = await extractContentFromBuffer({
+          buffer: media.data,
+          mimeType: message.voiceMimeType ?? media.mimeType,
+          channelLabel: 'Telegram',
+          scope: {
+            conversationId: conversation.id,
+          },
+          provenance: buildInlineBufferProvenance({
+            sourceLabel: 'Telegram voice memo',
+            sourceKind: 'telegram_media',
+            channel: 'telegram',
+            conversationId: conversation.id,
+            messageId,
+            attachmentId: message.voiceFileId,
+          }),
+        });
+        effectiveText = renderContentExtractionForLegacyText(extraction);
         commandText = effectiveText;
 
         if (!effectiveText.trim() || isVoiceMemoNoContent(effectiveText)) {
@@ -439,42 +458,60 @@ export async function processTelegramMessage(
       } else if (message.imageFileId) {
         const media = await telegramClient.getFileBuffer(message.imageFileId!);
         const caption = message.imageCaption?.trim();
-        const description = await describeIncomingImage(media.data, message.imageMimeType ?? media.mimeType, {
+        const extraction = await extractContentFromBuffer({
+          buffer: media.data,
+          mimeType: message.imageMimeType ?? media.mimeType,
           channelLabel: 'Telegram',
           userCaption: caption,
+          scope: {
+            conversationId: conversation.id,
+          },
+          provenance: buildInlineBufferProvenance({
+            sourceLabel: 'Telegram image',
+            sourceKind: 'telegram_media',
+            channel: 'telegram',
+            conversationId: conversation.id,
+            messageId,
+            attachmentId: message.imageFileId,
+          }),
         });
         commandText = caption ?? '';
-        effectiveText = [
-          'User sent an image on Telegram.',
-          caption ? `User caption: ${caption}` : null,
-          'Detailed image description:',
-          description,
-        ]
-          .filter(Boolean)
-          .join('\n\n');
+        effectiveText = formatMessagingMediaForAgent({
+          channelLabel: 'Telegram',
+          mediaKind: 'image',
+          extraction,
+          caption,
+        });
         inboundMetadata = { senderName, fromImage: true, imageCaption: message.imageCaption ?? null };
       } else {
         const media = await telegramClient.getFileBuffer(message.pdfFileId!);
         const caption = message.pdfCaption?.trim();
-        const extractedText = await extractIncomingPdfText(
-          media.data,
-          message.pdfMimeType ?? media.mimeType,
-          {
-            channelLabel: 'Telegram',
-            filename: message.pdfFilename ?? null,
-            userCaption: caption,
+        const extraction = await extractContentFromBuffer({
+          buffer: media.data,
+          mimeType: message.pdfMimeType ?? media.mimeType,
+          channelLabel: 'Telegram',
+          filename: message.pdfFilename ?? null,
+          userCaption: caption,
+          scope: {
+            conversationId: conversation.id,
           },
-        );
+          provenance: buildInlineBufferProvenance({
+            sourceLabel: 'Telegram PDF',
+            sourceKind: 'telegram_media',
+            channel: 'telegram',
+            conversationId: conversation.id,
+            messageId,
+            attachmentId: message.pdfFileId,
+          }),
+        });
         commandText = caption ?? '';
-        effectiveText = [
-          'User sent a PDF on Telegram.',
-          message.pdfFilename ? `Filename: ${message.pdfFilename}` : null,
-          caption ? `User caption: ${caption}` : null,
-          'Raw PDF text:',
-          extractedText,
-        ]
-          .filter(Boolean)
-          .join('\n\n');
+        effectiveText = formatMessagingMediaForAgent({
+          channelLabel: 'Telegram',
+          mediaKind: 'pdf',
+          extraction,
+          filename: message.pdfFilename ?? null,
+          caption,
+        });
         inboundMetadata = {
           senderName,
           fromPdf: true,

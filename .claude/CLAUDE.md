@@ -327,12 +327,72 @@ For implementation summaries:
 
 ---
 
-## Documentation Rule
+## Documentation and Obsidian Knowledge Base
 
-- Keep internal technical documentation in Obsidian, not the repo, unless the file is operationally required for contributors or tooling.
-- In Obsidian, document what changed, why, and implications. Do not write step-by-step setup guides there.
-- Repo docs that are already present may be updated when they are directly tied to runtime or contributor operation.
-- ALWAYS Use the obsidian-cli to control obsidian. See the obsidian-cli skill for this!
+Clira's institutional memory lives in an Obsidian vault, not in the repo. This vault is the primary reference for past decisions, bugs, learnings, and architectural context. Treat it as a first-class part of the development workflow — read from it before making decisions, write to it after making discoveries.
+
+### Why Obsidian matters
+
+LLMs are not deterministic. The same agent working on the same subsystem in a future conversation will not remember what went wrong last time, what tradeoff was chosen, or what pattern worked. The Obsidian vault is how that knowledge survives between sessions. Every learning logged there prevents a future agent from repeating a past mistake.
+
+### Access
+
+- ALWAYS use the `obsidian-cli` skill to interact with the vault. Do not write vault files directly to disk.
+- The vault name is the default (most recently focused). No `vault=` parameter needed.
+- Start at `clira/00-home.md` for navigation. Read it if you are unfamiliar with the vault layout.
+
+### Vault structure
+
+| Folder | What goes here | When to read | When to write |
+|--------|---------------|-------------|---------------|
+| `01-architecture/` | Major design decisions and their reasoning | Before changing core systems | When you make or change an architectural choice |
+| `02-bugs-and-incidents/` | Bugs that hurt us, with root cause and fix | Before touching a subsystem with known issues | When you fix a non-trivial bug |
+| `03-learnings/` | Patterns and insights from building features | When building something similar to past work | When a feature teaches something reusable |
+| `04-changelog/` | What changed and when | For context on recent feature work | After shipping a significant change |
+| `05-plans/` | Active implementation plans | Before starting a planned feature | When planning a new feature |
+| `06-backlog/` | Ideas not yet planned | For future context | When capturing new ideas |
+| `99-archive/` | Legacy notes, old plans | Rarely — historical context only | Never (append-only past) |
+
+### Agent protocol
+
+**Before making a significant change:**
+
+1. Search the vault for relevant prior decisions and bugs (use `obsidian search query="<topic>"`)
+2. Check `01-architecture/` if touching core systems (EA harness, orchestrator, retrieval, ingestion)
+3. Check `02-bugs-and-incidents/` if the area has known issues
+4. Check `03-learnings/` if building something similar to past features
+
+**After making a significant change:**
+
+1. Add a changelog entry to `04-changelog/YYYY-MM-DD-feature.md`
+2. If you fixed a nasty bug → add to `02-bugs-and-incidents/YYYY-MM-DD-description.md`
+3. If you learned a reusable pattern → add to `03-learnings/YYYY-MM-DD-topic.md` or `03-learnings/topic-name.md`
+4. If you made an architectural choice → add to `01-architecture/topic-name.md`
+
+### Writing conventions
+
+**Bugs and incidents** — file name: `YYYY-MM-DD-short-description.md`
+Required sections: What happened, Root cause, Fix, Lesson
+
+**Learnings** — file name: `YYYY-MM-DD-topic.md` (dated) or `topic-name.md` (evergreen)
+Required sections: Context, Key insight, How it applies
+
+**Architecture decisions** — file name: `topic-or-decision-name.md`
+Required sections: Decision, Why, Alternatives considered, Tradeoffs
+
+**Changelogs** — file name: `YYYY-MM-DD-feature-name.md`
+Content: What changed, why, files touched
+
+### What NOT to put in Obsidian
+
+- Step-by-step setup guides (those belong in repo README or contributing docs if needed)
+- Information that is already in the code or git history
+- Ephemeral task notes or conversation-scoped context
+
+### Repo documentation
+
+- Repo docs that are already present may be updated when directly tied to runtime or contributor operation.
+- Do not create new markdown documentation files in the repo unless they are operationally required for contributors or CI tooling.
 
 ---
 

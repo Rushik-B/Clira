@@ -20,6 +20,7 @@ import {
   createUIMessageStreamResponse,
   type UIMessage,
 } from 'ai';
+import { z } from 'zod';
 import { authOptions } from '@/lib/auth/auth';
 import { logger } from '@/lib/logger';
 import { prisma } from '@/lib/prisma';
@@ -29,6 +30,50 @@ import type { AIChatUIMessage } from '@/lib/ai/chatUiTypes';
 
 // Allow streaming responses up to 60 seconds (Executive Agent may take time)
 export const maxDuration = 60;
+
+const webChatMessageSchema = z.object({
+  id: z.string().min(1),
+  role: z.enum(['user', 'assistant', 'system']),
+  parts: z.array(z.object({ type: z.string() }).passthrough()),
+});
+
+const webChatRequestSchema = z.object({
+  messages: z.array(webChatMessageSchema).min(1),
+});
+
+function extractUserMessageText(message: z.infer<typeof webChatMessageSchema>): string {
+  return message.parts
+    .filter(
+      (part): part is { type: 'text'; text: string } =>
+        part.type === 'text' && typeof (part as { text?: unknown }).text === 'string',
+    )
+    .map((part) => part.text)
+    .join('');
+}
+
+function extractUserMessageUploads(message: z.infer<typeof webChatMessageSchema>): Array<{
+  filename?: string | null;
+  mediaType?: string | null;
+  url: string;
+}> {
+  return message.parts.flatMap((part) => {
+    const record = part as Record<string, unknown>;
+    if (
+      part.type !== 'file' ||
+      typeof record.url !== 'string'
+    ) {
+      return [];
+    }
+
+    return [
+      {
+        filename: typeof record.filename === 'string' ? record.filename : null,
+        mediaType: typeof record.mediaType === 'string' ? record.mediaType : null,
+        url: record.url,
+      },
+    ];
+  });
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // POST: Send a message (streaming response)
@@ -72,19 +117,27 @@ export async function POST(request: NextRequest): Promise<Response> {
     }
 
     // Parse request body (AI SDK sends messages array)
-    const body = await request.json();
-    const { messages } = body as { messages: UIMessage[] };
+    const body = webChatRequestSchema.safeParse(await request.json());
+    if (!body.success) {
+      return NextResponse.json(
+        {
+          error: 'Invalid request body',
+          details: body.error.flatten(),
+        },
+        { status: 400 },
+      );
+    }
+
+    const { messages } = body.data as { messages: UIMessage[] };
 
     // Get the last user message
     const lastUserMessage = messages?.filter((m) => m.role === 'user').pop();
-    const userMessageText = lastUserMessage?.parts
-      ?.filter((p): p is { type: 'text'; text: string } => p.type === 'text')
-      .map((p) => p.text)
-      .join('') ?? '';
+    const userMessageText = lastUserMessage ? extractUserMessageText(lastUserMessage) : '';
+    const uploads = lastUserMessage ? extractUserMessageUploads(lastUserMessage) : [];
 
-    if (!userMessageText.trim()) {
+    if (!userMessageText.trim() && uploads.length === 0) {
       return NextResponse.json(
-        { error: 'Message is required' },
+        { error: 'Message text or at least one upload is required' },
         { status: 400 },
       );
     }
@@ -99,6 +152,7 @@ export async function POST(request: NextRequest): Promise<Response> {
           const requestId = crypto.randomUUID();
           const result = await processWebChatMessage(userId, user.email, userMessageText.trim(), {
             requestId,
+            uploads,
             onProgress: (event) => {
               writer.write({
                 type: 'data-progress',

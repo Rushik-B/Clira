@@ -10,6 +10,10 @@ import {
   CALENDAR_REMINDER_MAX_OVERRIDES,
   type CalendarEventDraftDTO,
 } from '@/lib/ai/schemas/calendarCreatorSchemas';
+import {
+  formatDateTimeInTimeZone,
+  normalizeIsoDateInputToUtc,
+} from '@/lib/utils/timezone';
 import type {
   ExecutivePromptMessage,
   ExecutiveTurnFeatures,
@@ -64,9 +68,10 @@ export function extractLatestToolResult(
     const name = record.toolName ?? record.name ?? record.tool;
     if (name !== toolName) continue;
 
-    const result = record.result;
-    if (result && typeof result === 'object') {
-      return result as Record<string, unknown>;
+    // AI SDK v5+ uses `output`; older versions used `result`. Support both.
+    const payload = record.result ?? record.output;
+    if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+      return payload as Record<string, unknown>;
     }
   }
 
@@ -111,6 +116,23 @@ export function extractUserFacingToolText(
     return null;
   }
 
+  if (toolName === 'commit_mcp_action' || toolName === 'cancel_mcp_action') {
+    const message = resolved.message;
+    if (typeof message === 'string' && message.trim()) return message;
+    if (resolved.ok === true) return 'External action completed.';
+    return null;
+  }
+
+  if (toolName === 'plan_mcp_action') {
+    const previewText = typeof resolved.previewText === 'string' ? resolved.previewText : null;
+    if (previewText && previewText.trim()) return previewText;
+
+    const message = resolved.message;
+    if (typeof message === 'string' && message.trim()) return message;
+    if (resolved.ok === true) return 'I staged that external action.';
+    return null;
+  }
+
   if (toolName === 'plan_calendar_change') {
     const previewText =
       (typeof resolved.previewText === 'string' ? resolved.previewText : null) ??
@@ -128,6 +150,52 @@ export function extractUserFacingToolText(
   }
 
   return null;
+}
+
+export function extractRequestedMcpConnectionIdsFromExecution(params: {
+  toolResults: unknown;
+  steps?: unknown;
+}): string[] {
+  const result = extractLatestToolResultFromExecution({
+    toolResults: params.toolResults,
+    steps: params.steps,
+    toolName: 'request_mcp_server_tools',
+  });
+
+  const requestedConnectionIds = Array.isArray(result?.requestedConnectionIds)
+    ? result.requestedConnectionIds.filter(
+        (value): value is string => typeof value === 'string' && value.length > 0,
+      )
+    : [];
+
+  return Array.from(new Set(requestedConnectionIds));
+}
+
+export function extractRequestedPackIdsFromExecution(params: {
+  toolResults: unknown;
+  steps?: unknown;
+}): ToolPackId[] {
+  const result = extractLatestToolResultFromExecution({
+    toolResults: params.toolResults,
+    steps: params.steps,
+    toolName: 'request_tool_pack_exposure',
+  });
+
+  const requestedPackIds = Array.isArray(result?.requestedPackIds)
+    ? result.requestedPackIds.filter(
+        (value): value is ToolPackId =>
+          typeof value === 'string' &&
+          [
+            'safe_context_pack',
+            'calendar_mutation_pack',
+            'reminder_alert_pack',
+            'settings_mutation_pack',
+            'email_send_pack',
+          ].includes(value),
+      )
+    : [];
+
+  return Array.from(new Set(requestedPackIds));
 }
 
 function extractLatestToolResultFromExecution(params: {
@@ -151,6 +219,322 @@ function extractLatestToolResultFromExecution(params: {
   return null;
 }
 
+type TerminalFallbackResolution = {
+  response: string;
+  source: 'tool_result' | 'working_state' | 'generic_fallback';
+};
+
+function normalizeSentence(value: string): string {
+  return value.replace(/\s+/g, ' ').trim();
+}
+
+function titleCaseItemLabel(value: string): string {
+  const normalized = normalizeSentence(value).replace(/[:.]+$/g, '');
+  if (!normalized) return '';
+
+  return normalized
+    .split(/\s+/)
+    .map((part) => {
+      if (/^[A-Z0-9-]+$/.test(part)) return part;
+      return part.charAt(0).toUpperCase() + part.slice(1).toLowerCase();
+    })
+    .join(' ');
+}
+
+function isDueDateLookupRequest(userRequest: string | undefined): boolean {
+  if (!userRequest) return false;
+  return /\bdue\b|\bdeadline\b|\bwhen is it due\b/i.test(userRequest);
+}
+
+function deriveCoursePrefix(userRequest: string | undefined, subject: string, bodyText: string): string | null {
+  const combined = `${userRequest ?? ''} ${subject} ${bodyText}`;
+  const match = combined.match(/\bCMPT\s*([0-9]{3,4})\b/i) ?? combined.match(/\b([0-9]{3,4})\b/);
+  if (!match) return null;
+  const courseNumber = match[1] ?? match[0];
+  if (!/^[0-9]{3,4}$/.test(courseNumber)) return null;
+  return `CMPT ${courseNumber}`;
+}
+
+function extractItemLabel(subject: string, bodyText: string): string | null {
+  const combined = `${subject}\n${bodyText}`;
+  const itemMatch = combined.match(/\b(assignment\s+\d+|project proposal|project milestone|milestone\s+\d+|assignment|project|milestone)\b/i);
+  if (!itemMatch) return null;
+  const label = titleCaseItemLabel(itemMatch[1]);
+  return label || null;
+}
+
+function extractDueDateAnswerFromText(
+  bodyText: string,
+  subject: string,
+  userRequest: string | undefined,
+): string | null {
+  const normalizedBody = normalizeSentence(bodyText);
+  if (!normalizedBody) return null;
+
+  const dueDateMatch =
+    normalizedBody.match(/\b(?:it\s+will\s+be\s+)?due\s+on\s+([^.!\n]+)/i) ??
+    normalizedBody.match(/\bis\s+due\s+on\s+([^.!\n]+)/i) ??
+    normalizedBody.match(/\bdue\s+([^.!\n]+)/i);
+  if (!dueDateMatch) return null;
+
+  const duePhrase = normalizeSentence(dueDateMatch[1]).replace(/[.]+$/g, '');
+  if (!duePhrase) return null;
+
+  const itemLabel = extractItemLabel(subject, normalizedBody);
+  const coursePrefix = deriveCoursePrefix(userRequest, subject, normalizedBody);
+  if (itemLabel && coursePrefix && !itemLabel.toLowerCase().includes(coursePrefix.toLowerCase())) {
+    return `${coursePrefix} ${itemLabel} is due on ${duePhrase}.`;
+  }
+  if (itemLabel) {
+    return `${itemLabel} is due on ${duePhrase}.`;
+  }
+  if (coursePrefix) {
+    return `${coursePrefix} is due on ${duePhrase}.`;
+  }
+  return `It is due on ${duePhrase}.`;
+}
+
+function extractSearchInboxContextAnswer(
+  result: Record<string, unknown> | null,
+  userRequest: string | undefined,
+): string | null {
+  if (!result || !isDueDateLookupRequest(userRequest)) return null;
+
+  const expandedThreads = Array.isArray(result.expandedThreads)
+    ? result.expandedThreads.filter(
+        (value): value is Record<string, unknown> =>
+          Boolean(value) && typeof value === 'object' && !Array.isArray(value),
+      )
+    : [];
+
+  for (const thread of expandedThreads) {
+    const messages = Array.isArray(thread.messages)
+      ? thread.messages.filter(
+          (value): value is Record<string, unknown> =>
+            Boolean(value) && typeof value === 'object' && !Array.isArray(value),
+        )
+      : [];
+
+    for (const message of messages) {
+      const bodyText = typeof message.bodyText === 'string' ? message.bodyText : '';
+      const subject = typeof message.subject === 'string' ? message.subject : '';
+      const answer = extractDueDateAnswerFromText(bodyText, subject, userRequest);
+      if (answer) return answer;
+    }
+  }
+
+  return null;
+}
+
+function extractSearchCalendarAnswer(
+  result: Record<string, unknown> | null,
+  userRequest: string | undefined,
+): string | null {
+  if (!result || !isDueDateLookupRequest(userRequest)) return null;
+
+  const events = Array.isArray(result.events)
+    ? result.events.filter(
+        (value): value is Record<string, unknown> =>
+          Boolean(value) && typeof value === 'object' && !Array.isArray(value),
+      )
+    : [];
+  if (events.length === 0) return null;
+
+  const event = events[0]!;
+  const name = typeof event.name === 'string' ? normalizeSentence(event.name) : 'That item';
+  const start = typeof event.start === 'string' ? normalizeSentence(event.start) : null;
+  if (!start) return null;
+  return `${name} is due on ${start}.`;
+}
+
+function extractToolBackedSafeContextResponse(params: {
+  toolResults: unknown;
+  steps?: unknown;
+  userRequest?: string;
+}): string | null {
+  const inboxResult = extractLatestToolResultFromExecution({
+    toolResults: params.toolResults,
+    steps: params.steps,
+    toolName: 'search_inbox_context',
+  });
+  const inboxAnswer = extractSearchInboxContextAnswer(inboxResult, params.userRequest);
+  if (inboxAnswer) return inboxAnswer;
+
+  const calendarResult = extractLatestToolResultFromExecution({
+    toolResults: params.toolResults,
+    steps: params.steps,
+    toolName: 'search_calendar',
+  });
+  return extractSearchCalendarAnswer(calendarResult, params.userRequest);
+}
+
+export function resolveTerminalFallbackResponse(
+  toolResults: unknown,
+  steps?: unknown,
+  context?: {
+    selectedPack?: ToolPackId | null;
+    workingState?: ExecutiveWorkingState | null;
+    turnFeatures?: ExecutiveTurnFeatures | null;
+    userRequest?: string | null;
+  },
+): TerminalFallbackResolution {
+  const explicitToolResponse = (() => {
+    const sendResult = extractLatestToolResultFromExecution({
+      toolResults,
+      steps,
+      toolName: 'send_email',
+    });
+    if (sendResult) {
+      const response = extractUserFacingToolText('send_email', sendResult);
+      return response ?? 'I could not send that email. Please try again.';
+    }
+
+    const commitResult = extractLatestToolResultFromExecution({
+      toolResults,
+      steps,
+      toolName: 'commit_calendar_change',
+    });
+    if (commitResult) {
+      const response = extractUserFacingToolText('commit_calendar_change', commitResult);
+      return response ?? 'I could not complete that calendar change.';
+    }
+
+    const commitMcpResult = extractLatestToolResultFromExecution({
+      toolResults,
+      steps,
+      toolName: 'commit_mcp_action',
+    });
+    if (commitMcpResult) {
+      const response = extractUserFacingToolText('commit_mcp_action', commitMcpResult);
+      return response ?? 'I could not complete that external action.';
+    }
+
+    const cancelMcpResult = extractLatestToolResultFromExecution({
+      toolResults,
+      steps,
+      toolName: 'cancel_mcp_action',
+    });
+    if (cancelMcpResult) {
+      const response = extractUserFacingToolText('cancel_mcp_action', cancelMcpResult);
+      return response ?? 'I could not cancel that external action.';
+    }
+
+    const planResult = extractLatestToolResultFromExecution({
+      toolResults,
+      steps,
+      toolName: 'plan_calendar_change',
+    });
+    if (planResult) {
+      const response = extractUserFacingToolText('plan_calendar_change', planResult);
+      return response ?? 'I could not plan that calendar change. Please try again.';
+    }
+
+    const planMcpResult = extractLatestToolResultFromExecution({
+      toolResults,
+      steps,
+      toolName: 'plan_mcp_action',
+    });
+    if (planMcpResult) {
+      const response = extractUserFacingToolText('plan_mcp_action', planMcpResult);
+      return response ?? 'I could not stage that external action. Please try again.';
+    }
+
+    return null;
+  })();
+
+  if (explicitToolResponse) {
+    return {
+      response: explicitToolResponse,
+      source: 'tool_result',
+    };
+  }
+
+  const safeContextAnswer = extractToolBackedSafeContextResponse({
+    toolResults,
+    steps,
+    userRequest: context?.userRequest ?? undefined,
+  });
+  if (safeContextAnswer) {
+    return {
+      response: safeContextAnswer,
+      source: 'tool_result',
+    };
+  }
+
+  const pendingChangeId = context?.workingState?.artifacts.pendingCalendarChangeId;
+  const phase = context?.workingState?.phase;
+  const workingStateUserFacingText = context?.workingState?.artifacts.lastUserFacingText?.trim();
+  if (workingStateUserFacingText) {
+    return {
+      response: workingStateUserFacingText,
+      source: 'working_state',
+    };
+  }
+
+  const isCalendarMutationFallbackTurn =
+    context?.selectedPack === 'calendar_mutation_pack' ||
+    Boolean(pendingChangeId) ||
+    phase === 'await_approval' ||
+    context?.turnFeatures?.pendingCalendarConfirmIntent === true ||
+    context?.turnFeatures?.pendingCalendarCancelIntent === true;
+
+  if (isCalendarMutationFallbackTurn) {
+    if (phase === 'await_approval' || pendingChangeId) {
+      return {
+        response: 'I have that calendar change staged. Reply "confirm" to apply it, or tell me what to change.',
+        source: 'working_state',
+      };
+    }
+
+    if (
+      context?.turnFeatures?.pendingCalendarConfirmIntent ||
+      context?.turnFeatures?.pendingCalendarCancelIntent
+    ) {
+      return {
+        response: 'I still have that calendar change in flight, but the final step did not finish cleanly. Reply "confirm" to retry it or "cancel" to drop it.',
+        source: 'working_state',
+      };
+    }
+
+    if (phase === 'clarify') {
+      return {
+        response: 'I need one more detail to finish that calendar change. Tell me which event or time you want.',
+        source: 'working_state',
+      };
+    }
+
+    return {
+      response: 'Tell me the calendar change you want, and I\'ll preview it before I do anything.',
+      source: 'working_state',
+    };
+  }
+
+  if (context?.selectedPack === 'email_send_pack') {
+    if (context.turnFeatures?.explicitSendApproval) {
+      return {
+        response: 'I still have the draft. Reply "send it" and I\'ll retry the final send.',
+        source: 'working_state',
+      };
+    }
+    return {
+      response: 'I still have the draft ready. Say "send it" when you want me to send it.',
+      source: 'working_state',
+    };
+  }
+
+  if (context?.selectedPack === 'safe_context_pack') {
+    return {
+      response: 'I did not finish that cleanly. Ask again and I\'ll re-check the relevant context.',
+      source: 'generic_fallback',
+    };
+  }
+
+  return {
+    response: 'I did not finish that cleanly. Ask again and I\'ll retry it.',
+    source: 'generic_fallback',
+  };
+}
+
 export function buildTerminalFallbackResponse(
   toolResults: unknown,
   steps?: unknown,
@@ -158,96 +542,13 @@ export function buildTerminalFallbackResponse(
     selectedPack?: ToolPackId | null;
     workingState?: ExecutiveWorkingState | null;
     turnFeatures?: ExecutiveTurnFeatures | null;
+    userRequest?: string | null;
   },
 ): string {
-  const sendResult = extractLatestToolResultFromExecution({
-    toolResults,
-    steps,
-    toolName: 'send_email',
-  });
-  if (sendResult) {
-    const response = extractUserFacingToolText('send_email', sendResult);
-    if (response) return response;
-    return 'I could not send that email. Please try again.';
-  }
-
-  const commitResult = extractLatestToolResultFromExecution({
-    toolResults,
-    steps,
-    toolName: 'commit_calendar_change',
-  });
-  if (commitResult) {
-    const response = extractUserFacingToolText('commit_calendar_change', commitResult);
-    if (response) return response;
-    return 'I could not complete that calendar change.';
-  }
-
-  const planResult = extractLatestToolResultFromExecution({
-    toolResults,
-    steps,
-    toolName: 'plan_calendar_change',
-  });
-  if (planResult) {
-    const response = extractUserFacingToolText('plan_calendar_change', planResult);
-    if (response) return response;
-    return 'I could not plan that calendar change. Please try again.';
-  }
-
-  const pendingChangeId = context?.workingState?.artifacts.pendingCalendarChangeId;
-  const phase = context?.workingState?.phase;
-  const workingStateUserFacingText = context?.workingState?.artifacts.lastUserFacingText?.trim();
-  if (workingStateUserFacingText) {
-    return workingStateUserFacingText;
-  }
-
-  const isCalendarMutationFallbackTurn =
-    context?.selectedPack === 'calendar_mutation_pack' ||
-    Boolean(pendingChangeId) ||
-    phase === 'await_approval' ||
-    context?.turnFeatures?.calendarMutationIntent === true ||
-    context?.turnFeatures?.pendingCalendarConfirmIntent === true ||
-    context?.turnFeatures?.pendingCalendarCancelIntent === true ||
-    context?.turnFeatures?.pendingCalendarModifyIntent === true;
-
-  if (isCalendarMutationFallbackTurn) {
-
-    if (phase === 'await_approval' || pendingChangeId) {
-      return 'I have that calendar change staged. Reply "confirm" to apply it, or tell me what to change.';
-    }
-
-    if (
-      context?.turnFeatures?.pendingCalendarConfirmIntent ||
-      context?.turnFeatures?.pendingCalendarCancelIntent
-    ) {
-      return 'I still have that calendar change in flight, but the final step did not finish cleanly. Reply "confirm" to retry it or "cancel" to drop it.';
-    }
-
-    if (phase === 'clarify') {
-      return 'I need one more detail to finish that calendar change. Tell me which event or time you want.';
-    }
-
-    return 'Tell me the calendar change you want, and I\'ll preview it before I do anything.';
-  }
-
-  if (context?.selectedPack === 'email_send_pack') {
-    if (context.turnFeatures?.explicitSendApproval) {
-      return 'I still have the draft. Reply "send it" and I\'ll retry the final send.';
-    }
-    return 'I still have the draft ready. Say "send it" when you want me to send it.';
-  }
-
-  if (context?.selectedPack === 'calendar_query_pack') {
-    return 'I did not finish that calendar lookup cleanly. Ask again and I\'ll re-check it.';
-  }
-
-  if (context?.selectedPack === 'inbox_context_pack') {
-    return 'I did not finish that inbox lookup cleanly. Ask again and I\'ll re-check your email.';
-  }
-
-  return 'I did not finish that cleanly. Ask again and I\'ll retry it.';
+  return resolveTerminalFallbackResponse(toolResults, steps, context).response;
 }
 
-const TIMESTAMP_METADATA_LINE_PATTERN = /^\[Timestamp\]\s+\d{4}-\d{2}-\d{2}T/i;
+const TIMESTAMP_METADATA_LINE_PATTERN = /^\[Timestamp\]\s+/i;
 const TOOL_HISTORY_METADATA_LINE_PATTERN = /^\[Tool history\]\s+/i;
 
 function normalizeAssistantResponseWhitespace(value: string): string {
@@ -256,13 +557,14 @@ function normalizeAssistantResponseWhitespace(value: string): string {
 
 export function stripInternalMetadataFromAssistantResponse(
   response: string,
-): { response: string; stripped: boolean } {
+): { response: string; stripped: boolean; claimedToolHistoryNames: string[] } {
   if (!response) {
-    return { response: '', stripped: false };
+    return { response: '', stripped: false, claimedToolHistoryNames: [] };
   }
 
   const cleanedLines: string[] = [];
   const timestampBlockPayloadLines: string[] = [];
+  const claimedToolHistoryNames: string[] = [];
   let stripped = false;
   let insideTimestampBlock = false;
 
@@ -277,6 +579,10 @@ export function stripInternalMetadataFromAssistantResponse(
 
     if (TOOL_HISTORY_METADATA_LINE_PATTERN.test(trimmed)) {
       stripped = true;
+      const toolsPart = trimmed.replace(TOOL_HISTORY_METADATA_LINE_PATTERN, '');
+      for (const name of toolsPart.split(/[,\s]+/).map((s) => s.trim()).filter(Boolean)) {
+        claimedToolHistoryNames.push(name);
+      }
       continue;
     }
 
@@ -298,7 +604,7 @@ export function stripInternalMetadataFromAssistantResponse(
     cleanedResponse = normalizeAssistantResponseWhitespace(timestampBlockPayloadLines.join('\n'));
   }
 
-  return { response: cleanedResponse, stripped };
+  return { response: cleanedResponse, stripped, claimedToolHistoryNames };
 }
 
 export function isDateTimeTime(value: CalendarEventDraftDTO['start']): value is { dateTime: string; timeZone: string } {
@@ -313,6 +619,18 @@ export function parseDateOnly(value: string): Date | null {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
   const date = new Date(`${value}T00:00:00Z`);
   return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function parseTimedEventInstant(value: { dateTime: string; timeZone?: string | null }): Date | null {
+  try {
+    return normalizeIsoDateInputToUtc(
+      value.dateTime,
+      value.timeZone?.trim() || 'UTC',
+      'start',
+    );
+  } catch {
+    return null;
+  }
 }
 
 export function validateEventDraftTimes(
@@ -338,8 +656,8 @@ export function validateEventDraftTimes(
 
     if (isDateTimeTime(timeValue)) {
       if (!timeValue.timeZone) return { ok: false, message: 'Timed events require a timezone.' };
-      const dt = new Date(timeValue.dateTime);
-      if (Number.isNaN(dt.getTime())) return { ok: false, message: 'Invalid dateTime format.' };
+      const dt = parseTimedEventInstant(timeValue);
+      if (!dt || Number.isNaN(dt.getTime())) return { ok: false, message: 'Invalid dateTime format.' };
       return { ok: true };
     }
 
@@ -365,9 +683,9 @@ export function validateEventDraftTimes(
       return { ok: false, message: 'Timed events require a timezone.' };
     }
 
-    const startDt = new Date(start.dateTime);
-    const endDt = new Date(end.dateTime);
-    if (Number.isNaN(startDt.getTime()) || Number.isNaN(endDt.getTime())) {
+    const startDt = parseTimedEventInstant(start);
+    const endDt = parseTimedEventInstant(end);
+    if (!startDt || !endDt || Number.isNaN(startDt.getTime()) || Number.isNaN(endDt.getTime())) {
       return { ok: false, message: 'Invalid dateTime format.' };
     }
 
@@ -411,9 +729,16 @@ export function addDaysDateOnly(value: string, days: number): string {
   return date.toISOString().slice(0, 10);
 }
 
-export function resolveGoogleEventTime(value: GoogleEventTime | null | undefined): { dateTime: string } | { date: string } | null {
+export function resolveGoogleEventTime(
+  value: GoogleEventTime | null | undefined,
+): { dateTime: string; timeZone?: string | null } | { date: string } | null {
   if (!value) return null;
-  if (typeof value.dateTime === 'string' && value.dateTime.trim()) return { dateTime: value.dateTime };
+  if (typeof value.dateTime === 'string' && value.dateTime.trim()) {
+    return {
+      dateTime: value.dateTime,
+      timeZone: value.timeZone,
+    };
+  }
   if (typeof value.date === 'string' && value.date.trim()) return { date: value.date };
   return null;
 }
@@ -449,9 +774,11 @@ export function normalizeUpdateDraftTimesForPatch({
           message: 'Cannot update a timed end time on an all-day event without specifying both start and end.',
         };
       }
-      const startMs = Date.parse(currentStart.dateTime);
-      const endMs = Date.parse(end.dateTime);
-      if (Number.isNaN(startMs) || Number.isNaN(endMs)) return { ok: false, message: 'Invalid dateTime format.' };
+      const startDt = parseTimedEventInstant(currentStart);
+      const endDt = parseTimedEventInstant(end);
+      if (!startDt || !endDt) return { ok: false, message: 'Invalid dateTime format.' };
+      const startMs = startDt.getTime();
+      const endMs = endDt.getTime();
       if (endMs <= startMs) return { ok: false, message: 'End time must be after the start time.' };
       return { ok: true, patch: draft };
     }
@@ -485,17 +812,20 @@ export function normalizeUpdateDraftTimesForPatch({
         };
       }
 
-      const currentStartMs = Date.parse(currentStart.dateTime);
-      const currentEndMs = Date.parse(currentEnd.dateTime);
-      if (Number.isNaN(currentStartMs) || Number.isNaN(currentEndMs)) {
+      const currentStartDt = parseTimedEventInstant(currentStart);
+      const currentEndDt = parseTimedEventInstant(currentEnd);
+      if (!currentStartDt || !currentEndDt) {
         return { ok: false, message: 'Current event has invalid dateTime values.' };
       }
+      const currentStartMs = currentStartDt.getTime();
+      const currentEndMs = currentEndDt.getTime();
 
       const durationMs = currentEndMs - currentStartMs;
       if (durationMs <= 0) return { ok: false, message: 'Current event duration is invalid.' };
 
-      const newStartMs = Date.parse(start.dateTime);
-      if (Number.isNaN(newStartMs)) return { ok: false, message: 'Invalid dateTime format.' };
+      const newStartDt = parseTimedEventInstant(start);
+      if (!newStartDt) return { ok: false, message: 'Invalid dateTime format.' };
+      const newStartMs = newStartDt.getTime();
 
       const newEndDateTime = new Date(newStartMs + durationMs).toISOString();
 
@@ -602,8 +932,12 @@ export function isCalendarScopeError(error: unknown): boolean {
   );
 }
 
-function formatHistoryTimestamp(createdAt: Date): string {
-  return createdAt.toISOString();
+function formatHistoryTimestamp(createdAt: Date, userTimezone?: string): string {
+  if (!userTimezone) {
+    return createdAt.toISOString();
+  }
+
+  return formatDateTimeInTimeZone(createdAt, userTimezone);
 }
 
 /**
@@ -612,6 +946,7 @@ function formatHistoryTimestamp(createdAt: Date): string {
  */
 export function formatConversationHistoryAsMessages(
   history: ConversationMessageDTO[],
+  options?: { userTimezone?: string },
 ): ExecutivePromptMessage[] {
   if (!history || history.length === 0) {
     return [];
@@ -623,7 +958,7 @@ export function formatConversationHistoryAsMessages(
       const normalizedRole = msg.role === 'USER'
         ? 'user'
         : 'assistant';
-      const timestamp = formatHistoryTimestamp(new Date(msg.createdAt));
+      const timestamp = formatHistoryTimestamp(new Date(msg.createdAt), options?.userTimezone);
       const contentLines = [
         `[Timestamp] ${timestamp}`,
         truncate(msg.content, 500),
@@ -818,9 +1153,14 @@ type ToolTimingMetadata = {
 };
 
 const DEFER_ON_STALE_TOOLS = new Set([
+  'request_tool_pack_exposure',
+  'request_mcp_server_tools',
   'send_email',
   'plan_calendar_change',
   'commit_calendar_change',
+  'plan_mcp_action',
+  'commit_mcp_action',
+  'cancel_mcp_action',
   'add_reminder',
   'snooze_reminder',
   'dismiss_reminder',
@@ -832,10 +1172,17 @@ const DEFER_ON_STALE_TOOLS = new Set([
 const DEFER_ON_PENDING_STEER_TOOLS = new Set([
   'send_email',
   'commit_calendar_change',
+  'commit_mcp_action',
 ]);
 
 function buildStaleRunDeferredResult(toolName: string): Record<string, unknown> {
-  if (toolName === 'plan_calendar_change' || toolName === 'commit_calendar_change') {
+  if (
+    toolName === 'plan_calendar_change' ||
+    toolName === 'commit_calendar_change' ||
+    toolName === 'plan_mcp_action' ||
+    toolName === 'commit_mcp_action' ||
+    toolName === 'cancel_mcp_action'
+  ) {
     return {
       ok: false,
       status: 'deferred',
@@ -854,7 +1201,7 @@ function buildStaleRunDeferredResult(toolName: string): Record<string, unknown> 
 
 function buildPendingSteerDeferredResult(toolName: string): Record<string, unknown> {
   const message = 'A new user correction arrived, so this action was deferred.';
-  if (toolName === 'commit_calendar_change') {
+  if (toolName === 'commit_calendar_change' || toolName === 'commit_mcp_action') {
     return {
       ok: false,
       status: 'deferred',

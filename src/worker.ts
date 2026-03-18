@@ -26,6 +26,8 @@ import {
   SupermemoryBootstrapJobData,
   ReminderNotificationJobData,
   InboxIndexJobData,
+  McpHealthcheckConnectionJobData,
+  McpSyncConnectionJobData,
 } from './lib/services/utils/queues';
 import { MasterPromptGeneratorService } from './lib/ml/masterPromptGenerator';
 import { ReplyGeneratorService } from './lib/services/core/replyGenerator';
@@ -58,6 +60,10 @@ import {
   writeTelegramWorkerHeartbeat,
 } from '@/lib/services/telegram';
 import { processInboxIndexJob } from '@/lib/services/inbox-search/worker-handlers';
+import {
+  processMcpHealthcheckConnectionJob,
+  processMcpSyncConnectionJob,
+} from '@/lib/services/mcp/workers/handlers';
 import {
   type AiTraceContext,
   createAiTraceRoot,
@@ -536,6 +542,48 @@ const inboxIndexWorker = new Worker<InboxIndexJobData>(
   {
     connection: redisConnection,
     concurrency: 3,
+  },
+);
+
+const mcpSyncConnectionWorker = new Worker<McpSyncConnectionJobData>(
+  'mcp-sync-connection',
+  async (job: Job<McpSyncConnectionJobData>) => {
+    try {
+      return await processMcpSyncConnectionJob(job);
+    } catch (error) {
+      if (error instanceof Error && error.name === 'McpServiceError') {
+        const retryable = 'retryable' in error ? Boolean((error as { retryable?: boolean }).retryable) : false;
+        if (!retryable) {
+          throw new UnrecoverableError(error.message);
+        }
+      }
+      throw error;
+    }
+  },
+  {
+    connection: redisConnection,
+    concurrency: 2,
+  },
+);
+
+const mcpHealthcheckConnectionWorker = new Worker<McpHealthcheckConnectionJobData>(
+  'mcp-healthcheck-connection',
+  async (job: Job<McpHealthcheckConnectionJobData>) => {
+    try {
+      return await processMcpHealthcheckConnectionJob(job);
+    } catch (error) {
+      if (error instanceof Error && error.name === 'McpServiceError') {
+        const retryable = 'retryable' in error ? Boolean((error as { retryable?: boolean }).retryable) : false;
+        if (!retryable) {
+          throw new UnrecoverableError(error.message);
+        }
+      }
+      throw error;
+    }
+  },
+  {
+    connection: redisConnection,
+    concurrency: 2,
   },
 );
 
@@ -1361,6 +1409,8 @@ workers.push(
   masterPromptWorker, 
   replyWorker,
   inboxIndexWorker,
+  mcpSyncConnectionWorker,
+  mcpHealthcheckConnectionWorker,
   reminderNotificationWorker,
   batchSortWorker, 
   modelRetrainWorker, 
@@ -1426,16 +1476,18 @@ workers.forEach((worker, index) => {
     'masterPrompt',          // 1: masterPromptWorker
     'reply',                 // 2: replyWorker
     'inboxIndex',            // 3: inboxIndexWorker
-    'reminderNotification',  // 4: reminderNotificationWorker
-    'batchSort',             // 5: batchSortWorker
-    'modelRetrain',          // 6: modelRetrainWorker
-    'emailJobs',             // 7: emailJobsWorker
-    'fastOnboarding',        // 8: fastOnboardingWorker
-    'folderGeneration',      // 9: folderGenerationWorker
-    'emailMapping',          // 10: emailMappingWorker
-    'emailLearning',         // 11: emailLearningWorker
-    'emailCategorization',   // 12: emailCategorizationWorker
-    'supermemoryBootstrap',  // 13: supermemoryBootstrapWorker
+    'mcpSync',               // 4: mcpSyncConnectionWorker
+    'mcpHealth',             // 5: mcpHealthcheckConnectionWorker
+    'reminderNotification',  // 6: reminderNotificationWorker
+    'batchSort',             // 7: batchSortWorker
+    'modelRetrain',          // 8: modelRetrainWorker
+    'emailJobs',             // 9: emailJobsWorker
+    'fastOnboarding',        // 10: fastOnboardingWorker
+    'folderGeneration',      // 11: folderGenerationWorker
+    'emailMapping',          // 12: emailMappingWorker
+    'emailLearning',         // 13: emailLearningWorker
+    'emailCategorization',   // 14: emailCategorizationWorker
+    'supermemoryBootstrap',  // 15: supermemoryBootstrapWorker
   ];
   const name = workerNames[index] ?? `unknown-${index}`;
 
@@ -1487,6 +1539,8 @@ console.log('📊 Worker configuration:');
 console.log('  - Onboarding: concurrency 2');
 console.log('  - Master Prompt: concurrency 3'); 
 console.log('  - Reply Generation: concurrency 5');
+console.log('  - MCP Sync: concurrency 2');
+console.log('  - MCP Healthcheck: concurrency 2');
 console.log('  - Fast Onboarding: concurrency 2');
 console.log('  - Folder Generation: concurrency 2');
 console.log('  - Email Mapping: concurrency 3');

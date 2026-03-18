@@ -1,0 +1,403 @@
+import type { ProgressUpdateChannel } from '@/lib/ai/progressTypes';
+import { isMcpChannelEnabled, isMcpEnabled } from '@/lib/services/mcp/config/featureFlags';
+import {
+  buildMcpPackDescription,
+  loadMcpRegistrySnapshot,
+} from '@/lib/services/mcp/registry/service';
+import { getLatestPendingMcpAction } from '@/lib/services/mcp/runtime/mutationFlow';
+import type {
+  McpCapabilityTag,
+  McpPolicyCandidate,
+  McpPolicyDecision,
+  McpRegistryConnection,
+  McpToolExposure,
+} from '@/lib/services/mcp/types';
+
+const MAX_APPROVED_TOOLS = 50;
+
+export type McpSelectableServerPack = {
+  connectionId: string;
+  serverKey: string;
+  displayName: string;
+  packDescription: string;
+  capabilityTags: McpCapabilityTag[];
+  eligibleModelToolNames: string[];
+};
+
+function isConnectionOperationalForChannel(params: {
+  channel: ProgressUpdateChannel;
+  connection: McpRegistryConnection['connection'];
+}): boolean {
+  if (!isMcpEnabled()) {
+    return false;
+  }
+
+  if (!isMcpChannelEnabled(params.channel)) {
+    return false;
+  }
+
+  if (params.connection.disabledAt || params.connection.status === 'disabled') {
+    return false;
+  }
+
+  if (
+    params.connection.circuitOpenUntil &&
+    params.connection.circuitOpenUntil.getTime() > Date.now()
+  ) {
+    return false;
+  }
+
+  return params.connection.status === 'synced';
+}
+
+function isToolEligibleForServerPack(params: {
+  connection: McpRegistryConnection['connection'];
+  tool: McpRegistryConnection['tools'][number];
+}): boolean {
+  if (params.connection.disabledToolNames.includes(params.tool.toolName)) {
+    return false;
+  }
+
+  if (params.tool.actionClass !== 'read' && params.connection.trustClass === 'third_party') {
+    return false;
+  }
+
+  return true;
+}
+
+function buildDecision(params: {
+  channel: ProgressUpdateChannel;
+  connection: McpRegistryConnection['connection'];
+  toolName: string;
+  actionClass: string;
+  selected: boolean;
+}): McpPolicyDecision {
+  if (!isMcpEnabled()) {
+    return {
+      visible: false,
+      callable: false,
+      requiresConfirmation: false,
+      reason: 'mcp_disabled',
+    };
+  }
+
+  if (!isMcpChannelEnabled(params.channel)) {
+    return {
+      visible: false,
+      callable: false,
+      requiresConfirmation: false,
+      reason: 'channel_disabled',
+    };
+  }
+
+  if (!params.selected) {
+    return {
+      visible: false,
+      callable: false,
+      requiresConfirmation: false,
+      reason: 'connection_not_selected',
+    };
+  }
+
+  if (params.connection.disabledToolNames.includes(params.toolName)) {
+    return {
+      visible: true,
+      callable: false,
+      requiresConfirmation: false,
+      reason: 'tool_disabled',
+    };
+  }
+
+  if (params.connection.disabledAt || params.connection.status === 'disabled') {
+    return {
+      visible: true,
+      callable: false,
+      requiresConfirmation: false,
+      reason: 'connection_disabled',
+    };
+  }
+
+  if (params.connection.circuitOpenUntil && params.connection.circuitOpenUntil.getTime() > Date.now()) {
+    return {
+      visible: true,
+      callable: false,
+      requiresConfirmation: false,
+      reason: 'circuit_open',
+    };
+  }
+
+  if (params.connection.status !== 'synced') {
+    return {
+      visible: true,
+      callable: false,
+      requiresConfirmation: false,
+      reason: 'connection_not_ready',
+    };
+  }
+
+  if (params.actionClass !== 'read') {
+    if (params.connection.trustClass === 'third_party') {
+      return {
+        visible: true,
+        callable: false,
+        requiresConfirmation: false,
+        reason: 'third_party_mutation_blocked',
+      };
+    }
+
+    return {
+      visible: true,
+      callable: false,
+      requiresConfirmation: true,
+      reason: 'preview_required',
+    };
+  }
+
+  return {
+    visible: true,
+    callable: true,
+    requiresConfirmation: false,
+    reason: 'approved',
+  };
+}
+
+function candidateRank(candidate: McpPolicyCandidate): number {
+  const latencyWeight =
+    candidate.tool.latencyClass === 'fast'
+      ? 0
+      : candidate.tool.latencyClass === 'standard'
+        ? 1
+        : 2;
+
+  return latencyWeight;
+}
+
+function deriveCapabilityTags(params: {
+  connection: McpRegistryConnection['connection'];
+  eligibleTools: readonly McpRegistryConnection['tools'][number][];
+  packDescription: string;
+}): McpCapabilityTag[] {
+  const text = [
+    params.connection.serverKey,
+    params.connection.displayName,
+    params.connection.packDescription ?? '',
+    params.packDescription,
+    ...params.eligibleTools.flatMap((tool) => [
+      tool.toolName,
+      tool.toolSlug,
+      tool.modelToolName,
+      tool.displayTitle,
+      tool.description ?? '',
+    ]),
+  ]
+    .join(' ')
+    .toLowerCase();
+
+  const tags = new Set<McpCapabilityTag>();
+
+  if (/\b(?:web|internet|browse|google)\b/.test(text)) {
+    tags.add('web_search');
+  }
+
+  if (
+    /\b(?:doc|docs|documentation|api|reference|code context|manual|wiki|knowledge base|kb)\b/.test(
+      text,
+    )
+  ) {
+    tags.add('docs_search');
+  }
+
+  if (tags.size > 0 || /\b(?:search|lookup|research|knowledge)\b/.test(text)) {
+    tags.add('external_knowledge');
+  }
+
+  return [...tags];
+}
+
+function buildPromptSummary(params: {
+  approvedTools: McpPolicyCandidate[];
+  mutationTools: McpPolicyCandidate[];
+  degradedTools: McpPolicyCandidate[];
+}): McpToolExposure['promptSummary'] {
+  const toolSummaryLines = [
+    ...params.approvedTools.map((candidate) => {
+      return `${candidate.connection.displayName}: ${candidate.tool.displayTitle} (${candidate.tool.actionClass})`;
+    }),
+    ...params.mutationTools.map((candidate) => {
+      return `${candidate.connection.displayName}: ${candidate.tool.displayTitle} (${candidate.tool.actionClass}, preview required)`;
+    }),
+  ];
+
+  const degradedLines = params.degradedTools.map((candidate) => {
+    const reason = candidate.connection.degradedReason ?? candidate.decision.reason;
+    return `${candidate.connection.displayName}: ${candidate.tool.displayTitle} unavailable (${reason})`;
+  });
+
+  return {
+    toolSummaryLines: Array.from(new Set(toolSummaryLines)).slice(0, MAX_APPROVED_TOOLS),
+    degradedLines: Array.from(new Set(degradedLines)).slice(0, MAX_APPROVED_TOOLS),
+  };
+}
+
+export async function resolveMcpToolExposure(params: {
+  userId: string;
+  conversationId?: string;
+  channel: ProgressUpdateChannel;
+  selectedConnectionIds: readonly string[];
+}): Promise<McpToolExposure> {
+  if (!isMcpEnabled()) {
+    return {
+      selectedConnectionIds: [...params.selectedConnectionIds],
+      approvedTools: [],
+      mutationTools: [],
+      degradedTools: [],
+      pendingAction: null,
+      promptSummary: {
+        toolSummaryLines: [],
+        degradedLines: [],
+      },
+    };
+  }
+
+  const pendingAction = params.conversationId
+    ? await getLatestPendingMcpAction({
+        userId: params.userId,
+        conversationId: params.conversationId,
+      })
+    : null;
+
+  if (params.selectedConnectionIds.length === 0) {
+    return {
+      selectedConnectionIds: [...params.selectedConnectionIds],
+      approvedTools: [],
+      mutationTools: [],
+      degradedTools: [],
+      pendingAction,
+      promptSummary: {
+        toolSummaryLines: [],
+        degradedLines: [],
+      },
+    };
+  }
+
+  const snapshot = await loadMcpRegistrySnapshot(params.userId);
+  const connectionSet = new Set(params.selectedConnectionIds);
+  const candidates: McpPolicyCandidate[] = [];
+
+  for (const entry of snapshot.connections) {
+    for (const tool of entry.tools) {
+      const selected = connectionSet.has(entry.connection.id);
+      const decision = buildDecision({
+        channel: params.channel,
+        connection: entry.connection,
+        toolName: tool.toolName,
+        actionClass: tool.actionClass,
+        selected,
+      });
+
+      if (!decision.visible) {
+        continue;
+      }
+
+      candidates.push({
+        connection: entry.connection,
+        tool,
+        decision,
+      });
+    }
+  }
+
+  const approvedTools = candidates
+    .filter((candidate) => candidate.decision.callable)
+    .sort((left, right) => {
+      const rankDelta = candidateRank(left) - candidateRank(right);
+      if (rankDelta !== 0) return rankDelta;
+      const titleDelta = left.tool.displayTitle.localeCompare(right.tool.displayTitle);
+      if (titleDelta !== 0) return titleDelta;
+      return left.tool.modelToolName.localeCompare(right.tool.modelToolName);
+    })
+    .slice(0, MAX_APPROVED_TOOLS);
+
+  const mutationTools = candidates
+    .filter((candidate) => candidate.decision.requiresConfirmation)
+    .sort((left, right) => {
+      const titleDelta = left.tool.displayTitle.localeCompare(right.tool.displayTitle);
+      if (titleDelta !== 0) return titleDelta;
+      return left.tool.modelToolName.localeCompare(right.tool.modelToolName);
+    })
+    .slice(0, MAX_APPROVED_TOOLS);
+
+  const approvedNames = new Set([
+    ...approvedTools.map((candidate) => candidate.tool.modelToolName),
+    ...mutationTools.map((candidate) => candidate.tool.modelToolName),
+  ]);
+  const degradedTools = candidates
+    .filter((candidate) => !candidate.decision.callable && !approvedNames.has(candidate.tool.modelToolName))
+    .slice(0, MAX_APPROVED_TOOLS);
+
+  return {
+    selectedConnectionIds: [...params.selectedConnectionIds],
+    approvedTools,
+    mutationTools,
+    degradedTools,
+    pendingAction,
+    promptSummary: buildPromptSummary({
+      approvedTools,
+      mutationTools,
+      degradedTools,
+    }),
+  };
+}
+
+export async function listSelectableMcpServerPacks(params: {
+  userId: string;
+  channel: ProgressUpdateChannel;
+}): Promise<McpSelectableServerPack[]> {
+  if (!isMcpEnabled() || !isMcpChannelEnabled(params.channel)) {
+    return [];
+  }
+
+  const snapshot = await loadMcpRegistrySnapshot(params.userId);
+
+  return snapshot.connections
+    .filter((entry) =>
+      isConnectionOperationalForChannel({
+        channel: params.channel,
+        connection: entry.connection,
+      }),
+    )
+    .flatMap((entry) => {
+      const eligibleTools = entry.tools.filter((tool) =>
+        isToolEligibleForServerPack({
+          connection: entry.connection,
+          tool,
+        }),
+      );
+
+      if (eligibleTools.length === 0) {
+        return [];
+      }
+
+      return [
+        {
+          connectionId: entry.connection.id,
+          serverKey: entry.connection.serverKey,
+          displayName: entry.connection.displayName,
+          packDescription: buildMcpPackDescription(
+            entry.connection.displayName,
+            eligibleTools,
+          ),
+          capabilityTags: deriveCapabilityTags({
+            connection: entry.connection,
+            eligibleTools,
+            packDescription: buildMcpPackDescription(
+              entry.connection.displayName,
+              eligibleTools,
+            ),
+          }),
+          eligibleModelToolNames: eligibleTools.map((tool) => tool.modelToolName),
+        },
+      ];
+    })
+    .sort((left, right) => left.serverKey.localeCompare(right.serverKey));
+}

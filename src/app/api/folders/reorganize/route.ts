@@ -1,51 +1,15 @@
 import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
+import { z } from 'zod';
 import { authOptions } from '@/lib/auth/auth';
 import { prisma } from '@/lib/prisma';
-import { EmailMappingService } from '@/lib/services/onboarding-services/emailMappingService';
-import fs from 'fs';
-import path from 'path';
+import { batchSortQueue } from '@/lib/services/utils/queues';
+import { BatchSortingWorker } from '@/lib/services/batch/batchSortingWorker';
 
-// Types for the reorganization
-interface EmailSuggestion {
-  id: string;
-  from: string;
-  subject: string;
-  snippet: string;
-  body?: string;
-  date: string;
-  suggestedFolder: string;
-  confidence: number;
-  gmailCategories?: string[];
-  isRead?: boolean;
-  hasAttachment?: boolean;
-  priority?: 'high' | 'medium' | 'low';
-  originalData?: any;
-}
-
-interface ReorganizationResult {
-  folders: Array<{
-    id: string;
-    name: string;
-    description: string;
-    instruction: string;
-    color: string;
-    icon: string;
-    emailCount: number;
-    isSystemDefault: boolean;
-    hardRules: any[];
-    examples: any[];
-  }>;
-  emailChanges: Array<{
-    folderId: string;
-    emails: EmailSuggestion[];
-  }>;
-  stats: {
-    totalEmails: number;
-    emailsMoved: number;
-    foldersAffected: number;
-  };
-}
+const ReorganizeFoldersSchema = z.object({
+  newFolderId: z.string().min(1),
+  newFolderInstruction: z.string().trim().optional(),
+});
 
 export async function POST(request: Request) {
   try {
@@ -55,12 +19,20 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const body = await request.json();
-    const { newFolderId, newFolderInstruction } = body;
-
-    if (!newFolderId) {
-      return NextResponse.json({ error: 'newFolderId is required' }, { status: 400 });
+    const body = await request.json().catch(() => null);
+    const parsed = ReorganizeFoldersSchema.safeParse(body);
+    if (!parsed.success) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Invalid request body',
+          details: parsed.error.flatten(),
+        },
+        { status: 400 },
+      );
     }
+
+    const { newFolderId } = parsed.data;
 
     // Get user
     const user = await prisma.user.findUnique({
@@ -73,188 +45,65 @@ export async function POST(request: Request) {
 
     console.log(`[REORGANIZE API] Starting email reorganization for user ${user.email}, new folder: ${newFolderId}`);
 
-    // Initialize services
-    const emailMappingService = new EmailMappingService();
-
-    // Get all user folders
-    const folders = await prisma.label.findMany({
-      where: { 
+    const folder = await prisma.label.findFirst({
+      where: {
+        id: newFolderId,
         userId: user.id,
-        isCustom: true
+        isSystemLabel: false,
       },
       select: {
         id: true,
         name: true,
-        metaPrompt: true,
-        color: true,
-        isSystemDefault: true
-      }
-    });
-
-    // Get recent emails for analysis (last 100 emails)
-    const recentEmails = await prisma.emailSort.findMany({
-      where: {
-        userId: user.id,
-        // Focus on unorganized emails or emails in default folders
-        OR: [
-          { labelId: undefined },
-          { 
-            label: { 
-              isSystemDefault: true,
-              name: { in: ['Inbox', 'Important', 'Review'] }
-            }
-          }
-        ]
+        mailboxId: true,
       },
-      include: {
-        label: {
-          select: {
-            id: true,
-            name: true,
-            color: true
-          }
-        }
-      },
-      orderBy: { sortedAt: 'desc' },
-      take: 100
     });
 
-    console.log(`[REORGANIZE API] Found ${recentEmails.length} emails to analyze`);
-
-    // Simulate LLM analysis for reorganization suggestions
-    // In a real implementation, this would call an LLM service with the email mapping prompt
-    const emailSuggestions: EmailSuggestion[] = [];
-    const folderCounts: Record<string, number> = {};
-    
-    // Initialize folder counts
-    folders.forEach(folder => {
-      folderCounts[folder.id] = 0;
-    });
-
-    // Analyze each email and suggest folders
-    for (const emailSort of recentEmails) {
-      
-      // Simple heuristic-based categorization (in production, this would use LLM)
-      let suggestedFolderId = newFolderId; // Default to new folder
-      let confidence = 70;
-
-      // Check for existing mappings first
-      const existingMapping = await emailMappingService.findMappingForEmail(user.id, (emailSort as any).from || '');
-      if (existingMapping.mapping) {
-        suggestedFolderId = existingMapping.mapping.labelId;
-        confidence = existingMapping.mapping.confidence || 95;
-      } else {
-        // Use simple keyword matching for suggestions
-        const subject = (emailSort as any).subject?.toLowerCase?.() || '';
-        const snippet = (emailSort as any).reasoning?.toLowerCase?.() || '';
-        const from = (emailSort as any).from?.toLowerCase?.() || '';
-
-        // Check against folder names and their prompts
-        for (const folder of folders) {
-          const folderName = folder.name.toLowerCase();
-          const folderPrompt = folder.metaPrompt?.toLowerCase() || '';
-          
-          // Simple scoring system
-          let score = 0;
-          
-          if (subject.includes(folderName) || snippet.includes(folderName)) {
-            score += 30;
-          }
-          
-          if (from.includes(folderName)) {
-            score += 20;
-          }
-
-          // Check against common patterns
-          if (folderName.includes('newsletter') && (
-            from.includes('newsletter') || 
-            from.includes('noreply') || 
-            subject.includes('unsubscribe')
-          )) {
-            score += 40;
-          }
-
-          if (folderName.includes('notification') && (
-            from.includes('notification') ||
-            from.includes('alert') ||
-            subject.includes('notification')
-          )) {
-            score += 40;
-          }
-
-          if (folderName.includes('financial') && (
-            subject.includes('invoice') ||
-            subject.includes('receipt') ||
-            subject.includes('payment') ||
-            from.includes('billing')
-          )) {
-            score += 40;
-          }
-
-          if (score > confidence) {
-            suggestedFolderId = folder.id;
-            confidence = Math.min(score, 95);
-          }
-        }
-      }
-
-      // Create email suggestion
-      const suggestion: EmailSuggestion = {
-        id: emailSort.gmailMessageId,
-        from: (emailSort as any).from || 'Unknown',
-        subject: (emailSort as any).subject || 'No subject',
-        snippet: (emailSort as any).snippet || '',
-        date: (emailSort as any).sortedAt?.toISOString?.() || new Date().toISOString(),
-        suggestedFolder: suggestedFolderId,
-        confidence,
-        gmailCategories: undefined,
-        isRead: undefined,
-        hasAttachment: undefined,
-        priority: confidence > 85 ? 'high' : confidence > 70 ? 'medium' : 'low'
-      };
-
-      emailSuggestions.push(suggestion);
-      folderCounts[suggestedFolderId] = (folderCounts[suggestedFolderId] || 0) + 1;
+    if (!folder) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Folder not found',
+        },
+        { status: 404 },
+      );
     }
 
-    // Group emails by suggested folder
-    const emailChanges = folders.map(folder => ({
-      folderId: folder.id,
-      emails: emailSuggestions.filter(email => email.suggestedFolder === folder.id)
-    })).filter(change => change.emails.length > 0);
+    const batchSorter = new BatchSortingWorker();
+    const eligibility = await batchSorter.isUserEligible(user.id);
+    if (!eligibility.eligible) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: eligibility.reason || 'Automatic reorganization is not available right now',
+        },
+        { status: 409 },
+      );
+    }
 
-    // Calculate stats
-    const stats = {
-      totalEmails: emailSuggestions.length,
-      emailsMoved: emailSuggestions.filter(email => email.confidence > 70).length,
-      foldersAffected: emailChanges.length
-    };
+    const job = await batchSortQueue.add(
+      'user-batch-sort',
+      {
+        userId: user.id,
+        maxEmailsPerBatch: 100,
+        includeSpam: false,
+        includeTrash: false,
+        daysBack: 7,
+      },
+      {
+        jobId: `folder-reorganize:${user.id}:${folder.id}:${Date.now()}`,
+      },
+    );
 
-    // Format folders for response
-    const formattedFolders = folders.map(folder => ({
-      id: folder.id,
-      name: folder.name,
-      description: folder.metaPrompt || `Emails related to ${folder.name}`,
-      instruction: folder.metaPrompt || `Emails related to ${folder.name}`,
-      color: folder.color || '#6366f1',
-      icon: getDefaultIcon(folder.name),
-      emailCount: folderCounts[folder.id] || 0,
-      isSystemDefault: folder.isSystemDefault || false,
-      hardRules: [], // TODO: Fetch from email mappings
-      examples: []
-    }));
-
-    const result: ReorganizationResult = {
-      folders: formattedFolders,
-      emailChanges,
-      stats
-    };
-
-    console.log(`[REORGANIZE API] Reorganization complete: ${stats.emailsMoved}/${stats.totalEmails} emails processed across ${stats.foldersAffected} folders`);
+    console.log(
+      `[REORGANIZE API] Enqueued batch-sort job ${job.id} for user ${user.email} after creating/updating folder ${folder.name}`,
+    );
 
     return NextResponse.json({
       success: true,
-      data: result
+      queued: true,
+      jobId: job.id,
+      folderId: folder.id,
+      message: `Queued background reorganization for ${folder.name}.`,
     });
 
   } catch (error) {
@@ -268,22 +117,4 @@ export async function POST(request: Request) {
       { status: 500 }
     );
   }
-}
-
-// Helper function to get default icons based on folder names
-function getDefaultIcon(folderName: string): string {
-  const name = folderName.toLowerCase();
-  
-  if (name.includes('newsletter') || name.includes('marketing')) return '📧';
-  if (name.includes('notification') || name.includes('alert')) return '🔔';
-  if (name.includes('financial') || name.includes('bill') || name.includes('invoice')) return '💰';
-  if (name.includes('travel') || name.includes('booking')) return '✈️';
-  if (name.includes('action') || name.includes('todo')) return '⚡';
-  if (name.includes('review') || name.includes('manual')) return '👁️';
-  if (name.includes('work') || name.includes('business')) return '💼';
-  if (name.includes('personal') || name.includes('family')) return '🏠';
-  if (name.includes('shopping') || name.includes('purchase')) return '🛒';
-  if (name.includes('health') || name.includes('medical')) return '🏥';
-  
-  return '📁'; // Default folder icon
 }

@@ -24,6 +24,7 @@ export {
 export {
   buildConversationKeyFromAdapter,
   ensureAdapterChannel,
+  getDuplicateInboundMessageIdFromAdapter,
   isDuplicateInboundFromAdapter,
 } from './channelAdapters';
 

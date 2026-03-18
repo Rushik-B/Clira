@@ -1,3 +1,5 @@
+import { normalizeIsoDateInputToUtc } from '@/lib/utils/timezone';
+
 type CalendarAction = 'create' | 'update' | 'delete';
 
 const DATE_ONLY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
@@ -27,10 +29,14 @@ function parseDateOnly(value: string): Date | null {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
-function parseDateTime(value: string): Date | null {
+function parseDateTime(value: string, timeZone: string): Date | null {
   if (!value || DATE_ONLY_PATTERN.test(value)) return null;
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? null : date;
+  try {
+    const date = normalizeIsoDateInputToUtc(value, timeZone, 'start');
+    return Number.isNaN(date.getTime()) ? null : date;
+  } catch {
+    return null;
+  }
 }
 
 function formatDateOnlyLabel(value: string): string {
@@ -46,7 +52,7 @@ function formatDateOnlyLabel(value: string): string {
 }
 
 function formatDateLabel(value: string, timeZone: string): string {
-  const date = parseDateTime(value);
+  const date = parseDateTime(value, timeZone);
   if (!date) return value;
 
   return new Intl.DateTimeFormat('en-US', {
@@ -58,7 +64,7 @@ function formatDateLabel(value: string, timeZone: string): string {
 }
 
 function formatTimeLabel(value: string, timeZone: string): string {
-  const date = parseDateTime(value);
+  const date = parseDateTime(value, timeZone);
   if (!date) return value;
 
   const minute = Number(
@@ -73,7 +79,7 @@ function formatTimeLabel(value: string, timeZone: string): string {
 }
 
 function getLocalDayKey(value: string, timeZone: string): string | null {
-  const date = parseDateTime(value);
+  const date = parseDateTime(value, timeZone);
   if (!date) return null;
 
   return new Intl.DateTimeFormat('en-CA', {
@@ -145,10 +151,10 @@ function formatResolvedEventWindow(
     return describeDateOnlyWindow(event.start, DATE_ONLY_PATTERN.test(event.end) ? event.end : undefined, false);
   }
 
-  if (parseDateTime(event.start)) {
+  if (parseDateTime(event.start, fallbackTimeZone)) {
     return describeTimedWindow(
       event.start,
-      parseDateTime(event.end) ? event.end : undefined,
+      parseDateTime(event.end, fallbackTimeZone) ? event.end : undefined,
       fallbackTimeZone,
     );
   }

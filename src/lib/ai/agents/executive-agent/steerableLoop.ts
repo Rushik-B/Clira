@@ -98,6 +98,7 @@ export async function runSteerableTextWithTools(params: {
   steps: unknown[];
   toolBudget?: ToolBudgetReport;
   steer: { appliedEvents: number; appliedDroppedSummary: number; lastSeq: number };
+  messagesWhenEmpty?: unknown[];
 }> {
   const messages: any[] = resolveSeedMessages({
     messages: params.messages,
@@ -206,7 +207,7 @@ export async function runSteerableTextWithTools(params: {
       await consumeAndInjectSteer();
     }
 
-    return {
+    const result = {
       text,
       toolCalls,
       toolResults,
@@ -214,6 +215,10 @@ export async function runSteerableTextWithTools(params: {
       toolBudget: budget.report(),
       steer: { appliedEvents, appliedDroppedSummary, lastSeq: steerSeq },
     };
+    if (!text && steps.length > 0) {
+      (result as { messagesWhenEmpty?: typeof messages }).messagesWhenEmpty = messages;
+    }
+    return result;
   } finally {
     await params.runContext?.markRunPhase('completed');
   }

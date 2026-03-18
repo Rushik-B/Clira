@@ -3,6 +3,10 @@ import { callObject } from '@/lib/ai/callLlm';
 import { models } from '@/lib/ai/models';
 import { ReplyGenerationResultSchema, type ReplyGenerationResultDTO, type ReplyPlanDTO } from '@/lib/ai/schemas/schemas';
 import type { AiTraceContext } from '@/lib/ai/tracing';
+import {
+  compileEffectiveReplyInstructionDoc,
+  resolveReplyInstructionSenderEmail,
+} from '@/lib/services/reply-instructions';
 
 type IncomingEmailForStyleAgent = {
   from: string;
@@ -71,8 +75,14 @@ function formatStyleExamples(examples: StyleAgentInput['styleExamples']): string
     .join('\n\n---\n\n');
 }
 
-function buildPrompt(input: StyleAgentInput): string {
+export async function buildStylePrompt(input: StyleAgentInput): Promise<string> {
   const template = readPromptFile('core-processing/styleAgentPrompt.md');
+  const senderEmail = resolveReplyInstructionSenderEmail(input.incomingEmail.from);
+  const replyInstructionDoc = await compileEffectiveReplyInstructionDoc({
+    userId: input.userId,
+    target: 'style',
+    senderEmail,
+  });
 
   const incomingEmail = safeJson({
     from: input.incomingEmail.from,
@@ -83,10 +93,10 @@ function buildPrompt(input: StyleAgentInput): string {
     threadId: input.incomingEmail.threadId ?? null,
   });
 
-  const { labelAnalysis: _labelAnalysis, ...planForPrompt } = input.plan;
-  const replyPlan = safeJson(planForPrompt);
+  const replyPlan = safeJson(input.plan);
 
   return template
+    .replace('{replyInstructionDoc}', replyInstructionDoc)
     .replace('{masterPrompt}', input.masterPrompt)
     .replace('{incomingEmail}', incomingEmail)
     .replace('{replyPlan}', replyPlan)
@@ -95,7 +105,7 @@ function buildPrompt(input: StyleAgentInput): string {
 
 export class StyleAgent {
   async generate(input: StyleAgentInput): Promise<ReplyGenerationResultDTO> {
-    const prompt = buildPrompt(input);
+    const prompt = await buildStylePrompt(input);
 
     try {
       const { object } = await callObject<ReplyGenerationResultDTO>({

@@ -256,7 +256,8 @@ export class EmailRouterService {
         const normalizedFrom = (email.from || '').trim().toLowerCase();
         const mappingResult: EmailMappingSearchResult = await this.emailMappingService.findMappingForEmail(
           userId,
-          normalizedFrom
+          normalizedFrom,
+          mailboxId
         );
 
         if (mappingResult.mapping && mappingResult.matchType !== 'none') {

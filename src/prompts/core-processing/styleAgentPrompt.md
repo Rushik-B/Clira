@@ -24,6 +24,12 @@ The reply MUST preserve line breaks (\n) and include a blank line between paragr
 
 ---
 
+## Explicit User Reply Instructions (highest-priority style rules)
+These are direct, chat-managed reply instructions from the user. Follow them ahead of the Master Prompt whenever they conflict, while still obeying the Planner Plan.
+{replyInstructionDoc}
+
+---
+
 ## User Master Prompt (voice + constraints)
 {masterPrompt}
 
@@ -47,4 +53,3 @@ The reply MUST preserve line breaks (\n) and include a blank line between paragr
 ## Task
 Rewrite the Plan's draft into the user's voice.
 If the Plan has no draft, write the reply from `mustAddress` + `factsToPreserve` while following the constraints above.
-

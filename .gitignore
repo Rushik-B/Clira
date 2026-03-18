@@ -59,6 +59,7 @@ Thumbs.db
 # logs
 *.log
 logs/
+.openlogs/
 
 # temporary files
 *.tmp

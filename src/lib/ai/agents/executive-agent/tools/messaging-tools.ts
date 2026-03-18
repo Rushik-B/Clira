@@ -5,6 +5,11 @@ import { createGmailServiceForUser } from '@/lib/security/getUserGmailCredential
 import { parseReminderTime } from '@/lib/utils/timeParser';
 import { formatDateTimeInTimeZone } from '@/lib/utils/timezone';
 import { getSupermemoryClient, isSupermemoryConfigured } from '@/lib/services/supermemory/client';
+import { manageReplyPreferences } from '../replyPreferenceManager';
+import {
+  readReplyInstructionOverview,
+  resolveReplyInstructionSenderEmail,
+} from '@/lib/services/reply-instructions';
 import {
   generateMemoryCustomId,
   truncate,
@@ -55,7 +60,8 @@ export function buildMessagingTools({
           'Store a fact to memory so you remember it in future conversations. Call in two cases: ' +
           '(1) When the user reveals names, roles, preferences, or facts—store them. ' +
           '(2) When you DISCOVER accurate, high-confidence facts from your tools (search_inbox_context, search_calendar)—e.g. you find "Dr. Smith" is the user\'s statistics professor from emails, or "Sarah" is their manager from calendar—store that too. ' +
-          'High confidence only; don\'t guess. One atomic sentence per memory. Memory is deduped—storing the same fact twice is safe. You can\'t rely on the user to say everything.',
+          'High confidence only; don\'t guess. One atomic sentence per memory. Memory is deduped—storing the same fact twice is safe. You can\'t rely on the user to say everything. ' +
+          'Parallelism: call this in the same step as any other independent tool calls. Every sequential step adds latency.',
         inputSchema: z.object({
           content: z.string().min(1).max(300).describe('Atomic memory line (1 sentence describing a user fact)'),
           type: z
@@ -99,7 +105,127 @@ export function buildMessagingTools({
       },
 
       // ─────────────────────────────────────────────────────────────────────────
-      // Tool 8: Add Email Alert
+      // Tool 8: Read Reply Preferences
+      // ─────────────────────────────────────────────────────────────────────────
+      get_reply_preferences: {
+        description:
+          'Read the saved reply preferences from the planner/style instruction docs. ' +
+          'Use this when the user asks what preferences are saved, how replies are currently configured, ' +
+          'or how Clira replies to a specific sender right now. This is read-only and does not modify anything. ' +
+          'Parallelism: call this in the same step as any other independent tool calls. Every sequential step adds latency.',
+        inputSchema: z.object({
+          target: z.enum(['planner', 'style', 'all']).default('all'),
+          senderEmail: z
+            .string()
+            .email()
+            .optional()
+            .describe('Optional exact sender email to include matching sender-specific overrides.'),
+          includeContent: z
+            .boolean()
+            .default(true)
+            .describe('Whether to include the rendered document content in the result.'),
+        }),
+        execute: async (args: {
+          target?: 'planner' | 'style' | 'all';
+          senderEmail?: string;
+          includeContent?: boolean;
+        }) => {
+          const target = args.target ?? 'all';
+          const senderEmail = resolveReplyInstructionSenderEmail(args.senderEmail);
+          const overview = await readReplyInstructionOverview({
+            userId: input.userId,
+            target: target === 'all' ? undefined : target,
+            senderEmail,
+          });
+
+          return {
+            count: overview.docs.length,
+            target,
+            senderEmail: senderEmail ?? null,
+            docs: overview.docs.map((doc) => ({
+              id: doc.id,
+              target: doc.target,
+              scope: doc.scope,
+              scopeKey: doc.scopeKey,
+              version: doc.version,
+              summary: doc.summary,
+              senderDisplayName: doc.senderDisplayName,
+              relationLabel: doc.relationLabel,
+              ruleCount: doc.ruleCount,
+              rules: doc.rules.map((rule) => ({
+                key: rule.key,
+                title: rule.title,
+                instruction: rule.instruction,
+              })),
+              ...(args.includeContent ?? true ? { content: doc.content } : {}),
+            })),
+            effectiveDocs:
+              args.includeContent ?? true
+                ? overview.effectiveDocs
+                : undefined,
+          };
+        },
+      },
+
+      // ─────────────────────────────────────────────────────────────────────────
+      // Tool 9: Manage Reply Preferences
+      // ─────────────────────────────────────────────────────────────────────────
+      manage_reply_preferences: {
+        description:
+          'Store standing reply preferences for the reply planner/style docs. ' +
+          'Use when the user gives persistent instructions like tone, endings, brevity, or planning constraints ' +
+          'such as "always reply to my mom informally", "keep replies shorter by default", or ' +
+          '"never volunteer calendar times unless I ask". This tool decides whether the preference belongs to ' +
+          'the planner doc, the style doc, or both, and whether it is global or sender-specific.',
+        inputSchema: z.object({
+          instruction: z
+            .string()
+            .min(1)
+            .max(500)
+            .describe('The raw standing reply preference instruction from the user'),
+          scopeHint: z.enum(['global', 'sender']).optional(),
+          senderHint: z
+            .string()
+            .min(1)
+            .max(200)
+            .optional()
+            .describe('Optional explicit sender/email hint when already known'),
+        }),
+        execute: async (args: {
+          instruction: string;
+          scopeHint?: 'global' | 'sender';
+          senderHint?: string;
+        }) => {
+          const stale = await ensureCurrentRun('manage_reply_preferences');
+          if (stale) return stale;
+
+          const result = await manageReplyPreferences({
+            userId: input.userId,
+            rawInstruction: args.instruction,
+            scopeHint: args.scopeHint,
+            senderHint: args.senderHint,
+            abortSignal: context.toolAbortSignal,
+            traceContext: input.traceContext,
+          });
+
+          return {
+            updated: result.updated,
+            needsClarification: result.needsClarification,
+            clarificationQuestion: result.clarificationQuestion,
+            summary: result.summary,
+            scope: result.scope,
+            updates: result.updates.map((update) => ({
+              target: update.target,
+              scope: update.scope,
+              scopeKey: update.scopeKey,
+              version: update.version,
+            })),
+          };
+        },
+      },
+
+      // ─────────────────────────────────────────────────────────────────────────
+      // Tool 10: Add Email Alert
       // ─────────────────────────────────────────────────────────────────────────
       add_email_alert: {
         description:
@@ -141,7 +267,7 @@ export function buildMessagingTools({
       },
 
       // ─────────────────────────────────────────────────────────────────────────
-      // Tool 9: Remove Email Alert
+      // Tool 11: Remove Email Alert
       // ─────────────────────────────────────────────────────────────────────────
       remove_email_alert: {
         description:
@@ -193,10 +319,10 @@ export function buildMessagingTools({
       },
 
       // ─────────────────────────────────────────────────────────────────────────
-      // Tool 10: List Email Alerts
+      // Tool 12: List Email Alerts
       // ─────────────────────────────────────────────────────────────────────────
       list_email_alerts: {
-        description: 'List all active email alerts.',
+        description: 'List all active email alerts. Parallelism: call this in the same step as any other independent tool calls. Every sequential step adds latency.',
         inputSchema: z.object({}),
         execute: async () => {
           const alerts = await prisma.emailAlert.findMany({
@@ -210,20 +336,21 @@ export function buildMessagingTools({
             alerts: alerts.map((alert) => ({
               id: alert.id,
               description: alert.description,
-              createdAt: alert.createdAt.toISOString(),
+              createdAt: formatDateTimeInTimeZone(alert.createdAt, userTimezone),
             })),
           };
         },
       },
 
       // ─────────────────────────────────────────────────────────────────────────
-      // Tool 11: Add Reminder
+      // Tool 13: Add Reminder
       // ─────────────────────────────────────────────────────────────────────────
       add_reminder: {
         description:
           'Create a time-based reminder. Prefer natural language like "today 4pm", "tomorrow 9am", or "4:00 PM" (assumed in the user\'s timezone). ' +
           'Only use ISO timestamps if you are certain about timezone conversion: a trailing "Z" means UTC. ' +
-          'Always ensure the time is in the future.',
+          'Always ensure the time is in the future. ' +
+          'Parallelism: call this in the same step as any other independent tool calls. Every sequential step adds latency.',
         inputSchema: z.object({
           title: z.string().min(1).max(200).describe('Short reminder title'),
           scheduledAt: z.string().min(1).max(200).describe('Reminder time (natural language preferred; ISO UTC allowed)'),
@@ -309,10 +436,10 @@ export function buildMessagingTools({
       },
 
       // ─────────────────────────────────────────────────────────────────────────
-      // Tool 12: List Reminders
+      // Tool 14: List Reminders
       // ─────────────────────────────────────────────────────────────────────────
       list_reminders: {
-        description: 'List upcoming reminders (pending and snoozed by default).',
+        description: 'List upcoming reminders (pending and snoozed by default). Parallelism: call this in the same step as any other independent tool calls. Every sequential step adds latency.',
         inputSchema: z.object({
           limit: z.number().int().min(1).max(20).optional().describe('Max reminders to return (default: 5)'),
           includeCompleted: z.boolean().optional().describe('Include completed/dismissed/cancelled reminders'),
@@ -349,7 +476,7 @@ export function buildMessagingTools({
       },
 
       // ─────────────────────────────────────────────────────────────────────────
-      // Tool 13: Snooze Reminder
+      // Tool 15: Snooze Reminder
       // ─────────────────────────────────────────────────────────────────────────
       snooze_reminder: {
         description: 'Snooze a reminder until a new time.',
