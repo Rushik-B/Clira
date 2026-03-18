@@ -1,4 +1,6 @@
 import crypto from 'node:crypto';
+import { logger } from '@/lib/logger';
+import { prisma } from '@/lib/prisma';
 import { extractContentFromBuffer } from './service';
 import { createContentReferenceId } from './references';
 import {
@@ -7,12 +9,37 @@ import {
 } from './state';
 import type {
   ContentCapability,
+  ContentAssetResolution,
   ContentExtractionResult,
   ContentReference,
   ContentTrustClass,
 } from './types';
 
 export const STORED_CONTENT_SOURCE_KIND = 'stored_content';
+
+type StoredContentReferenceDelegate = {
+  upsert: (args: {
+    where: { contentRefId: string };
+    update: Record<string, unknown>;
+    create: Record<string, unknown>;
+  }) => Promise<unknown>;
+  findUnique: (args: {
+    where: { contentRefId: string };
+    select: {
+      ownerUserId: true;
+      data: true;
+      displayName: true;
+      mimeHint: true;
+      createdAt: true;
+    };
+  }) => Promise<{
+    ownerUserId: string;
+    data: Buffer;
+    displayName: string | null;
+    mimeHint: string | null;
+    createdAt: Date;
+  } | null>;
+};
 
 type StoredContentLocator = {
   storageId: string;
@@ -75,7 +102,16 @@ function resolveContentCapability(mimeType?: string | null): ContentCapability {
   return 'binary';
 }
 
-export function createStoredContentReference(params: {
+function getStoredContentReferenceDelegate(): StoredContentReferenceDelegate | null {
+  const delegate = (
+    prisma as unknown as {
+      storedContentReference?: StoredContentReferenceDelegate;
+    }
+  ).storedContentReference;
+  return delegate ?? null;
+}
+
+export async function createStoredContentReference(params: {
   userId: string;
   buffer: Buffer;
   displayName?: string | null;
@@ -84,7 +120,7 @@ export function createStoredContentReference(params: {
   requiresApproval?: boolean;
   provenance: ContentReference['provenance'];
   capability?: ContentCapability;
-}): ContentReference {
+}): Promise<ContentReference> {
   const locator = serializeStoredContentLocator({
     storageId: crypto.randomUUID(),
   });
@@ -101,6 +137,48 @@ export function createStoredContentReference(params: {
     mimeType: params.mimeHint ?? null,
   });
 
+  const delegate = getStoredContentReferenceDelegate();
+  if (delegate) {
+    try {
+      await delegate.upsert({
+        where: { contentRefId },
+        update: {
+          ownerUserId: params.userId,
+          sourceKind: STORED_CONTENT_SOURCE_KIND,
+          locator,
+          displayName: params.displayName ?? null,
+          mimeHint: params.mimeHint ?? null,
+          trustClass: params.trustClass,
+          requiresApproval: params.requiresApproval ?? false,
+          capability: params.capability ?? resolveContentCapability(params.mimeHint),
+          provenance: params.provenance,
+          data: params.buffer,
+          sizeBytes: params.buffer.length,
+        },
+        create: {
+          contentRefId,
+          ownerUserId: params.userId,
+          sourceKind: STORED_CONTENT_SOURCE_KIND,
+          locator,
+          displayName: params.displayName ?? null,
+          mimeHint: params.mimeHint ?? null,
+          trustClass: params.trustClass,
+          requiresApproval: params.requiresApproval ?? false,
+          capability: params.capability ?? resolveContentCapability(params.mimeHint),
+          provenance: params.provenance,
+          data: params.buffer,
+          sizeBytes: params.buffer.length,
+        },
+      });
+    } catch (error) {
+      logger.warn('[contentIngestion] stored content reference persistence degraded', {
+        ownerUserId: params.userId,
+        contentRefId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   return {
     sourceKind: STORED_CONTENT_SOURCE_KIND,
     locator,
@@ -114,24 +192,75 @@ export function createStoredContentReference(params: {
   };
 }
 
-export async function resolveStoredContentReference(params: {
+async function readStoredContentAsset(params: {
+  referenceId: string;
+}): Promise<{
+  ownerUserId: string;
+  buffer: Buffer;
+  filename: string | null;
+  mimeType: string | null;
+  storedAt: number | null;
+} | null> {
+  const cached = readContentReferenceBuffer(params.referenceId);
+  if (cached) {
+    return {
+      ownerUserId: cached.ownerUserId,
+      buffer: cached.buffer,
+      filename: cached.filename,
+      mimeType: cached.mimeType,
+      storedAt: cached.storedAt,
+    };
+  }
+
+  const delegate = getStoredContentReferenceDelegate();
+  if (!delegate) {
+    return null;
+  }
+
+  try {
+    const record = await delegate.findUnique({
+      where: { contentRefId: params.referenceId },
+      select: {
+        ownerUserId: true,
+        data: true,
+        displayName: true,
+        mimeHint: true,
+        createdAt: true,
+      },
+    });
+
+    if (!record) {
+      return null;
+    }
+
+    storeContentReferenceBuffer({
+      referenceId: params.referenceId,
+      ownerUserId: record.ownerUserId,
+      buffer: record.data,
+      filename: record.displayName,
+      mimeType: record.mimeHint,
+    });
+
+    return {
+      ownerUserId: record.ownerUserId,
+      buffer: record.data,
+      filename: record.displayName,
+      mimeType: record.mimeHint,
+      storedAt: record.createdAt.getTime(),
+    };
+  } catch (error) {
+    logger.warn('[contentIngestion] stored content reference load degraded', {
+      referenceId: params.referenceId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
+export async function resolveStoredContentReferenceAsset(params: {
   userId: string;
   reference: ContentReference;
-  conversationId?: string;
-  runId: string;
-}): Promise<
-  | {
-      ok: true;
-      extraction: ContentExtractionResult;
-      reference: ContentReference;
-    }
-  | {
-      ok: false;
-      error: string;
-      message: string;
-      reference?: ContentReference;
-    }
-> {
+}): Promise<ContentAssetResolution> {
   const expectedContentRefId = createContentReferenceId({
     sourceKind: params.reference.sourceKind,
     locator: params.reference.locator,
@@ -163,7 +292,9 @@ export async function resolveStoredContentReference(params: {
     };
   }
 
-  const stored = readContentReferenceBuffer(params.reference.contentRefId);
+  const stored = await readStoredContentAsset({
+    referenceId: params.reference.contentRefId,
+  });
   if (!stored || stored.ownerUserId !== params.userId) {
     return {
       ok: false,
@@ -173,10 +304,47 @@ export async function resolveStoredContentReference(params: {
     };
   }
 
+  return {
+    ok: true,
+    reference: params.reference,
+    ownerUserId: stored.ownerUserId,
+    bytes: stored.buffer,
+    filename: stored.filename,
+    mimeType: stored.mimeType,
+    storedAt: stored.storedAt,
+  };
+}
+
+export async function resolveStoredContentReference(params: {
+  userId: string;
+  reference: ContentReference;
+  conversationId?: string;
+  runId: string;
+}): Promise<
+  | {
+      ok: true;
+      extraction: ContentExtractionResult;
+      reference: ContentReference;
+    }
+  | {
+      ok: false;
+      error: string;
+      message: string;
+      reference?: ContentReference;
+    }
+> {
+  const asset = await resolveStoredContentReferenceAsset({
+    userId: params.userId,
+    reference: params.reference,
+  });
+  if (!asset.ok) {
+    return asset;
+  }
+
   const extraction = await extractContentFromBuffer({
-    buffer: stored.buffer,
-    mimeType: params.reference.mimeHint ?? stored.mimeType ?? undefined,
-    filename: params.reference.displayName ?? stored.filename ?? undefined,
+    buffer: asset.bytes,
+    mimeType: params.reference.mimeHint ?? asset.mimeType ?? undefined,
+    filename: params.reference.displayName ?? asset.filename ?? undefined,
     trustClass: params.reference.trustClass,
     channelLabel: params.reference.provenance.channel ?? 'content reference',
     provenance: {
@@ -194,6 +362,6 @@ export async function resolveStoredContentReference(params: {
   return {
     ok: true,
     extraction,
-    reference: params.reference,
+    reference: asset.reference,
   };
 }

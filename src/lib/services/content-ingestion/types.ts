@@ -54,6 +54,23 @@ export type ContentReference = {
   contentRefId: string;
 };
 
+export type ContentAssetResolution =
+  | {
+      ok: true;
+      reference: ContentReference;
+      ownerUserId: string;
+      bytes: Buffer;
+      filename: string | null;
+      mimeType: string | null;
+      storedAt: number | null;
+    }
+  | {
+      ok: false;
+      error: string;
+      message: string;
+      reference?: ContentReference;
+    };
+
 export type AcquiredContent = {
   bytes?: Buffer;
   url?: string;
