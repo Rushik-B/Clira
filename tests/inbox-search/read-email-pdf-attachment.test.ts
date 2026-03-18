@@ -243,6 +243,14 @@ describe('readEmailPdfAttachment', () => {
         },
       ],
       extractedText: 'Invoice for March\nAccount: ACME Co.\nTotal due: $400',
+      contentRefs: [
+        expect.objectContaining({
+          sourceKind: 'stored_content',
+          displayName: 'invoice.pdf',
+          mimeHint: 'application/pdf',
+          trustClass: 'trusted_internal',
+        }),
+      ],
     });
   });
 
