@@ -3,6 +3,8 @@ export * from './ingress';
 export * from './limits';
 export * from './mime';
 export * from './references';
+export * from './referenceRuntime';
+export * from './referenceStore';
 export * from './service';
 export * from './state';
 export * from './types';

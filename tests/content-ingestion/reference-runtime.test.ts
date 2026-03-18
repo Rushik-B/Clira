@@ -25,7 +25,7 @@ import { createStoredContentReference } from '@/lib/services/content-ingestion/r
 
 const originalFirecrawlApiKey = process.env.FIRECRAWL_API_KEY;
 
-function createReference(): ContentReference {
+async function createReference(): Promise<ContentReference> {
   return createStoredContentReference({
     userId: 'user-1',
     buffer: Buffer.from('Quarterly targets'),
@@ -140,7 +140,7 @@ describe('content reference runtime', () => {
   });
 
   test('resolves stored content references through the shared extraction runtime', async () => {
-    const reference = createReference();
+    const reference = await createReference();
 
     const result = await readContentReference({
       userId: 'user-1',
@@ -174,7 +174,7 @@ describe('content reference runtime', () => {
   });
 
   test('rejects stored content references from another user', async () => {
-    const reference = createReference();
+    const reference = await createReference();
 
     const result = await readContentReference({
       userId: 'user-2',
