@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth/next';
+import { z } from 'zod';
 import { authOptions } from '@/lib/auth/auth';
 import { prisma } from '@/lib/prisma';
 import { QueueItem } from '@/types';
-import { GmailDraftData } from '@/lib/email/gmail';
+import { GmailDraftData, GmailService } from '@/lib/email/gmail';
 import { getBaseQueueEmails, mapEmailsToQueueItems, getProcessingEmails, mapEmailsToProcessingPlaceholders } from '@/lib/services/queue/queueHelpers';
+import { reconcileResolvedGeneratedDrafts } from '@/lib/services/queue/reconcileResolvedGeneratedDrafts';
 import { createGmailServiceForUser } from '@/lib/security/getUserGmailCredentials';
 import { encryptEmailContent, decryptEmailContent } from '@/lib/security/emailCrypto';
 import { getPrimaryMailboxId } from '@/lib/services/mailbox';
@@ -13,8 +15,41 @@ import { getPrimaryMailboxId } from '@/lib/services/mailbox';
 const ERROR_DRAFT_PATTERN = /unable to generate a reply|please try again later|system is still setting up/i;
 
 // Performance safeguards: keep /api/queue under Heroku 30s router timeout
-const HYDRATION_LIMIT = Number.parseInt(process.env.QUEUE_HYDRATION_LIMIT || '12', 10);
 const API_BUDGET_MS = Number.parseInt(process.env.QUEUE_API_BUDGET_MS || '25000', 10);
+
+type JsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | JsonValue[]
+  | { [key: string]: JsonValue };
+
+const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
+  z.union([
+    z.string(),
+    z.number(),
+    z.boolean(),
+    z.null(),
+    z.array(jsonValueSchema),
+    z.record(jsonValueSchema),
+  ])
+);
+
+const queueGetParamsSchema = z.object({
+  limit: z.coerce.number().int().min(1).max(50).optional(),
+  offset: z.coerce.number().int().min(0).optional(),
+  hydrate: z.enum(['0', '1', 'false', 'true']).optional(),
+});
+
+const queueActionSchema = z.object({
+  action: z.enum(['approve', 'edit', 'reject', 'dismiss']),
+  emailId: z.string().min(1),
+  feedback: z.string().optional().nullable(),
+  draftContent: z.string().optional().nullable(),
+  ccRecipients: z.string().optional().nullable(),
+  metadata: z.record(jsonValueSchema).optional().nullable(),
+});
 
 // Helper function to extract keywords from feedback for analysis
 function extractFeedbackKeywords(feedback: string): string[] {
@@ -55,9 +90,17 @@ export async function GET(request: NextRequest) {
 
     // Parse pagination params
     const { searchParams } = new URL(request.url);
-    const limit = Math.min(Math.max(Number.parseInt(searchParams.get('limit') || '10', 10), 1), 50);
-    const offset = Math.max(Number.parseInt(searchParams.get('offset') || '0', 10), 0);
-    const hydrateParam = searchParams.get('hydrate');
+    const parsedParams = queueGetParamsSchema.safeParse(Object.fromEntries(searchParams.entries()));
+    if (!parsedParams.success) {
+      return NextResponse.json({
+        error: 'Invalid query parameters',
+        details: parsedParams.error.flatten(),
+      }, { status: 400 });
+    }
+
+    const limit = parsedParams.data.limit ?? 10;
+    const offset = parsedParams.data.offset ?? 0;
+    const hydrateParam = parsedParams.data.hydrate;
     const hydrate = !(hydrateParam === '0' || hydrateParam === 'false');
 
     let unprocessedEmails = await getBaseQueueEmails(session.userId, { limit, offset });
@@ -79,7 +122,7 @@ export async function GET(request: NextRequest) {
       mailboxIds.add(resolvedMailboxId);
     }
 
-    const gmailByMailboxId = new Map<string, { getDraft: any; getLatestSentInThread: any; getThreadIdByRfc822MessageId: any }>();
+    const gmailByMailboxId = new Map<string, Pick<GmailService, 'deleteDraft' | 'getDraft' | 'getLatestSentInThread' | 'getThreadIdByRfc822MessageId'>>();
     if (hydrate && unprocessedEmails.length > 0) {
       for (const mailboxId of mailboxIds) {
         const gmailResult = await createGmailServiceForUser({
@@ -142,7 +185,7 @@ export async function GET(request: NextRequest) {
           )).slice(0, 10);
 
           // Fetch latest SENT per thread with small concurrency (to reduce latency)
-          const latestSentByThread = new Map<string, number>();
+          const latestSentByThread = new Map<string, { internalDate: number; messageId: string }>();
           const concurrency = 4;
           for (let i = 0; i < threadIds.length; i += concurrency) {
             if (!withinBudget()) break;
@@ -151,28 +194,57 @@ export async function GET(request: NextRequest) {
               batch.map(async (tId) => ({ tId, latest: await gmail.getLatestSentInThread(tId) }))
             );
             for (const { tId, latest } of results) {
-              if (latest) latestSentByThread.set(tId, latest.internalDate);
+              if (latest) latestSentByThread.set(tId, latest);
             }
           }
 
           if (latestSentByThread.size > 0) {
             const kept: typeof mailboxEmails = [];
+            const affectedThreadIds = new Set<string>();
             for (const e of mailboxEmails) {
-              const sentMs = latestSentByThread.get(e.gmailThreadId || '');
-              if (!sentMs) {
+              const latestSent = latestSentByThread.get(e.gmailThreadId || '');
+              if (!latestSent) {
                 kept.push(e);
                 continue;
               }
               const emailMs = e.createdAt instanceof Date ? e.createdAt.getTime() : new Date(e.createdAt).getTime();
-              const keep = emailMs >= sentMs; // keep only if received after last SENT
+              const keep = emailMs >= latestSent.internalDate; // keep only if received after last SENT
               if (!keep) {
                 removed.push(e);
-                console.log(`📧 Reconciler filtered via Gmail: ${e.id} (email @ ${new Date(emailMs).toISOString()} < SENT @ ${new Date(sentMs).toISOString()})`);
+                if (e.gmailThreadId) {
+                  affectedThreadIds.add(e.gmailThreadId);
+                }
+                console.log(`📧 Reconciler filtered via Gmail: ${e.id} (email @ ${new Date(emailMs).toISOString()} < SENT @ ${new Date(latestSent.internalDate).toISOString()})`);
               } else {
                 kept.push(e);
               }
             }
             emailsByMailbox.set(mailboxId, kept);
+
+            for (const gmailThreadId of affectedThreadIds) {
+              if (!withinBudget()) break;
+              const latestSent = latestSentByThread.get(gmailThreadId);
+              if (!latestSent) {
+                continue;
+              }
+
+              const reconciliation = await reconcileResolvedGeneratedDrafts({
+                userId: session.userId,
+                mailboxId,
+                gmailThreadId,
+                resolvedAt: new Date(latestSent.internalDate),
+                sentMessageId: latestSent.messageId,
+                source: 'queue-get-live-gmail',
+                gmail,
+              });
+
+              if (reconciliation.candidateCount > 0) {
+                console.log(`📧 Queue GET reconciled stale drafts for thread ${gmailThreadId}`, {
+                  mailboxId,
+                  ...reconciliation,
+                });
+              }
+            }
           }
         }
 
@@ -180,38 +252,6 @@ export async function GET(request: NextRequest) {
           const beforeCount = unprocessedEmails.length;
           const afterCount = beforeCount - removed.length;
           console.log(`📧 Queue reconciler removed ${beforeCount - afterCount} item(s) using live Gmail thread state`);
-          // Persist result so subsequent /api/queue calls are fast and DB-only.
-          // Create feedback records marking these emails as handled externally.
-          const upserts = removed.map((e) =>
-            prisma.feedback.upsert({
-              where: { emailId: e.id },
-              update: {
-                action: 'ACCEPTED',
-                editDelta: {
-                  external: true,
-                  sentVia: 'gmail_client',
-                  reconciled: true,
-                  repliedAt: new Date().toISOString(),
-                },
-              },
-              create: {
-                userId: session.userId!,
-                emailId: e.id,
-                action: 'ACCEPTED',
-                editDelta: {
-                  external: true,
-                  sentVia: 'gmail_client',
-                  reconciled: true,
-                  repliedAt: new Date().toISOString(),
-                },
-              },
-            })
-          );
-          // Limit concurrent DB writes to avoid spikes
-          const dbConcurrency = 5;
-          for (let i = 0; i < upserts.length; i += dbConcurrency) {
-            await Promise.all(upserts.slice(i, i + dbConcurrency));
-          }
         }
 
         unprocessedEmails = Array.from(emailsByMailbox.values()).flat();
@@ -351,7 +391,29 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const { action, emailId, feedback, draftContent, ccRecipients, metadata } = await req.json();
+    let rawBody: unknown;
+    try {
+      rawBody = await req.json();
+    } catch {
+      return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+    }
+
+    const parsedBody = queueActionSchema.safeParse(rawBody);
+    if (!parsedBody.success) {
+      return NextResponse.json({
+        error: 'Invalid queue action request',
+        details: parsedBody.error.flatten(),
+      }, { status: 400 });
+    }
+
+    const {
+      action,
+      emailId,
+      feedback,
+      draftContent,
+      ccRecipients,
+      metadata,
+    } = parsedBody.data;
 
     const emailRecord = await prisma.email.findUnique({
       where: { id: emailId },
@@ -438,6 +500,7 @@ export async function POST(req: Request) {
         console.log(`📧 Reply content length: ${trimmed.length} characters`);
 
         let sentMessage: any;
+        const resolvedAt = new Date();
         try {
           if (!isEdit && pointer?.gmailDraftId) {
             console.log(`📤 Attempting to send existing Gmail draft: ${pointer.gmailDraftId}`);
@@ -496,10 +559,10 @@ export async function POST(req: Request) {
               threadId: email.threadId,
               mailboxId: resolvedMailboxId,
               messageId: sentMessage.id,
-              gmailThreadId: email.gmailThreadId,
+              gmailThreadId: sentMessage.threadId || email.gmailThreadId,
               isSent: true,
               isDraft: false,
-              createdAt: new Date(),
+              createdAt: resolvedAt,
               from: '',
               subject: '',
               body: '',
@@ -584,6 +647,29 @@ export async function POST(req: Request) {
           sender: email.from,
           subject: email.subject.substring(0, 50) + '...',
         });
+
+        try {
+          const reconciliation = await reconcileResolvedGeneratedDrafts({
+            userId: session.userId,
+            mailboxId: resolvedMailboxId,
+            threadId: email.threadId,
+            gmailThreadId: email.gmailThreadId,
+            resolvedAt,
+            sentMessageId: sentMessage.id,
+            source: isEdit ? 'queue-edit' : 'queue-approve',
+            gmail: gmailService,
+          });
+
+          if (reconciliation.candidateCount > 0) {
+            console.log(`📧 Queue POST reconciled stale drafts for email ${emailId}`, {
+              mailboxId: resolvedMailboxId,
+              threadId: email.threadId,
+              ...reconciliation,
+            });
+          }
+        } catch (reconciliationError) {
+          console.warn(`⚠️ Queue POST stale-draft reconciliation degraded for email ${emailId}:`, reconciliationError);
+        }
 
         await prisma.actionHistory.create({
           data: {

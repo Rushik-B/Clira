@@ -44,6 +44,38 @@ model PendingCalendarChange {
   @@index([expiresAt, status])
 }
 
+model PendingMcpAction {
+  id             String                 @id @default(cuid())
+  userId         String
+  conversationId String
+  connectionId   String
+  toolName       String
+  modelToolName  String
+  displayTitle   String
+  actionClass    McpActionClass
+  trustClass     McpTrustClass
+  userRequest    String
+  args           Json
+  previewText    String
+  previewSummary Json?
+  status         PendingMcpActionStatus @default(PENDING)
+  idempotencyKey String
+  expiresAt      DateTime
+  consumedAt     DateTime?
+  cancelledAt    DateTime?
+  resultSummary  Json?
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @updatedAt
+  user           User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  connection     McpConnection          @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@index([userId, conversationId, status])
+  @@index([userId, conversationId, createdAt])
+  @@index([connectionId, status, createdAt])
+  @@index([expiresAt, status])
+  @@index([idempotencyKey])
+}
+
 model BatchSortJob {
   id              String      @id @default(cuid())
   userId          String
@@ -395,6 +427,24 @@ model MasterPrompt {
   user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
+model ReplyInstructionDoc {
+  id        String   @id @default(cuid())
+  userId    String
+  target    String
+  scope     String
+  scopeKey  String?
+  content   String
+  version   Int      @default(1)
+  isActive  Boolean  @default(true)
+  metadata  Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, target, scope, scopeKey, isActive])
+  @@index([userId, isActive])
+}
+
 model OAuthAccount {
   id                String   @id @default(cuid())
   userId            String
@@ -413,6 +463,89 @@ model OAuthAccount {
   mailbox           Mailbox? @relation(fields: [mailboxId], references: [id], onDelete: SetNull)
 
   @@unique([provider, providerAccountId])
+}
+
+model McpConnection {
+  id                  String              @id @default(cuid())
+  userId              String
+  serverKey           String
+  displayName         String
+  packDescription     String?
+  disabledToolNames   Json                @default("[]")
+  transportType       McpTransportType
+  transportConfig     Json
+  authMode            McpAuthMode         @default(NONE)
+  encryptedSecrets    String?
+  status              McpConnectionStatus @default(PENDING)
+  trustClass          McpTrustClass       @default(USER_CONFIGURED)
+  degradedReason      String?
+  syncDiagnostics     Json?
+  healthDiagnostics   Json?
+  lastSyncedAt        DateTime?
+  lastHealthCheckedAt DateTime?
+  consecutiveFailures Int                 @default(0)
+  circuitOpenedAt     DateTime?
+  circuitOpenUntil    DateTime?
+  disabledAt          DateTime?
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
+  user                User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  toolManifests       McpToolManifest[]
+  executionAudits     McpExecutionAudit[]
+  pendingActions      PendingMcpAction[]
+
+  @@unique([userId, serverKey], name: "McpConnection_userId_serverKey_key")
+  @@index([userId, status], name: "McpConnection_userId_status_idx")
+  @@index([userId, updatedAt], name: "McpConnection_userId_updatedAt_idx")
+}
+
+model McpToolManifest {
+  id              String          @id @default(cuid())
+  connectionId    String
+  toolName        String
+  toolSlug        String
+  modelToolName   String
+  displayTitle    String
+  description     String?
+  inputSchema     Json
+  outputSchema    Json?
+  annotations     Json?
+  actionClass     McpActionClass
+  latencyClass    McpLatencyClass @default(STANDARD)
+  safeForAutoUse  Boolean         @default(false)
+  syncDiagnostics Json?
+  lastSyncedAt    DateTime
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  connection      McpConnection   @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@unique([connectionId, toolName], name: "McpToolManifest_connectionId_toolName_key")
+  @@unique([connectionId, modelToolName], name: "McpToolManifest_connectionId_modelToolName_key")
+  @@index([connectionId, actionClass], name: "McpToolManifest_connectionId_actionClass_idx")
+}
+
+model McpExecutionAudit {
+  id             String         @id @default(cuid())
+  userId         String
+  connectionId   String
+  toolName       String
+  modelToolName  String
+  actionClass    McpActionClass
+  args           Json?
+  resultSummary  Json?
+  latencyMs      Int?
+  cacheHit       Boolean        @default(false)
+  freshness      Json?
+  degraded       Boolean        @default(false)
+  errorClass     String?
+  idempotencyKey String?
+  createdAt      DateTime       @default(now())
+  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  connection     McpConnection  @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt], name: "McpExecutionAudit_userId_createdAt_idx")
+  @@index([connectionId, createdAt], name: "McpExecutionAudit_connectionId_createdAt_idx")
+  @@index([connectionId, toolName, createdAt], name: "McpExecutionAudit_connectionId_toolName_createdAt_idx")
 }
 
 model Thread {
@@ -501,12 +634,16 @@ model User {
   labels                             Label[]
   mailboxes                          Mailbox[]
   masterPrompts                      MasterPrompt[]
+  replyInstructionDocs               ReplyInstructionDoc[]
   accounts                           OAuthAccount[]
   inboxSearchDocuments               InboxSearchDocument[]
   inboxSearchCheckpoints             InboxSearchCheckpoint[]
   emailAlerts                        EmailAlert[]
   reminders                          Reminder[]
   pendingCalendarChanges             PendingCalendarChange[]
+  pendingMcpActions                  PendingMcpAction[]
+  mcpConnections                     McpConnection[]
+  mcpExecutionAudits                 McpExecutionAudit[]
   threads                            Thread[]
   settings                           UserSettings?
   tokenAccessAudits                  TokenAccessAudit[]
@@ -723,6 +860,14 @@ enum PendingCalendarChangeStatus {
   EXPIRED
 }
 
+enum PendingMcpActionStatus {
+  PENDING
+  IN_PROGRESS
+  CONSUMED
+  CANCELLED
+  EXPIRED
+}
+
 enum CredentialKind {
   ACCESS_TOKEN
   REFRESH_TOKEN
@@ -837,4 +982,41 @@ enum InboxBackfillState {
   BACKFILLING
   COMPLETE
   PAUSED_AUTH_REVOKED
+}
+
+enum McpTransportType {
+  STDIO
+  STREAMABLE_HTTP
+}
+
+enum McpAuthMode {
+  NONE
+  BEARER_TOKEN
+  STATIC_HEADER
+}
+
+enum McpConnectionStatus {
+  PENDING
+  SYNCED
+  DEGRADED
+  DISABLED
+}
+
+enum McpTrustClass {
+  FIRST_PARTY
+  USER_CONFIGURED
+  THIRD_PARTY
+}
+
+enum McpActionClass {
+  READ
+  WRITE
+  DELETE
+  SIDE_EFFECTFUL
+}
+
+enum McpLatencyClass {
+  FAST
+  STANDARD
+  SLOW
 }

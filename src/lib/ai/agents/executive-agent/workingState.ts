@@ -23,17 +23,16 @@ function detectDraftMarkers(text: string): boolean {
 
 function mapPackToPrimaryDomain(packId: ToolPackId): ExecutivePrimaryDomain {
   switch (packId) {
-    case 'inbox_context_pack':
-      return 'inbox';
-    case 'calendar_query_pack':
     case 'calendar_mutation_pack':
       return 'calendar';
     case 'reminder_alert_pack':
       return 'reminder';
+    case 'settings_mutation_pack':
+      return 'settings';
     case 'email_send_pack':
       return 'email_send';
     default:
-      return 'memory';
+      return 'context';
   }
 }
 
@@ -43,9 +42,12 @@ function initialPhaseForPack(
 ): ExecutiveWorkingStatePhase {
   if (packId === 'email_send_pack') return 'act';
   if (packId === 'reminder_alert_pack') return 'act';
+  if (packId === 'settings_mutation_pack') return 'act';
   if (packId === 'calendar_mutation_pack') {
     if (features.pendingCalendarChangePresent) {
-      return features.pendingCalendarModifyIntent ? 'draft' : 'act';
+      return features.pendingCalendarConfirmIntent || features.pendingCalendarCancelIntent
+        ? 'act'
+        : 'draft';
     }
     return 'draft';
   }
@@ -60,22 +62,19 @@ function initialNextStep(
   if (packId === 'reminder_alert_pack') {
     return 'Complete the requested reminder or alert action.';
   }
+  if (packId === 'settings_mutation_pack') {
+    return 'Update the reply preference docs safely.';
+  }
   if (packId === 'calendar_mutation_pack') {
     if (features.pendingCalendarChangePresent) {
-      if (features.pendingCalendarModifyIntent) {
-        return 'Revise the pending calendar plan.';
+      if (features.pendingCalendarConfirmIntent || features.pendingCalendarCancelIntent) {
+        return 'Resolve the pending calendar change safely.';
       }
-      return 'Resolve the pending calendar change safely.';
+      return 'Revise the pending calendar plan safely.';
     }
     return 'Build one calendar change preview.';
   }
-  if (packId === 'calendar_query_pack') {
-    return 'Retrieve the minimum calendar context needed.';
-  }
-  if (packId === 'inbox_context_pack') {
-    return 'Retrieve the minimum inbox context needed.';
-  }
-  return 'Check memory first, then answer directly.';
+  return 'Gather the minimum safe context needed, then answer directly.';
 }
 
 function summarizeToolResult(toolName: string, result: unknown): string | null {
@@ -125,6 +124,23 @@ function summarizeToolResult(toolName: string, result: unknown): string | null {
       : 'calendar change resolved';
   }
 
+  if (toolName === 'plan_mcp_action') {
+    const pendingAction = record.pendingAction;
+    if (pendingAction && typeof pendingAction === 'object') {
+      const pendingId = (pendingAction as Record<string, unknown>).pendingId;
+      return typeof pendingId === 'string'
+        ? `pending mcp action=${pendingId}`
+        : 'pending mcp action created';
+    }
+    return 'external action preview evaluated';
+  }
+
+  if (toolName === 'commit_mcp_action' || toolName === 'cancel_mcp_action') {
+    return typeof record.status === 'string'
+      ? `mcp action=${record.status}`
+      : 'external action resolved';
+  }
+
   if (toolName === 'send_email') {
     return record.success === true ? 'email sent' : 'email send attempted';
   }
@@ -143,6 +159,7 @@ function summarizeToolResult(toolName: string, result: unknown): string | null {
       'snooze_reminder',
       'dismiss_reminder',
       'cancel_reminder',
+      'manage_reply_preferences',
     ].includes(toolName)
   ) {
     return `${toolName} completed`;
@@ -173,6 +190,37 @@ function deriveFact(toolName: string, result: unknown): string | null {
 
   if (toolName === 'list_inbox_emails' && typeof record.matchedCount === 'number') {
     return truncateFact(`Listed ${record.returnedCount ?? record.matchedCount} of ${record.matchedCount} matching inbox emails.`);
+  }
+
+  const genericContentRefs = Array.isArray(record.contentRefs) ? record.contentRefs : [];
+  if (genericContentRefs.length > 0) {
+    const firstReference = genericContentRefs[0];
+    const firstName =
+      firstReference &&
+      typeof firstReference === 'object' &&
+      typeof (firstReference as Record<string, unknown>).displayName === 'string'
+        ? ((firstReference as Record<string, unknown>).displayName as string)
+        : null;
+
+    return truncateFact(
+      `${toolName}: ${genericContentRefs.length} content reference(s) available${
+        firstName ? `, starting with ${firstName}` : ''
+      }.`,
+    );
+  }
+
+  if (toolName.startsWith('mcp__')) {
+    const displayName = typeof record.displayName === 'string' ? record.displayName : 'MCP';
+    const snippets = Array.isArray(record.snippets) ? record.snippets : [];
+    const firstSnippet =
+      snippets.length > 0 && typeof snippets[0] === 'string' ? snippets[0] : null;
+    if (firstSnippet) {
+      return truncateFact(`${displayName}: ${firstSnippet}`);
+    }
+    if (record.ok === true) {
+      return truncateFact(`${displayName}: returned ${snippets.length} result(s).`);
+    }
+    return null;
   }
 
   return null;
@@ -281,11 +329,45 @@ export function createWorkingStateController(initialState: ExecutiveWorkingState
         return;
       }
 
+      if (toolName === 'plan_mcp_action') {
+        const pendingAction = record?.pendingAction;
+        if (pendingAction && typeof pendingAction === 'object') {
+          const pendingId = (pendingAction as Record<string, unknown>).pendingId;
+          state = {
+            ...state,
+            artifacts: {
+              ...state.artifacts,
+              pendingMcpActionId:
+                typeof pendingId === 'string' ? pendingId : state.artifacts.pendingMcpActionId,
+            },
+          };
+          setPhase('await_approval', 'Wait for confirm, cancel, or explicit replacement.');
+          return;
+        }
+
+        if (record?.ok === false) {
+          setPhase('clarify', 'Ask one short clarification and stop.');
+          return;
+        }
+
+        setPhase('draft', 'Prepare a concise external action preview.');
+        return;
+      }
+
       if (toolName === 'commit_calendar_change') {
         if (record?.ok === true) {
           setPhase('complete', null);
         } else {
           setPhase('failed', 'Explain the calendar failure briefly.');
+        }
+        return;
+      }
+
+      if (toolName === 'commit_mcp_action' || toolName === 'cancel_mcp_action') {
+        if (record?.ok === true) {
+          setPhase('complete', null);
+        } else {
+          setPhase('failed', 'Explain the external action failure briefly.');
         }
         return;
       }

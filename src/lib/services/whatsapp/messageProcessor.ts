@@ -23,9 +23,6 @@ import {
   type WhatsAppWebhookMessage,
 } from '@/lib/services/whatsapp';
 import { getExecutiveAgent, type ExecutiveAgentOutput } from '@/lib/ai/agents/executiveAgent';
-import { transcribeVoiceMemo } from '@/lib/ai/transcribeVoiceMemo';
-import { describeIncomingImage } from '@/lib/ai/describeIncomingImage';
-import { extractIncomingPdfText } from '@/lib/ai/extractIncomingPdfText';
 import type { ProgressUpdateContext } from '@/lib/ai/tools/sendProgressUpdate';
 import type { ProgressUpdateEvent } from '@/lib/ai/progressTypes';
 import {
@@ -38,10 +35,17 @@ import {
   buildOrchestrationMessageMetadata,
   emitOrchestratorEvent,
   getMessagingOrchestrator,
-  isDuplicateInboundFromAdapter,
+  getDuplicateInboundMessageIdFromAdapter,
   type ChannelAdapter,
   type RunContext,
 } from '@/lib/services/messaging-orchestration';
+import {
+  buildInlineBufferProvenance,
+  extractContentFromBuffer,
+  ingestWebChatUploads,
+  formatMessagingMediaForAgent,
+  renderContentExtractionForLegacyText,
+} from '@/lib/services/content-ingestion';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -339,14 +343,14 @@ export async function processWhatsAppMessage(
     }`,
   );
 
-  const dedupe = await isDuplicateInboundFromAdapter(
+  const duplicateMessageId = await getDuplicateInboundMessageIdFromAdapter(
     adapter,
     (id) => conversationManager.hasInboundMessageWithWaMessageId(id),
   );
-  if (dedupe.isDuplicate) {
+  if (duplicateMessageId) {
     logger.info('[messageProcessor] Duplicate inbound WhatsApp message detected, skipping', {
       waId: `${waId.slice(0, 4)}****`,
-      messageId: dedupe.messageId,
+      messageId: duplicateMessageId,
     });
     return { success: true, response: '' };
   }
@@ -426,7 +430,23 @@ export async function processWhatsAppMessage(
     try {
       if (message.audioMediaId) {
         const media = await whatsappClient.getMediaBuffer(message.audioMediaId);
-        effectiveText = await transcribeVoiceMemo(media.data, media.mimeType);
+        const extraction = await extractContentFromBuffer({
+          buffer: media.data,
+          mimeType: media.mimeType,
+          channelLabel: 'WhatsApp',
+          scope: {
+            conversationId: conversation.id,
+          },
+          provenance: buildInlineBufferProvenance({
+            sourceLabel: 'WhatsApp voice memo',
+            sourceKind: 'whatsapp_media',
+            channel: 'whatsapp',
+            conversationId: conversation.id,
+            messageId,
+            attachmentId: message.audioMediaId,
+          }),
+        });
+        effectiveText = renderContentExtractionForLegacyText(extraction);
 
         if (!effectiveText.trim() || isVoiceMemoNoContent(effectiveText)) {
           logger.info('[messageProcessor] Voice memo had no content, fast fallback', {
@@ -453,47 +473,72 @@ export async function processWhatsAppMessage(
         logger.info('[messageProcessor] Voice memo transcribed', {
           waId: `${waId.slice(0, 4)}****`,
           transcriptLength: effectiveText.length,
+          extractionStatus: extraction.status,
+          degradationCodes: extraction.degradationNotes.map((note) => note.code),
         });
       } else if (message.imageMediaId) {
         const media = await whatsappClient.getMediaBuffer(message.imageMediaId!);
-        const description = await describeIncomingImage(media.data, media.mimeType);
         const caption = message.imageCaption?.trim();
-        effectiveText = [
-          'User sent an image on WhatsApp.',
-          caption ? `User caption: ${caption}` : null,
-          'Detailed image description:',
-          description,
-        ]
-          .filter(Boolean)
-          .join('\n\n');
+        const extraction = await extractContentFromBuffer({
+          buffer: media.data,
+          mimeType: media.mimeType,
+          channelLabel: 'WhatsApp',
+          userCaption: caption,
+          scope: {
+            conversationId: conversation.id,
+          },
+          provenance: buildInlineBufferProvenance({
+            sourceLabel: 'WhatsApp image',
+            sourceKind: 'whatsapp_media',
+            channel: 'whatsapp',
+            conversationId: conversation.id,
+            messageId,
+            attachmentId: message.imageMediaId,
+          }),
+        });
+        effectiveText = formatMessagingMediaForAgent({
+          channelLabel: 'WhatsApp',
+          mediaKind: 'image',
+          extraction,
+          caption,
+        });
         inboundMetadata = { senderName, fromImage: true, imageCaption: message.imageCaption ?? null };
 
         logger.info('[messageProcessor] Image described', {
           waId: `${waId.slice(0, 4)}****`,
-          descriptionLength: description.length,
+          descriptionLength: extraction.extractedText.length,
           hasCaption: Boolean(caption),
+          extractionStatus: extraction.status,
+          degradationCodes: extraction.degradationNotes.map((note) => note.code),
         });
       } else {
         const media = await whatsappClient.getMediaBuffer(message.pdfMediaId!);
         const caption = message.pdfCaption?.trim();
-        const extractedText = await extractIncomingPdfText(
-          media.data,
-          message.pdfMimeType ?? media.mimeType,
-          {
-            channelLabel: 'WhatsApp',
-            filename: message.pdfFilename ?? null,
-            userCaption: caption,
+        const extraction = await extractContentFromBuffer({
+          buffer: media.data,
+          mimeType: message.pdfMimeType ?? media.mimeType,
+          channelLabel: 'WhatsApp',
+          filename: message.pdfFilename ?? null,
+          userCaption: caption,
+          scope: {
+            conversationId: conversation.id,
           },
-        );
-        effectiveText = [
-          'User sent a PDF on WhatsApp.',
-          message.pdfFilename ? `Filename: ${message.pdfFilename}` : null,
-          caption ? `User caption: ${caption}` : null,
-          'Raw PDF text:',
-          extractedText,
-        ]
-          .filter(Boolean)
-          .join('\n\n');
+          provenance: buildInlineBufferProvenance({
+            sourceLabel: 'WhatsApp PDF',
+            sourceKind: 'whatsapp_media',
+            channel: 'whatsapp',
+            conversationId: conversation.id,
+            messageId,
+            attachmentId: message.pdfMediaId,
+          }),
+        });
+        effectiveText = formatMessagingMediaForAgent({
+          channelLabel: 'WhatsApp',
+          mediaKind: 'pdf',
+          extraction,
+          filename: message.pdfFilename ?? null,
+          caption,
+        });
         inboundMetadata = {
           senderName,
           fromPdf: true,
@@ -504,8 +549,10 @@ export async function processWhatsAppMessage(
         logger.info('[messageProcessor] PDF extracted', {
           waId: `${waId.slice(0, 4)}****`,
           filename: message.pdfFilename ?? null,
-          extractionLength: extractedText.length,
+          extractionLength: extraction.extractedText.length,
           hasCaption: Boolean(caption),
+          extractionStatus: extraction.status,
+          degradationCodes: extraction.degradationNotes.map((note) => note.code),
         });
       }
     } catch (e) {
@@ -902,13 +949,23 @@ export async function processWebChatMessage(
   userId: string,
   userEmail: string,
   message: string,
-  options?: { onProgress?: (event: ProgressUpdateEvent) => Promise<void> | void; requestId?: string },
+  options?: {
+    onProgress?: (event: ProgressUpdateEvent) => Promise<void> | void;
+    requestId?: string;
+    uploads?: Array<{
+      filename?: string | null;
+      mediaType?: string | null;
+      url: string;
+    }>;
+  },
 ): Promise<ProcessMessageResult> {
   const conversationManager = getConversationManager();
 
   // Use a synthetic waId for web chat conversations
   const webWaId = 'web-test';
   let activeConversationId = '';
+  let effectiveText = message;
+  let inboundMetadata: Prisma.InputJsonObject | undefined;
 
   const adapter: ChannelAdapter = {
     channel: 'web',
@@ -919,9 +976,10 @@ export async function processWebChatMessage(
         throw new Error('web_inbound_persist_missing_conversation_id');
       }
       await conversationManager.addMessage(activeConversationId, {
-        content: message,
+        content: effectiveText,
         role: 'USER',
         direction: 'INBOUND',
+        ...(inboundMetadata ? { metadata: inboundMetadata } : {}),
       });
     },
     sendFinal: async () => ({}),
@@ -934,10 +992,28 @@ export async function processWebChatMessage(
   const conversation = await conversationManager.getOrCreateConversation(userId, webWaId);
   activeConversationId = conversation.id;
 
+  if ((options?.uploads?.length ?? 0) > 0) {
+    const uploadIngestion = await ingestWebChatUploads({
+      userId,
+      conversationId: conversation.id,
+      runId: options?.requestId ?? 'web-chat-upload',
+      uploads: options?.uploads ?? [],
+    });
+
+    effectiveText = [message.trim(), uploadIngestion.appendedText]
+      .filter(Boolean)
+      .join('\n\n');
+    inboundMetadata = {
+      uploadedFiles: uploadIngestion.uploadMetadata,
+      uploadCount: options?.uploads?.length ?? 0,
+      contentRefIds: uploadIngestion.contentRefs.map((reference) => reference.contentRefId),
+    };
+  }
+
   // Add user message to the conversation
   await adapter.persistInbound();
 
-  let activeCommand: Command = detectCommand(message);
+  let activeCommand: Command = detectCommand(effectiveText);
   if (activeCommand) {
     logger.info(`[messageProcessor] Detected command: ${activeCommand}`);
   }
@@ -945,7 +1021,7 @@ export async function processWebChatMessage(
   const orchestrator = getMessagingOrchestrator();
   const orchestrationDecision = await orchestrator.prepareRunWithAdapter({
     adapter,
-    userRequest: message,
+    userRequest: effectiveText,
     isCommand: Boolean(activeCommand),
   });
 

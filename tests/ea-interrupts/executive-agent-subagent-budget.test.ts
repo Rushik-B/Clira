@@ -56,16 +56,10 @@ describe('calendar planning working state', () => {
           explicitSendApproval: false,
           draftCandidatePresent: false,
           pendingCalendarChangePresent: false,
-          calendarMutationIntent: true,
-          calendarQueryIntent: false,
-          workloadOverviewIntent: false,
-          reminderIntent: false,
-          alertIntent: false,
           channel: 'telegram',
           hasRecentPendingCalendarPreview: false,
           pendingCalendarConfirmIntent: false,
           pendingCalendarCancelIntent: false,
-          pendingCalendarModifyIntent: false,
           draftCandidateReason: null,
         },
       }),
@@ -164,16 +158,10 @@ describe('buildTerminalFallbackResponse', () => {
         explicitSendApproval: false,
         draftCandidatePresent: false,
         pendingCalendarChangePresent: true,
-        calendarMutationIntent: true,
-        calendarQueryIntent: false,
-        workloadOverviewIntent: false,
-        reminderIntent: false,
-        alertIntent: false,
         channel: 'telegram',
         hasRecentPendingCalendarPreview: true,
         pendingCalendarConfirmIntent: true,
         pendingCalendarCancelIntent: false,
-        pendingCalendarModifyIntent: false,
         draftCandidateReason: null,
       },
     });
@@ -187,21 +175,15 @@ describe('buildTerminalFallbackResponse', () => {
     const controller = createWorkingStateController(
       createInitialWorkingState({
         goal: 'Delete all work shifts next week',
-        selectedPack: 'core_recall_pack',
+        selectedPack: 'safe_context_pack',
         features: {
           explicitSendApproval: false,
           draftCandidatePresent: false,
           pendingCalendarChangePresent: false,
-          calendarMutationIntent: true,
-          calendarQueryIntent: false,
-          workloadOverviewIntent: false,
-          reminderIntent: false,
-          alertIntent: false,
           channel: 'telegram',
           hasRecentPendingCalendarPreview: false,
           pendingCalendarConfirmIntent: false,
           pendingCalendarCancelIntent: false,
-          pendingCalendarModifyIntent: false,
           draftCandidateReason: null,
         },
       }),
@@ -216,22 +198,16 @@ describe('buildTerminalFallbackResponse', () => {
     });
 
     const response = buildTerminalFallbackResponse([], [], {
-      selectedPack: 'core_recall_pack',
+      selectedPack: 'safe_context_pack',
       workingState: controller.getState(),
       turnFeatures: {
         explicitSendApproval: false,
         draftCandidatePresent: false,
         pendingCalendarChangePresent: true,
-        calendarMutationIntent: true,
-        calendarQueryIntent: false,
-        workloadOverviewIntent: false,
-        reminderIntent: false,
-        alertIntent: false,
         channel: 'telegram',
         hasRecentPendingCalendarPreview: false,
         pendingCalendarConfirmIntent: false,
         pendingCalendarCancelIntent: false,
-        pendingCalendarModifyIntent: false,
         draftCandidateReason: null,
       },
     });
@@ -243,10 +219,10 @@ describe('buildTerminalFallbackResponse', () => {
 
   test('uses calendar mutation fallback even when the selected pack stayed read-only', () => {
     const response = buildTerminalFallbackResponse([], [], {
-      selectedPack: 'core_recall_pack',
+      selectedPack: 'safe_context_pack',
       workingState: {
         goal: 'Delete all work shifts next week',
-        selectedPack: 'core_recall_pack',
+        selectedPack: 'safe_context_pack',
         phase: 'await_approval',
         primaryDomain: 'calendar',
         completedSteps: ['search_calendar', 'plan_calendar_change'],
@@ -260,16 +236,10 @@ describe('buildTerminalFallbackResponse', () => {
         explicitSendApproval: false,
         draftCandidatePresent: false,
         pendingCalendarChangePresent: true,
-        calendarMutationIntent: true,
-        calendarQueryIntent: false,
-        workloadOverviewIntent: false,
-        reminderIntent: false,
-        alertIntent: false,
         channel: 'telegram',
         hasRecentPendingCalendarPreview: false,
         pendingCalendarConfirmIntent: false,
         pendingCalendarCancelIntent: false,
-        pendingCalendarModifyIntent: false,
         draftCandidateReason: null,
       },
     });
@@ -277,5 +247,31 @@ describe('buildTerminalFallbackResponse', () => {
     expect(response).toBe(
       'I have that calendar change staged. Reply "confirm" to apply it, or tell me what to change.',
     );
+  });
+
+  test('extracts a due date from expanded inbox tool results before using the generic fallback', () => {
+    const response = buildTerminalFallbackResponse([
+      {
+        toolName: 'search_inbox_context',
+        result: {
+          expandedThreads: [
+            {
+              messages: [
+                {
+                  subject: 'Assignment 1 Posted: CMPT410 D100 Machine Learning / CMPT726 G100 Machine Learning',
+                  bodyText:
+                    'Assignment 1 has been posted under Files -> Assignments -> Assignment 1. It will be due on Tuesday, March 24, 2026.',
+                },
+              ],
+            },
+          ],
+        },
+      },
+    ], [], {
+      selectedPack: 'safe_context_pack',
+      userRequest: 'when is it due?? 410',
+    });
+
+    expect(response).toBe('CMPT 410 Assignment 1 is due on Tuesday, March 24, 2026.');
   });
 });

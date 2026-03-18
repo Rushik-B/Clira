@@ -25,6 +25,12 @@ Output rules:
 - If you have gathered enough information (or you are running out of steps), you MUST still call `submit_reply_plan` with your best safe plan based on available evidence.
 - Note: `toolUsage` is filled automatically by the system; you don't need to generate it.
 
+## Explicit User Reply Instructions (Highest Priority)
+
+These are explicit, chat-managed instructions from the user. They are authoritative and must be followed unless doing so would violate the factual constraints above.
+
+{replyInstructionDoc}
+
 ## Calendar Tool (`analyze_calendar`)
 
 Use this when the email references scheduling, availability, meetings, or specific dates.

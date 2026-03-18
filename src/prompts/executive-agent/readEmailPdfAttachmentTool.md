@@ -18,6 +18,8 @@ Examples:
 - Pull the invoice from the receipt email -> use `messageId` plus `attachmentFilename="invoice.pdf"` if multiple PDFs are present
 - What does the attached PDF say about the deadline? -> locate the email, then call this tool
 
+Parallelism: When reading multiple PDFs (across different emails or multiple attachments), call this tool for ALL of them in the same step. There is no penalty for parallel calls; every sequential step adds latency.
+
 Invalid patterns:
 - Do not call this without first identifying the specific email.
 - Do not guess which PDF to use when the tool returns multiple candidates.

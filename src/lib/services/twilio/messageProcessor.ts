@@ -35,7 +35,7 @@ import {
   buildOrchestrationMessageMetadata,
   emitOrchestratorEvent,
   getMessagingOrchestrator,
-  isDuplicateInboundFromAdapter,
+  getDuplicateInboundMessageIdFromAdapter,
   type ChannelAdapter,
   type RunContext,
 } from '@/lib/services/messaging-orchestration';
@@ -312,14 +312,14 @@ export async function processTwilioMessage(
     `[messageProcessor] Processing message: from=${from.slice(0, 4)}**** text="${body.slice(0, 50)}..."`,
   );
 
-  const dedupe = await isDuplicateInboundFromAdapter(
+  const duplicateMessageId = await getDuplicateInboundMessageIdFromAdapter(
     adapter,
     (id) => conversationManager.hasInboundMessageWithTwilioSid(id),
   );
-  if (dedupe.isDuplicate) {
+  if (duplicateMessageId) {
     logger.info('[messageProcessor] Duplicate inbound Twilio message detected, skipping', {
       from: `${from.slice(0, 4)}****`,
-      messageSid: dedupe.messageId,
+      messageSid: duplicateMessageId,
     });
     return { success: true, response: '' };
   }

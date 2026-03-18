@@ -10,6 +10,10 @@ import { logger } from '@/lib/logger';
 import { prisma } from '@/lib/prisma';
 import { DEFAULT_CALENDAR_TIMEZONE } from '@/constants/time';
 import {
+  compileEffectiveReplyInstructionDoc,
+  resolveReplyInstructionSenderEmail,
+} from '@/lib/services/reply-instructions';
+import {
   getCalendarSnapshot,
   gatherDirectEmailHistoryForReply,
   gatherKeywordEmailContextForReply,
@@ -68,7 +72,7 @@ type PlannerPromptContext = {
   currentDate: string;
 };
 
-async function buildReplyPlannerPrompt(input: ReplyPlannerAgentInput): Promise<PlannerPromptContext> {
+export async function buildReplyPlannerPrompt(input: ReplyPlannerAgentInput): Promise<PlannerPromptContext> {
   const template = readPromptFile('core-processing/replyPlannerPrompt.md');
 
   const prunedBody = pruneEmailContentForPlanning({
@@ -76,10 +80,19 @@ async function buildReplyPlannerPrompt(input: ReplyPlannerAgentInput): Promise<P
     body: input.message.body,
   }).prunedBody;
 
-  const userSettings = await prisma.userSettings.findUnique({
-    where: { userId: input.userId },
-    select: { calendarTimezone: true },
-  });
+  const senderEmail = resolveReplyInstructionSenderEmail(input.message.from);
+
+  const [userSettings, replyInstructionDoc] = await Promise.all([
+    prisma.userSettings.findUnique({
+      where: { userId: input.userId },
+      select: { calendarTimezone: true },
+    }),
+    compileEffectiveReplyInstructionDoc({
+      userId: input.userId,
+      target: 'planner',
+      senderEmail,
+    }),
+  ]);
 
   const userTimezone = userSettings?.calendarTimezone || DEFAULT_CALENDAR_TIMEZONE;
 
@@ -135,6 +148,7 @@ async function buildReplyPlannerPrompt(input: ReplyPlannerAgentInput): Promise<P
     .replace('{labelIds}', asCsv(input.message.labelIds))
     .replace('{emailDate}', input.receivedAt.toISOString())
     .replace('{threadId}', safeString(input.threadId ?? ''))
+    .replace('{replyInstructionDoc}', replyInstructionDoc)
     .replace('{body}', prunedBody);
 
   return {

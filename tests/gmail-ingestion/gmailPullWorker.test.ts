@@ -23,7 +23,7 @@ describe('gmailPullWorker message handling', () => {
       emailAddress: 'user@example.com',
       historyId: '123',
     });
-    const processor = vi.fn<[PushNotificationPayload], Promise<void>>().mockResolvedValue();
+    const processor = vi.fn(async (_payload: PushNotificationPayload) => undefined);
 
     const outcome = await processGmailPullMessage({
       message,
@@ -64,9 +64,9 @@ describe('gmailPullWorker message handling', () => {
       emailAddress: 'user@example.com',
       historyId: '124',
     });
-    const processor = vi.fn<[PushNotificationPayload], Promise<void>>().mockRejectedValue(
-      new Error('transient failure'),
-    );
+    const processor = vi.fn(async (_payload: PushNotificationPayload) => {
+      throw new Error('transient failure');
+    });
 
     const outcome = await processGmailPullMessage({
       message,

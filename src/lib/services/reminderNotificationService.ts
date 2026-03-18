@@ -3,6 +3,13 @@ import { getExecutiveAgent } from '@/lib/ai/agents/executiveAgent';
 import { logger } from '@/lib/logger';
 import { prisma } from '@/lib/prisma';
 import {
+  createAiTraceRoot,
+  deriveOutputPreview,
+  deriveRunStatusFromError,
+  finalizeAiTraceRun,
+  type AiTraceContext,
+} from '@/lib/ai/tracing';
+import {
   getWhatsAppClient,
   getConversationManager as getWhatsAppConversationManager,
 } from '@/lib/services/whatsapp';
@@ -320,19 +327,37 @@ export async function triggerReminderNotification(input: ReminderNotificationInp
       : null,
   }));
 
-  const result = await agent.process({
-    userId: reminder.userId,
-    userEmail: reminder.user?.email ?? input.userEmail,
-    userRequest: systemMessage,
-    conversationId: primaryConversationId,
-    channel: primaryChannel,
-    conversationHistory,
-    progressContext: buildNotificationProgressContext(primaryChannel, primaryConversationId),
-  });
+  let traceContext: AiTraceContext | undefined;
 
-  const deliveredChannels: Array<'whatsapp' | 'telegram'> = [];
+  try {
+    traceContext = await createAiTraceRoot({
+      pipeline: 'reminder-notification',
+      userId: reminder.userId,
+      channel: primaryChannel,
+      conversationId: primaryConversationId,
+      label: 'reminder-notification',
+      inputPreview: systemMessage,
+      metadata: {
+        reminderId: reminder.id,
+        title: reminder.title,
+        dueAt: dueAt.toISOString(),
+      },
+    });
 
-  if (whatsappConversation && settings?.whatsappPhoneNumber) {
+    const result = await agent.process({
+      userId: reminder.userId,
+      userEmail: reminder.user?.email ?? input.userEmail,
+      userRequest: systemMessage,
+      conversationId: primaryConversationId,
+      channel: primaryChannel,
+      conversationHistory,
+      progressContext: buildNotificationProgressContext(primaryChannel, primaryConversationId),
+      traceContext,
+    });
+
+    const deliveredChannels: Array<'whatsapp' | 'telegram'> = [];
+
+    if (whatsappConversation && settings?.whatsappPhoneNumber) {
     try {
       const client = getWhatsAppClient();
       const { messageId: waResponseId } = await client.sendMessage(settings.whatsappPhoneNumber, result.response);
@@ -363,7 +388,7 @@ export async function triggerReminderNotification(input: ReminderNotificationInp
     }
   }
 
-  if (telegramConversation && telegramTarget) {
+    if (telegramConversation && telegramTarget) {
     try {
       const client = getTelegramClient();
       const { messageId: telegramResponseId } = await client.sendMessage(telegramTarget.chatId, result.response);
@@ -394,58 +419,99 @@ export async function triggerReminderNotification(input: ReminderNotificationInp
     }
   }
 
-  if (deliveredChannels.length === 0) {
-    await markReminderMissed({
-      reminderId: reminder.id,
-      userId: reminder.userId,
-      reason: 'messaging-delivery-failed',
-    });
-    return;
-  }
-
-  await prisma.reminder.update({
-    where: { id: reminder.id },
-    data: {
-      status: 'DELIVERED',
-      deliveredAt: now,
-      snoozedUntil: null,
-    },
-  });
-
-  await prisma.actionHistory.create({
-    data: {
-      userId: reminder.userId,
-      actionType: 'REMINDER_DELIVERED',
-      actionSummary: `Reminder delivered: ${reminder.title}`,
-      actionDetails: {
+    if (deliveredChannels.length === 0) {
+      if (traceContext) {
+        await finalizeAiTraceRun(traceContext, {
+          status: 'FALLBACK',
+          outputPreview: deriveOutputPreview(result.response),
+          errorMessage: 'messaging-delivery-failed',
+          metadata: {
+            reminderId: reminder.id,
+            channelsTried: deliveredChannels,
+          },
+        });
+      }
+      await markReminderMissed({
         reminderId: reminder.id,
-        scheduledAt: reminder.scheduledAt.toISOString(),
-        dueAt: dueAt.toISOString(),
-        deliveredAt: now.toISOString(),
-        linkedEmailId: reminder.linkedEmailId,
-        linkedEventId: reminder.linkedEventId,
-        channels: deliveredChannels,
+        userId: reminder.userId,
+        reason: 'messaging-delivery-failed',
+      });
+      return;
+    }
+
+    await prisma.reminder.update({
+      where: { id: reminder.id },
+      data: {
+        status: 'DELIVERED',
+        deliveredAt: now,
+        snoozedUntil: null,
       },
-      undoable: false,
-    },
-  });
+    });
 
-  const recurrence = normalizeRecurrence(reminder.recurrence);
-  if (recurrence) {
-    const timeZone = settings?.calendarTimezone ?? DEFAULT_CALENDAR_TIMEZONE;
-    const nextScheduledAt = calculateNextOccurrence(reminder.scheduledAt, recurrence, timeZone);
-
-    if (nextScheduledAt) {
-      await prisma.reminder.create({
-        data: {
-          userId: reminder.userId,
-          title: reminder.title,
-          description: reminder.description,
-          context: reminder.context,
-          scheduledAt: nextScheduledAt,
-          recurrence: reminder.recurrence ?? undefined,
+    await prisma.actionHistory.create({
+      data: {
+        userId: reminder.userId,
+        actionType: 'REMINDER_DELIVERED',
+        actionSummary: `Reminder delivered: ${reminder.title}`,
+        actionDetails: {
+          reminderId: reminder.id,
+          scheduledAt: reminder.scheduledAt.toISOString(),
+          dueAt: dueAt.toISOString(),
+          deliveredAt: now.toISOString(),
           linkedEmailId: reminder.linkedEmailId,
           linkedEventId: reminder.linkedEventId,
+          channels: deliveredChannels,
+        },
+        undoable: false,
+      },
+    });
+
+    if (traceContext) {
+      await finalizeAiTraceRun(traceContext, {
+        status: result.status === 'ok' ? 'OK' : 'FALLBACK',
+        outputPreview: deriveOutputPreview(result.response),
+        errorMessage: result.status === 'ok' ? null : result.error ?? 'Executive Agent fallback',
+        metadata: {
+          reminderId: reminder.id,
+          channels: deliveredChannels,
+          agentStatus: result.status,
+        },
+      });
+    }
+
+    const recurrence = normalizeRecurrence(reminder.recurrence);
+    if (recurrence) {
+      const timeZone = settings?.calendarTimezone ?? DEFAULT_CALENDAR_TIMEZONE;
+      const nextScheduledAt = calculateNextOccurrence(reminder.scheduledAt, recurrence, timeZone);
+
+      if (nextScheduledAt) {
+        await prisma.reminder.create({
+          data: {
+            userId: reminder.userId,
+            title: reminder.title,
+            description: reminder.description,
+            context: reminder.context,
+            scheduledAt: nextScheduledAt,
+            recurrence: reminder.recurrence ?? undefined,
+            linkedEmailId: reminder.linkedEmailId,
+            linkedEventId: reminder.linkedEventId,
+          },
+        });
+      }
+    }
+  } catch (error) {
+    logger.error('[reminderNotification] Failed during delivery pipeline', {
+      reminderId: reminder.id,
+      userId: reminder.userId,
+      error,
+    });
+    if (traceContext) {
+      await finalizeAiTraceRun(traceContext, {
+        status: deriveRunStatusFromError(error),
+        outputPreview: null,
+        errorMessage: error instanceof Error ? error.message : String(error),
+        metadata: {
+          reminderId: reminder.id,
         },
       });
     }

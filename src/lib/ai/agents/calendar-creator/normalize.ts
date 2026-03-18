@@ -5,8 +5,9 @@ import {
   type CalendarCreatorPlanDTO,
   type CalendarTargetDTO,
 } from '@/lib/ai/schemas/calendarCreatorSchemas';
+import { normalizeIsoDateInputToUtc } from '@/lib/utils/timezone';
 import { buildCalendarPlanPreview } from './preview';
-import { resolveCalendarId } from './context';
+import { findCalendarId, resolveCalendarId } from './context';
 import type {
   CalendarCreatorContext,
   ResolvedCalendarEvent,
@@ -21,32 +22,37 @@ function normalizeLookupText(value: string): string {
 function isResolvedEventWithinRange(
   event: ResolvedCalendarEvent,
   target: Extract<CalendarTargetDTO, { lookupQuery: string }>,
+  userTimezone: string,
 ): boolean {
   if (!target.lookupRange) {
     return true;
   }
 
-  const rangeStart = Date.parse(target.lookupRange.startDate);
-  const rangeEnd = Date.parse(target.lookupRange.endDate);
-  const eventStart = Date.parse(event.start);
-  const eventEnd = Date.parse(event.end);
+  try {
+    const rangeStart = normalizeIsoDateInputToUtc(
+      target.lookupRange.startDate,
+      userTimezone,
+      'start',
+    ).getTime();
+    const rangeEnd = normalizeIsoDateInputToUtc(
+      target.lookupRange.endDate,
+      userTimezone,
+      'end',
+    ).getTime();
+    const eventStart = normalizeIsoDateInputToUtc(event.start, userTimezone, 'start').getTime();
+    const eventEnd = normalizeIsoDateInputToUtc(event.end, userTimezone, 'start').getTime();
 
-  if (
-    Number.isNaN(rangeStart) ||
-    Number.isNaN(rangeEnd) ||
-    Number.isNaN(eventStart) ||
-    Number.isNaN(eventEnd)
-  ) {
+    return eventStart <= rangeEnd && eventEnd >= rangeStart;
+  } catch {
     return true;
   }
-
-  return eventStart <= rangeEnd && eventEnd >= rangeStart;
 }
 
 function resolveTargetFromPreResolvedEvents(
   target: CalendarTargetDTO,
   resolvedEvents: ResolvedCalendarEvent[] | undefined,
   fallbackCalendarId: string,
+  userTimezone: string,
 ): CalendarTargetDTO {
   if (!('lookupQuery' in target) || !resolvedEvents || resolvedEvents.length === 0) {
     return 'eventId' in target
@@ -60,7 +66,7 @@ function resolveTargetFromPreResolvedEvents(
   const normalizedQuery = normalizeLookupText(target.lookupQuery);
   const matches = resolvedEvents.filter(
     (event) =>
-      isResolvedEventWithinRange(event, target) &&
+      isResolvedEventWithinRange(event, target, userTimezone) &&
       (normalizeLookupText(event.name) === normalizedQuery ||
         normalizeLookupText(event.name).includes(normalizedQuery) ||
         normalizedQuery.includes(normalizeLookupText(event.name))),
@@ -102,7 +108,10 @@ function createClarifyPlan(
 
 export function mapLlmOutputToPlan(
   raw: LlmPlanOutput,
-  context: Pick<CalendarCreatorContext, 'availableCalendars' | 'resolvedEvents' | 'currentTime'>,
+  context: Pick<
+    CalendarCreatorContext,
+    'availableCalendars' | 'resolvedEvents' | 'currentTime' | 'request'
+  >,
 ): CalendarCreatorPlanDTO {
   const shared = {
     confidence: raw.confidence ?? 70,
@@ -178,17 +187,47 @@ export function mapLlmOutputToPlan(
   }
 
   if (raw.action === 'update') {
+    const requestLooksLikeCalendarContainerChange =
+      /\bcalendar\b|\bmove\b|\bmoved\b|\bwrong\b/i.test(context.request);
+
     const updates = (raw.updateItems ?? []).map((item) => ({
       target: resolveTargetFromPreResolvedEvents(
         item.target,
         context.resolvedEvents,
         shared.calendarId,
+        context.currentTime.userTimezone,
       ),
       eventDraft: item.eventDraft,
+      destinationCalendarId: item.destinationCalendarId
+        ? findCalendarId(item.destinationCalendarId, context.availableCalendars)
+        : undefined,
     }));
 
     if (updates.length === 0) {
       return createClarifyPlan(shared, 'Which event should I update, and what should change?');
+    }
+
+    const hasSuspiciousCalendarAsLocation = updates.some((item) => {
+      const location = item.eventDraft.location?.trim();
+      return (
+        requestLooksLikeCalendarContainerChange &&
+        typeof location === 'string' &&
+        /\bcalendar\b/i.test(location)
+      );
+    });
+
+    if (hasSuspiciousCalendarAsLocation) {
+      return createClarifyPlan(
+        shared,
+        'Tell me which calendar each event should go to. Calendar choice is separate from the event details.',
+      );
+    }
+
+    if (updates.some((item) => item.destinationCalendarId === null)) {
+      return createClarifyPlan(
+        shared,
+        'I could not match one of those destination calendars. Tell me the exact calendar name you want for each event.',
+      );
     }
 
     const plan: CalendarCreatorPlanDTO =
@@ -202,6 +241,7 @@ export function mapLlmOutputToPlan(
             calendarId: shared.calendarId,
             target: updates[0]!.target,
             eventDraft: updates[0]!.eventDraft,
+            destinationCalendarId: updates[0]!.destinationCalendarId ?? undefined,
             userPreviewText: '',
           }
         : {
@@ -213,6 +253,9 @@ export function mapLlmOutputToPlan(
             calendarId: shared.calendarId,
             targets: updates.map((item) => item.target),
             eventDrafts: updates.map((item) => item.eventDraft),
+            destinationCalendarIds: updates.some((item) => item.destinationCalendarId !== undefined)
+              ? updates.map((item) => item.destinationCalendarId ?? undefined)
+              : undefined,
             userPreviewText: '',
           };
 
@@ -228,6 +271,7 @@ export function mapLlmOutputToPlan(
       target,
       context.resolvedEvents,
       shared.calendarId,
+      context.currentTime.userTimezone,
     ),
   );
 

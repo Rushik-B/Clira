@@ -10,6 +10,7 @@ import { sequentialize } from '@grammyjs/runner';
 import type { UserFromGetMe } from '@grammyjs/types/manage';
 import { prisma } from '@/lib/prisma';
 import { logger } from '@/lib/logger';
+import { parseBooleanEnv } from '@/lib/utils/params';
 import { normalizeMarkdownForTelegram } from './messageFormatting';
 
 const DEFAULT_POLL_TIMEOUT_SECONDS = 30;
@@ -67,14 +68,6 @@ type TelegramMonitorOptions = {
   onMessage: (message: TelegramInboundMessage) => Promise<void>;
 };
 
-function toBooleanEnv(value: string | undefined, defaultValue: boolean): boolean {
-  if (!value) return defaultValue;
-  const normalized = value.trim().toLowerCase();
-  if (normalized === 'true' || normalized === '1' || normalized === 'yes') return true;
-  if (normalized === 'false' || normalized === '0' || normalized === 'no') return false;
-  return defaultValue;
-}
-
 function toPositiveNumber(value: string | undefined, fallback: number): number {
   const parsed = Number.parseInt(value ?? '', 10);
   if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
@@ -88,7 +81,7 @@ export function isTelegramConfigured(): boolean {
 export function isTelegramEnabled(): boolean {
   const tokenPresent = isTelegramConfigured();
   if (!tokenPresent) return false;
-  return toBooleanEnv(process.env.TELEGRAM_ENABLED, true);
+  return parseBooleanEnv(process.env.TELEGRAM_ENABLED, true);
 }
 
 export function createTelegramConfig(): TelegramClientConfig {

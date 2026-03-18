@@ -5,11 +5,12 @@ import { AccountPrivacyPage } from './settings/AccountPrivacyPage';
 import { AssistantRepliesPage } from './settings/AssistantRepliesPage';
 import { FoldersLabelsPage } from './settings/FoldersLabelsPage';
 import { MailboxConnectionsPage } from './settings/MailboxConnectionsPage';
+import { McpConnectionsPage } from './settings/McpConnectionsPage';
 import { TextChannelsIntegrationPage } from './settings/TextChannelsIntegrationPage';
 import type { TextChannelsSettingsSnapshot } from '@/lib/services/textChannelsSettings';
 
 interface SettingsPageProps {
-  activeSection?: 'account-privacy' | 'assistant-replies' | 'folders-labels' | 'text-channels' | 'inboxes';
+  activeSection?: 'account-privacy' | 'assistant-replies' | 'folders-labels' | 'text-channels' | 'inboxes' | 'mcp-connections';
   initialTextChannelsSettings?: TextChannelsSettingsSnapshot | null;
 }
 
@@ -27,6 +28,8 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
       return <TextChannelsIntegrationPage initialSettings={initialTextChannelsSettings} />;
     case 'inboxes':
       return <MailboxConnectionsPage />;
+    case 'mcp-connections':
+      return <McpConnectionsPage />;
     case 'account-privacy':
     default:
       return <AccountPrivacyPage />;

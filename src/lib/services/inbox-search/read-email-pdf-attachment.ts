@@ -1,8 +1,12 @@
 import { logger } from '@/lib/logger';
 import { prisma } from '@/lib/prisma';
 import { createGmailServiceForUser } from '@/lib/security/getUserGmailCredentials';
-import { extractIncomingPdfText } from '@/lib/ai/extractIncomingPdfText';
 import type { AiTraceContext } from '@/lib/ai/tracing';
+import {
+  buildInlineBufferProvenance,
+  extractContentFromBuffer,
+  renderContentExtractionForLegacyText,
+} from '@/lib/services/content-ingestion';
 
 type GmailHeader = {
   name?: string | null;
@@ -727,16 +731,24 @@ export async function readEmailPdfAttachment(
     }
 
     try {
-      const extractedText = await extractIncomingPdfText(
-        pdfBuffer,
-        selectedAttachment.mimeType,
-        {
-          abortSignal: params.abortSignal,
-          traceContext: params.traceContext,
-          channelLabel: 'Gmail email attachment',
-          filename: selectedAttachment.filename,
-        },
-      );
+      const extraction = await extractContentFromBuffer({
+        buffer: pdfBuffer,
+        mimeType: selectedAttachment.mimeType,
+        abortSignal: params.abortSignal,
+        traceContext: params.traceContext,
+        channelLabel: 'Gmail email attachment',
+        filename: selectedAttachment.filename,
+        provenance: buildInlineBufferProvenance({
+          sourceLabel: 'Gmail email attachment',
+          sourceKind: 'gmail_attachment',
+          channel: 'gmail',
+          conversationId: params.traceContext?.conversationId ?? null,
+          runId: params.traceContext?.runId ?? null,
+          messageId: params.messageId,
+          attachmentId: selectedAttachment.attachmentId,
+        }),
+      });
+      const extractedText = renderContentExtractionForLegacyText(extraction);
 
       logger.info('[readEmailPdfAttachment] extracted pdf attachment', {
         userId: params.userId,
@@ -745,6 +757,8 @@ export async function readEmailPdfAttachment(
         attachmentId: selectedAttachment.attachmentId,
         filename: selectedAttachment.filename,
         pdfCount: attachments.length,
+        extractionStatus: extraction.status,
+        degradationCodes: extraction.degradationNotes.map((note) => note.code),
       });
 
       return {

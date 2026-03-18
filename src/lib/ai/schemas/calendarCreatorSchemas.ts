@@ -73,6 +73,14 @@ export const CalendarEventDraftSchema = z
   })
   .strict();
 
+const CalendarDestinationCalendarIdSchema = z
+  .string()
+  .min(1)
+  .describe(
+    'Destination calendar ID for moving an existing event to another calendar. ' +
+      'Use this only for calendar moves. Never encode calendar names in location or description.',
+  );
+
 const CalendarCreateEventDraftSchema = CalendarEventDraftSchema.extend({
   summary: z.string().min(1).max(200),
   start: CalendarEventTimeSchema,
@@ -86,12 +94,7 @@ const CalendarCreateEventDraftSchema = CalendarEventDraftSchema.extend({
     ),
 }).strict();
 
-const CalendarEventPatchSchema = CalendarEventDraftSchema.refine(
-  (draft) => Object.values(draft).some((value) => value !== undefined),
-  {
-    message: 'Update actions require at least one field to change.',
-  },
-);
+const CalendarEventPatchSchema = CalendarEventDraftSchema;
 
 const CalendarEventDraftsSchema = z
   .array(CalendarCreateEventDraftSchema)
@@ -158,6 +161,12 @@ const CalendarCreatorUpdatePlanSchema = z
     targets: CalendarTargetsSchema.optional(),
     eventDraft: CalendarEventPatchSchema.optional(),
     eventDrafts: CalendarEventPatchesSchema.optional(),
+    destinationCalendarId: CalendarDestinationCalendarIdSchema.optional(),
+    destinationCalendarIds: z
+      .array(CalendarDestinationCalendarIdSchema.optional())
+      .min(1)
+      .max(CALENDAR_CREATOR_MAX_ITEMS)
+      .optional(),
     clarifyingQuestions: z.never().optional(),
     ...CalendarCreatorPlanShared,
   })
@@ -225,6 +234,13 @@ export const CalendarCreatorPlanSchema = CalendarCreatorPlanBaseSchema.superRefi
     const hasBatchTargets = value.targets !== undefined;
     const hasSingleDraft = value.eventDraft !== undefined;
     const hasBatchDrafts = value.eventDrafts !== undefined;
+    const hasMeaningfulPatch = (draft: z.infer<typeof CalendarEventPatchSchema> | undefined) => {
+      if (!draft) {
+        return false;
+      }
+
+      return Object.values(draft).some((fieldValue) => fieldValue !== undefined);
+    };
 
     if (hasSingleTarget === hasBatchTargets) {
       ctx.addIssue({
@@ -252,11 +268,67 @@ export const CalendarCreatorPlanSchema = CalendarCreatorPlanBaseSchema.superRefi
       }
     }
 
+    if (hasSingleTarget && value.destinationCalendarIds !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Single-target update must not provide destinationCalendarIds.',
+        path: ['destinationCalendarIds'],
+      });
+    }
+
+    if (hasBatchTargets && value.destinationCalendarId !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Batch update must not provide destinationCalendarId.',
+        path: ['destinationCalendarId'],
+      });
+    }
+
+    if (
+      hasBatchTargets &&
+      value.destinationCalendarIds !== undefined &&
+      value.destinationCalendarIds.length !== value.targets!.length
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Batch update requires destinationCalendarIds to match targets length when provided.',
+        path: ['destinationCalendarIds'],
+      });
+    }
+
     if ((hasSingleTarget && hasBatchDrafts) || (hasBatchTargets && hasSingleDraft)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: 'Do not mix single-target and batch update fields.',
         path: ['targets'],
+      });
+    }
+
+    if (hasSingleTarget) {
+      const hasDestination = value.destinationCalendarId !== undefined;
+      if (!hasMeaningfulPatch(value.eventDraft) && !hasDestination && !value.createMeetLink) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'Update actions require event changes, a destination calendar move, or createMeetLink.',
+          path: ['eventDraft'],
+        });
+      }
+    }
+
+    if (hasBatchTargets) {
+      const drafts = value.eventDrafts ?? [];
+      const destinations = value.destinationCalendarIds ?? [];
+
+      value.targets!.forEach((_, index) => {
+        const hasDestination = destinations[index] !== undefined;
+        if (!hasMeaningfulPatch(drafts[index]) && !hasDestination && !value.createMeetLink) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message:
+              'Each batch update item requires event changes, a destination calendar move, or createMeetLink.',
+            path: ['eventDrafts', index],
+          });
+        }
       });
     }
   }
@@ -314,6 +386,7 @@ const CalendarLlmUpdateItemSchema = z
   .object({
     target: CalendarTargetSchema,
     eventDraft: CalendarEventPatchSchema,
+    destinationCalendarId: CalendarDestinationCalendarIdSchema.optional(),
   })
   .strict();
 

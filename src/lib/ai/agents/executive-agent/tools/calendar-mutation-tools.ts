@@ -14,6 +14,7 @@ import {
   buildCalendarCompletionMessage,
   describeGoogleCalendarEvent,
 } from '@/lib/ai/calendar-user-facing';
+import { formatDateTimeInTimeZone } from '@/lib/utils/timezone';
 import {
   type CalendarMutationTarget,
   buildMutationCandidates,
@@ -88,7 +89,8 @@ export function buildCalendarMutationTools({
           'Plan a calendar change (create/update/delete) with a confirmation-required preview. ' +
           'Always return a user-facing preview and a pending change for explicit confirmation. ' +
           'Use for calendar mutations only; never execute changes directly. ' +
-          'When the plan moves or reschedules specific events: call search_calendar exactly once with one combined query (all event names) and one date range, then pass the returned events as resolvedEvents. Do not call search_calendar multiple times for the same plan. Required for performance.',
+          'When the plan moves or reschedules specific events: call search_calendar exactly once with one combined query (all event names) and one date range, then pass the returned events as resolvedEvents. Do not call search_calendar multiple times for the same plan. Required for performance. ' +
+          'Field semantics matter: summary=title, location=room/link/place, description=notes, start/end=time, attendees=people, reminders=notifications, and calendar choice is the container calendar. Never encode a calendar move as a location or description change. This tool already receives the writable calendar list internally.',
         inputSchema: z.object({
           request: z.string().min(1).max(1000).describe('User request describing the calendar change'),
           startDate: z
@@ -161,8 +163,8 @@ export function buildCalendarMutationTools({
                 message: 'A calendar change is currently being processed. Please wait a moment.',
                 pendingChange: {
                   pendingId: existingPending.id,
-                  createdAt: existingPending.createdAt.toISOString(),
-                  expiresAt: existingPending.expiresAt.toISOString(),
+                  createdAt: formatDateTimeInTimeZone(existingPending.createdAt, userTimezone),
+                  expiresAt: formatDateTimeInTimeZone(existingPending.expiresAt, userTimezone),
                   status: existingPending.status,
                   action: pendingPayload?.plan.action,
                 },
@@ -190,8 +192,8 @@ export function buildCalendarMutationTools({
               previewText,
               pendingChange: {
                 pendingId: existingPending.id,
-                createdAt: existingPending.createdAt.toISOString(),
-                expiresAt: existingPending.expiresAt.toISOString(),
+                createdAt: formatDateTimeInTimeZone(existingPending.createdAt, userTimezone),
+                expiresAt: formatDateTimeInTimeZone(existingPending.expiresAt, userTimezone),
                 action: existingPlan?.action,
               },
               note:
@@ -775,7 +777,7 @@ export function buildCalendarMutationTools({
                   summary: resolvedPlan.eventDraft?.summary ?? null,
                   eventCount,
                   targetCount: resolvedTargets?.length ?? (resolvedTarget ? 1 : 0),
-                  expiresAt: expiresAt.toISOString(),
+                  expiresAt: formatDateTimeInTimeZone(expiresAt, userTimezone),
                 },
                 undoable: false,
                 metadata: {
@@ -794,8 +796,8 @@ export function buildCalendarMutationTools({
             previewText: resolvedPlan.userPreviewText,
             pendingChange: {
               pendingId: pendingRecord.id,
-              createdAt: pendingRecord.createdAt.toISOString(),
-              expiresAt: pendingRecord.expiresAt.toISOString(),
+              createdAt: formatDateTimeInTimeZone(pendingRecord.createdAt, userTimezone),
+              expiresAt: formatDateTimeInTimeZone(pendingRecord.expiresAt, userTimezone),
               action: resolvedPlan.action,
             },
           };
@@ -971,6 +973,14 @@ export function buildCalendarMutationTools({
               message: 'No calendar access available. Please reconnect your calendar.',
             };
           }
+
+          const hasMeaningfulUpdateDraft = (draft: Record<string, unknown> | undefined) => {
+            if (!draft) {
+              return false;
+            }
+
+            return Object.values(draft).some((value) => value !== undefined);
+          };
 
           try {
             if (plan.action === 'create') {
@@ -1155,6 +1165,12 @@ export function buildCalendarMutationTools({
                   }
 
                   const draft = plan.eventDrafts[index];
+                  const requestedDestinationCalendarId = plan.destinationCalendarIds?.[index];
+                  const hasDraftChanges = hasMeaningfulUpdateDraft(draft);
+                  const shouldMoveCalendars = Boolean(
+                    requestedDestinationCalendarId &&
+                      requestedDestinationCalendarId !== target.calendarId,
+                  );
                   if (!draft) {
                     failures.push({
                       index,
@@ -1164,12 +1180,17 @@ export function buildCalendarMutationTools({
                     continue;
                   }
 
-                  const draftKeys = Object.entries(draft).filter(([, value]) => value !== undefined);
-                  if (draftKeys.length === 0) {
+                  if (
+                    !hasDraftChanges &&
+                    !shouldMoveCalendars &&
+                    !plan.createMeetLink
+                  ) {
                     failures.push({
                       index,
                       summary: draft.summary ?? `Event ${index + 1}`,
-                      message: 'No update fields were provided.',
+                      message: requestedDestinationCalendarId
+                        ? 'That event is already on the requested calendar.'
+                        : 'No update fields were provided.',
                     });
                     continue;
                   }
@@ -1181,74 +1202,93 @@ export function buildCalendarMutationTools({
                     });
 
                     const currentEvent = currentEventResponse.data;
+                    let latestEvent = currentEvent;
+                    let latestCalendarId = target.calendarId;
+                    let latestEventId = currentEvent.id ?? target.eventId;
 
-                    const normalizedDraft = normalizeUpdateDraftTimesForPatch({
-                      draft,
-                      currentEvent: {
-                        start: currentEvent.start as GoogleEventTime | null | undefined,
-                        end: currentEvent.end as GoogleEventTime | null | undefined,
-                      },
-                    });
-
-                    if (!normalizedDraft.ok) {
-                      failures.push({
-                        index,
-                        summary: draft.summary ?? `Event ${index + 1}`,
-                        message: normalizedDraft.message,
-                      });
-                      continue;
-                    }
-
-                    const timeValidation = validateEventDraftTimes(normalizedDraft.patch, 'update');
-                    if (!timeValidation.ok) {
-                      failures.push({
-                        index,
-                        summary: draft.summary ?? `Event ${index + 1}`,
-                        message: timeValidation.message,
-                      });
-                      continue;
-                    }
-
-                    const conferenceData = plan.createMeetLink
-                      ? {
-                          createRequest: {
-                            requestId: crypto.randomUUID(),
-                            conferenceSolutionKey: { type: 'hangoutsMeet' },
-                          },
-                        }
-                      : undefined;
-
-                    const patchForApi = applyGoogleReminderLimit(normalizedDraft.patch);
-                    const requestBody = stripUndefined({
-                      ...patchForApi,
-                      extendedProperties: {
-                        private: {
-                          ...(currentEvent.extendedProperties?.private ?? {}),
-                          cliraPendingId: latestPending.id,
-                          cliraSource: 'calendarCreatorAgent',
+                    if (hasDraftChanges || plan.createMeetLink) {
+                      const normalizedDraft = normalizeUpdateDraftTimesForPatch({
+                        draft,
+                        currentEvent: {
+                          start: currentEvent.start as GoogleEventTime | null | undefined,
+                          end: currentEvent.end as GoogleEventTime | null | undefined,
                         },
-                      },
-                      conferenceData,
-                    } satisfies Record<string, unknown>);
+                      });
 
-                    const response = await calendarService.patchEvent({
-                      calendarId: target.calendarId,
-                      eventId: target.eventId,
-                      requestBody,
-                      conferenceDataVersion: conferenceData ? 1 : undefined,
-                      sendUpdates: plan.sendUpdates,
-                      ifMatchEtag: currentEvent.etag ?? target.etag,
-                    });
+                      if (!normalizedDraft.ok) {
+                        failures.push({
+                          index,
+                          summary: draft.summary ?? `Event ${index + 1}`,
+                          message: normalizedDraft.message,
+                        });
+                        continue;
+                      }
 
-                    const updatedEvent = response.data;
-                    const summary = updatedEvent.summary ?? currentEvent.summary ?? draft.summary ?? '(No title)';
+                      const timeValidation = validateEventDraftTimes(normalizedDraft.patch, 'update');
+                      if (!timeValidation.ok) {
+                        failures.push({
+                          index,
+                          summary: draft.summary ?? `Event ${index + 1}`,
+                          message: timeValidation.message,
+                        });
+                        continue;
+                      }
+
+                      const conferenceData = plan.createMeetLink
+                        ? {
+                            createRequest: {
+                              requestId: crypto.randomUUID(),
+                              conferenceSolutionKey: { type: 'hangoutsMeet' },
+                            },
+                          }
+                        : undefined;
+
+                      const patchForApi = applyGoogleReminderLimit(normalizedDraft.patch);
+                      const requestBody = stripUndefined({
+                        ...patchForApi,
+                        extendedProperties: {
+                          private: {
+                            ...(currentEvent.extendedProperties?.private ?? {}),
+                            cliraPendingId: latestPending.id,
+                            cliraSource: 'calendarCreatorAgent',
+                          },
+                        },
+                        conferenceData,
+                      } satisfies Record<string, unknown>);
+
+                      const response = await calendarService.patchEvent({
+                        calendarId: target.calendarId,
+                        eventId: target.eventId,
+                        requestBody,
+                        conferenceDataVersion: conferenceData ? 1 : undefined,
+                        sendUpdates: plan.sendUpdates,
+                        ifMatchEtag: currentEvent.etag ?? target.etag,
+                      });
+
+                      latestEvent = response.data;
+                      latestEventId = response.data.id ?? latestEventId;
+                    }
+
+                    if (shouldMoveCalendars && requestedDestinationCalendarId) {
+                      const response = await calendarService.moveEvent({
+                        calendarId: latestCalendarId,
+                        eventId: latestEventId,
+                        destinationCalendarId: requestedDestinationCalendarId,
+                        sendUpdates: plan.sendUpdates,
+                      });
+                      latestEvent = response.data;
+                      latestCalendarId = requestedDestinationCalendarId;
+                      latestEventId = response.data.id ?? latestEventId;
+                    }
+
+                    const summary = latestEvent.summary ?? currentEvent.summary ?? draft.summary ?? '(No title)';
 
                     updatedEvents.push({
-                      eventId: updatedEvent.id,
-                      htmlLink: updatedEvent.htmlLink,
+                      eventId: latestEvent.id,
+                      htmlLink: latestEvent.htmlLink,
                       summary,
-                      start: (updatedEvent.start ?? currentEvent.start) as GoogleEventTime | null | undefined,
-                      end: (updatedEvent.end ?? currentEvent.end) as GoogleEventTime | null | undefined,
+                      start: (latestEvent.start ?? currentEvent.start) as GoogleEventTime | null | undefined,
+                      end: (latestEvent.end ?? currentEvent.end) as GoogleEventTime | null | undefined,
                     });
 
                     await prisma.actionHistory.create({
@@ -1257,14 +1297,18 @@ export function buildCalendarMutationTools({
                         actionType: ActionHistoryType.CALENDAR_EVENT_UPDATED,
                         actionSummary: `Updated calendar event: ${summary}`,
                         actionDetails: {
-                          calendarId: target.calendarId,
-                          eventId: target.eventId,
-                          htmlLink: updatedEvent.htmlLink,
+                          calendarId: latestCalendarId,
+                          sourceCalendarId: target.calendarId,
+                          destinationCalendarId: shouldMoveCalendars
+                            ? requestedDestinationCalendarId
+                            : undefined,
+                          eventId: latestEventId,
+                          htmlLink: latestEvent.htmlLink,
                           sendUpdates: plan.sendUpdates,
                           createMeetLink: plan.createMeetLink,
-                          start: (updatedEvent.start ?? currentEvent.start) as Prisma.InputJsonValue,
-                          end: (updatedEvent.end ?? currentEvent.end) as Prisma.InputJsonValue,
-                          attendees: summarizeAttendees(updatedEvent.attendees ?? currentEvent.attendees),
+                          start: (latestEvent.start ?? currentEvent.start) as Prisma.InputJsonValue,
+                          end: (latestEvent.end ?? currentEvent.end) as Prisma.InputJsonValue,
+                          attendees: summarizeAttendees(latestEvent.attendees ?? currentEvent.attendees),
                         },
                         undoable: false,
                         metadata: {
@@ -1336,10 +1380,25 @@ export function buildCalendarMutationTools({
                 return { ok: false, error: 'invalid_plan', message: 'Missing fields to update.' };
               }
 
-              const draftKeys = Object.entries(plan.eventDraft).filter(([, value]) => value !== undefined);
-              if (draftKeys.length === 0) {
+              const hasDraftChanges = hasMeaningfulUpdateDraft(plan.eventDraft);
+              const shouldMoveCalendars = Boolean(
+                plan.destinationCalendarId &&
+                  plan.destinationCalendarId !== pendingPayload.resolvedTarget.calendarId,
+              );
+
+              if (
+                !hasDraftChanges &&
+                !shouldMoveCalendars &&
+                !plan.createMeetLink
+              ) {
                 await cancelPending();
-                return { ok: false, error: 'invalid_plan', message: 'No update fields were provided.' };
+                return {
+                  ok: false,
+                  error: 'invalid_plan',
+                  message: plan.destinationCalendarId
+                    ? 'That event is already on the requested calendar.'
+                    : 'No update fields were provided.',
+                };
               }
 
               const staleSingleUpdate = await ensureCurrentRun('commit_calendar_change');
@@ -1354,58 +1413,76 @@ export function buildCalendarMutationTools({
               });
 
               const currentEvent = currentEventResponse.data;
+              let latestEvent = currentEvent;
+              let latestCalendarId = pendingPayload.resolvedTarget.calendarId;
+              let latestEventId = currentEvent.id ?? pendingPayload.resolvedTarget.eventId;
 
-              const normalizedDraft = normalizeUpdateDraftTimesForPatch({
-                draft: plan.eventDraft,
-                currentEvent: {
-                  start: currentEvent.start as GoogleEventTime | null | undefined,
-                  end: currentEvent.end as GoogleEventTime | null | undefined,
-                },
-              });
-
-              if (!normalizedDraft.ok) {
-                await cancelPending();
-                return { ok: false, error: 'invalid_event_time', message: normalizedDraft.message };
-              }
-
-              const timeValidation = validateEventDraftTimes(normalizedDraft.patch, 'update');
-              if (!timeValidation.ok) {
-                await cancelPending();
-                return { ok: false, error: 'invalid_event_time', message: timeValidation.message };
-              }
-
-              const conferenceData = plan.createMeetLink
-                ? {
-                    createRequest: {
-                      requestId: crypto.randomUUID(),
-                      conferenceSolutionKey: { type: 'hangoutsMeet' },
-                    },
-                  }
-                : undefined;
-
-              const patchForApi = applyGoogleReminderLimit(normalizedDraft.patch);
-              const requestBody = stripUndefined({
-                ...patchForApi,
-                extendedProperties: {
-                  private: {
-                    ...(currentEvent.extendedProperties?.private ?? {}),
-                    cliraPendingId: latestPending.id,
-                    cliraSource: 'calendarCreatorAgent',
+              if (hasDraftChanges || plan.createMeetLink) {
+                const normalizedDraft = normalizeUpdateDraftTimesForPatch({
+                  draft: plan.eventDraft,
+                  currentEvent: {
+                    start: currentEvent.start as GoogleEventTime | null | undefined,
+                    end: currentEvent.end as GoogleEventTime | null | undefined,
                   },
-                },
-                conferenceData,
-              } satisfies Record<string, unknown>);
+                });
 
-              const response = await calendarService.patchEvent({
-                calendarId: pendingPayload.resolvedTarget.calendarId,
-                eventId: pendingPayload.resolvedTarget.eventId,
-                requestBody,
-                conferenceDataVersion: conferenceData ? 1 : undefined,
-                sendUpdates: plan.sendUpdates,
-                ifMatchEtag: currentEvent.etag ?? pendingPayload.resolvedTarget.etag,
-              });
+                if (!normalizedDraft.ok) {
+                  await cancelPending();
+                  return { ok: false, error: 'invalid_event_time', message: normalizedDraft.message };
+                }
 
-              const updatedEvent = response.data;
+                const timeValidation = validateEventDraftTimes(normalizedDraft.patch, 'update');
+                if (!timeValidation.ok) {
+                  await cancelPending();
+                  return { ok: false, error: 'invalid_event_time', message: timeValidation.message };
+                }
+
+                const conferenceData = plan.createMeetLink
+                  ? {
+                      createRequest: {
+                        requestId: crypto.randomUUID(),
+                        conferenceSolutionKey: { type: 'hangoutsMeet' },
+                      },
+                    }
+                  : undefined;
+
+                const patchForApi = applyGoogleReminderLimit(normalizedDraft.patch);
+                const requestBody = stripUndefined({
+                  ...patchForApi,
+                  extendedProperties: {
+                    private: {
+                      ...(currentEvent.extendedProperties?.private ?? {}),
+                      cliraPendingId: latestPending.id,
+                      cliraSource: 'calendarCreatorAgent',
+                    },
+                  },
+                  conferenceData,
+                } satisfies Record<string, unknown>);
+
+                const response = await calendarService.patchEvent({
+                  calendarId: pendingPayload.resolvedTarget.calendarId,
+                  eventId: pendingPayload.resolvedTarget.eventId,
+                  requestBody,
+                  conferenceDataVersion: conferenceData ? 1 : undefined,
+                  sendUpdates: plan.sendUpdates,
+                  ifMatchEtag: currentEvent.etag ?? pendingPayload.resolvedTarget.etag,
+                });
+
+                latestEvent = response.data;
+                latestEventId = response.data.id ?? latestEventId;
+              }
+
+              if (shouldMoveCalendars && plan.destinationCalendarId) {
+                const response = await calendarService.moveEvent({
+                  calendarId: latestCalendarId,
+                  eventId: latestEventId,
+                  destinationCalendarId: plan.destinationCalendarId,
+                  sendUpdates: plan.sendUpdates,
+                });
+                latestEvent = response.data;
+                latestCalendarId = plan.destinationCalendarId;
+                latestEventId = response.data.id ?? latestEventId;
+              }
 
               await markPendingConsumed();
 
@@ -1413,16 +1490,20 @@ export function buildCalendarMutationTools({
                 data: {
                   userId: input.userId,
                   actionType: ActionHistoryType.CALENDAR_EVENT_UPDATED,
-                  actionSummary: `Updated calendar event: ${updatedEvent.summary ?? currentEvent.summary ?? '(No title)'}`,
+                  actionSummary: `Updated calendar event: ${latestEvent.summary ?? currentEvent.summary ?? '(No title)'}`,
                   actionDetails: {
-                    calendarId: pendingPayload.resolvedTarget.calendarId,
-                    eventId: pendingPayload.resolvedTarget.eventId,
-                    htmlLink: updatedEvent.htmlLink,
+                    calendarId: latestCalendarId,
+                    sourceCalendarId: pendingPayload.resolvedTarget.calendarId,
+                    destinationCalendarId: shouldMoveCalendars
+                      ? plan.destinationCalendarId
+                      : undefined,
+                    eventId: latestEventId,
+                    htmlLink: latestEvent.htmlLink,
                     sendUpdates: plan.sendUpdates,
                     createMeetLink: plan.createMeetLink,
-                    start: (updatedEvent.start ?? currentEvent.start) as Prisma.InputJsonValue,
-                    end: (updatedEvent.end ?? currentEvent.end) as Prisma.InputJsonValue,
-                    attendees: summarizeAttendees(updatedEvent.attendees ?? currentEvent.attendees),
+                    start: (latestEvent.start ?? currentEvent.start) as Prisma.InputJsonValue,
+                    end: (latestEvent.end ?? currentEvent.end) as Prisma.InputJsonValue,
+                    attendees: summarizeAttendees(latestEvent.attendees ?? currentEvent.attendees),
                   },
                   undoable: false,
                   metadata: {
@@ -1440,17 +1521,17 @@ export function buildCalendarMutationTools({
                   items: [
                     describeGoogleCalendarEvent(
                       {
-                        summary: updatedEvent.summary ?? currentEvent.summary ?? '(No title)',
-                        start: (updatedEvent.start ?? currentEvent.start) as GoogleEventTime | null | undefined,
-                        end: (updatedEvent.end ?? currentEvent.end) as GoogleEventTime | null | undefined,
+                        summary: latestEvent.summary ?? currentEvent.summary ?? '(No title)',
+                        start: (latestEvent.start ?? currentEvent.start) as GoogleEventTime | null | undefined,
+                        end: (latestEvent.end ?? currentEvent.end) as GoogleEventTime | null | undefined,
                       },
                       userTimezone,
                     ),
                   ],
                 }),
-                eventId: updatedEvent.id,
-                htmlLink: updatedEvent.htmlLink,
-                summary: updatedEvent.summary ?? currentEvent.summary ?? '(No title)',
+                eventId: latestEvent.id,
+                htmlLink: latestEvent.htmlLink,
+                summary: latestEvent.summary ?? currentEvent.summary ?? '(No title)',
               };
             }
 

@@ -25,9 +25,9 @@ vi.mock('@/lib/logger', () => ({
   },
 }));
 
-const { extractIncomingPdfText } = await import('@/lib/ai/extractIncomingPdfText');
+const { extractContentFromBuffer } = await import('@/lib/services/content-ingestion');
 
-describe('extractIncomingPdfText', () => {
+describe('content-ingestion pdf extraction', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     modelMocks.flash.mockReturnValue('gemini-pdf-extractor');
@@ -38,17 +38,15 @@ describe('extractIncomingPdfText', () => {
       text: 'Invoice #123\nTotal Due: $400\nTerms: Net 30\n',
     });
 
-    const result = await extractIncomingPdfText(
-      Buffer.from('pdf-bytes'),
-      'application/pdf',
-      {
-        channelLabel: 'Telegram',
-        filename: 'invoice.pdf',
-        userCaption: 'Pull out the amount due',
-      },
-    );
+    const result = await extractContentFromBuffer({
+      buffer: Buffer.from('pdf-bytes'),
+      mimeType: 'application/pdf',
+      channelLabel: 'Telegram',
+      filename: 'invoice.pdf',
+      userCaption: 'Pull out the amount due',
+    });
 
-    expect(result).toBe('Invoice #123\nTotal Due: $400\nTerms: Net 30');
+    expect(result.extractedText).toBe('Invoice #123\nTotal Due: $400\nTerms: Net 30');
     expect(llmMocks.callTextWithMessages).toHaveBeenCalledWith(
       expect.objectContaining({
         model: 'gemini-pdf-extractor',
@@ -83,6 +81,5 @@ describe('extractIncomingPdfText', () => {
     expect(prompt).not.toContain('KEY DETAILS:');
     expect(prompt).not.toContain('EXTRACTED TEXT:');
     expect(prompt).not.toContain('UNCERTAINTIES:');
-    expect(prompt).not.toContain('Caption: Pull out the amount due');
   });
 });

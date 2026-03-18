@@ -13,6 +13,7 @@ import {
   Filter,
   OldPhone,
   PanelLeftOpen,
+  Puzzle,
   User,
   Phone,
 } from "@/components/icons/icons"
@@ -39,7 +40,7 @@ import { Sparkles } from "@/components/icons/icons"
 // Custom icon type for our custom icons
 type CustomIcon = React.ComponentType<{ className?: string; style?: React.CSSProperties }>
 
-type SettingsSection = 'account-privacy' | 'assistant-replies' | 'folders-labels' | 'text-channels' | 'inboxes'
+type SettingsSection = 'account-privacy' | 'assistant-replies' | 'folders-labels' | 'text-channels' | 'inboxes' | 'mcp-connections'
 
 interface AppSidebarProps extends React.ComponentProps<typeof Sidebar> {
   activePage: PageType
@@ -173,6 +174,13 @@ export function AppSidebar({
           icon: Inbox,
           onClick: () => handleNavigation('settings', 'inboxes'),
           isActive: activeSettingsSection === 'inboxes'
+        },
+        {
+          title: "MCP Servers",
+          url: "/settings/mcp-connections",
+          icon: Puzzle,
+          onClick: () => handleNavigation('settings', 'mcp-connections'),
+          isActive: activeSettingsSection === 'mcp-connections'
         }
       ]
     },

@@ -15,6 +15,7 @@ import {
   addDaysToDateOnly,
   endOfDayInTimezone,
   endOfTodayInTimezone,
+  formatDateTimeInTimeZone,
   getDateOnlyInTimezone,
   normalizeIsoDateInputToUtc,
   startOfDayInTimezone,
@@ -145,6 +146,109 @@ function buildInvalidReadEmailPdfAttachmentResult(messageId: string, message: st
       validationError: true,
     },
   };
+}
+
+function formatUserVisibleTimestamp(value: string | null | undefined, userTimezone: string): string | null {
+  if (!value) return value ?? null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+  return formatDateTimeInTimeZone(parsed, userTimezone);
+}
+
+function localizeEmailEvidencePackDates<T extends Record<string, unknown>>(result: T, userTimezone: string): T {
+  const nextResult: Record<string, unknown> = { ...result };
+
+  if (Array.isArray(result.matches)) {
+    nextResult.matches = result.matches.map((match) => {
+      if (!match || typeof match !== 'object') return match;
+      const typedMatch = match as Record<string, unknown>;
+      return {
+        ...typedMatch,
+        date:
+          typeof typedMatch.date === 'string'
+            ? formatUserVisibleTimestamp(typedMatch.date, userTimezone)
+            : typedMatch.date,
+      };
+    });
+  }
+
+  if (Array.isArray(result.expandedThreads)) {
+    nextResult.expandedThreads = result.expandedThreads.map((thread) => {
+      if (!thread || typeof thread !== 'object') return thread;
+      const typedThread = thread as Record<string, unknown>;
+      const messages = Array.isArray(typedThread.messages) ? typedThread.messages : [];
+      return {
+        ...typedThread,
+        messages: messages.map((message) => {
+          if (!message || typeof message !== 'object') return message;
+          const typedMessage = message as Record<string, unknown>;
+          return {
+            ...typedMessage,
+            date:
+              typeof typedMessage.date === 'string'
+                ? formatUserVisibleTimestamp(typedMessage.date, userTimezone)
+                : typedMessage.date,
+          };
+        }),
+      };
+    });
+  }
+
+  return nextResult as T;
+}
+
+function localizeListInboxEmailsDates<T extends { items?: Array<Record<string, unknown>> }>(
+  result: T,
+  userTimezone: string,
+): T {
+  if (!Array.isArray(result.items)) {
+    return result;
+  }
+
+  return {
+    ...result,
+    items: result.items.map((item) => ({
+      ...item,
+      sentAt:
+        typeof item.sentAt === 'string'
+          ? formatUserVisibleTimestamp(item.sentAt, userTimezone)
+          : item.sentAt,
+    })),
+  };
+}
+
+function localizePdfAttachmentDates<T extends Record<string, unknown>>(result: T, userTimezone: string): T {
+  const nextResult: Record<string, unknown> = { ...result };
+
+  if (result.message && typeof result.message === 'object' && !Array.isArray(result.message)) {
+    const message = result.message as Record<string, unknown>;
+    nextResult.message = {
+      ...message,
+      sentAt:
+        typeof message.sentAt === 'string'
+          ? formatUserVisibleTimestamp(message.sentAt, userTimezone)
+          : message.sentAt,
+    };
+  }
+
+  if (
+    result.messageContext &&
+    typeof result.messageContext === 'object' &&
+    !Array.isArray(result.messageContext)
+  ) {
+    const messageContext = result.messageContext as Record<string, unknown>;
+    nextResult.messageContext = {
+      ...messageContext,
+      sentAt:
+        typeof messageContext.sentAt === 'string'
+          ? formatUserVisibleTimestamp(messageContext.sentAt, userTimezone)
+          : messageContext.sentAt,
+    };
+  }
+
+  return nextResult as T;
 }
 
 export function buildContextTools({
@@ -305,8 +409,9 @@ export function buildContextTools({
                 },
               ),
           });
-          toolResultCache.set('search_inbox_context', cacheArgs, result);
-          return result;
+          const localizedResult = localizeEmailEvidencePackDates(result, userTimezone);
+          toolResultCache.set('search_inbox_context', cacheArgs, localizedResult);
+          return localizedResult;
         },
       },
 
@@ -349,8 +454,9 @@ export function buildContextTools({
           const result = await listInboxEmails(normalizedArgs, {
             userId: input.userId,
           });
-          toolResultCache.set('list_inbox_emails', normalizedArgs, result);
-          return result;
+          const localizedResult = localizeListInboxEmailsDates(result, userTimezone);
+          toolResultCache.set('list_inbox_emails', normalizedArgs, localizedResult);
+          return localizedResult;
         },
       },
 
@@ -413,8 +519,9 @@ export function buildContextTools({
               }),
           });
 
-          toolResultCache.set('read_email_pdf_attachment', normalizedArgs, result);
-          return result;
+          const localizedResult = localizePdfAttachmentDates(result, userTimezone);
+          toolResultCache.set('read_email_pdf_attachment', normalizedArgs, localizedResult);
+          return localizedResult;
         },
       },
 
@@ -426,7 +533,8 @@ export function buildContextTools({
           'Search the user\'s personal memory for relevant context. ' +
           'Memories include: names and roles (professors, managers, contacts), preferences, facts, communication style. ' +
           'Use this when: the user asks a RECALL question (e.g. "what\'s my stat prof\'s name?", "who\'s my manager?", "what did I tell you about X?"). ' +
-          'Call search_memory first; only say you don\'t know if the search returns nothing.',
+          'Call search_memory first; only say you don\'t know if the search returns nothing. ' +
+          'Parallelism: call this in the same step as any other independent tool calls. Every sequential step adds latency.',
         inputSchema: z.object({
           query: z.string().min(1).max(200).describe('Natural language search query'),
           limit: z.number().int().min(1).max(10).optional().describe('Max memories to return (default: 5)'),
@@ -475,7 +583,8 @@ export function buildContextTools({
         description:
           'Analyze calendar availability for scheduling. Returns free slots, conflicts, and recommendations. ' +
           'Use this when: user wants to schedule a meeting, needs availability, or email involves dates/times. ' +
-          'IMPORTANT: Dates are interpreted in the USER\'S timezone. Prefer date-only strings ("YYYY-MM-DD") for day-based queries.',
+          'IMPORTANT: Dates are interpreted in the USER\'S timezone. Prefer date-only strings ("YYYY-MM-DD") for day-based queries. ' +
+          'Parallelism: call this in the same step as any other independent tool calls. Every sequential step adds latency.',
         inputSchema: z.object({
           startDate: z
             .string()
@@ -585,7 +694,8 @@ export function buildContextTools({
           'needs to check if a particular meeting happened, or wants to find events with specific people or topics. ' +
           'IMPORTANT: Dates are interpreted in the USER\'S timezone. Prefer date-only strings ("YYYY-MM-DD") for full-day ranges. ' +
           'Examples: "events today" -> startDate="YYYY-MM-DD", endDate="YYYY-MM-DD" (user-local). ' +
-          'Other examples: "find my meetings with John last week", "show me all-day events in January", "when did I last meet with the team?"',
+          'Other examples: "find my meetings with John last week", "show me all-day events in January", "when did I last meet with the team?" ' +
+          'Parallelism: call this in the same step as any other independent tool calls. Every sequential step adds latency.',
         inputSchema: z.object({
           query: z.string().min(1).max(500).describe('Natural language search query describing what events to find'),
           startDate: z

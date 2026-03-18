@@ -261,6 +261,20 @@ function createMockToolResultCache() {
         },
       };
     },
+    getMcp() { return null; },
+    setMcp() {},
+    noteMcpMutation() {},
+    getMcpStats() {
+      return {
+        history_hit: 0,
+        runtime_hit: 0,
+        miss_not_found: 0,
+        miss_expired: 0,
+        miss_invalidated: 0,
+        set_ok: 0,
+        set_skipped_non_cacheable: 0,
+      };
+    },
   };
 }
 
@@ -276,24 +290,18 @@ function createContext(overrides: Record<string, unknown> = {}) {
     },
     channel: 'whatsapp' as const,
     retrievalProfile: 'messaging' as const,
-    selectedPack: 'inbox_context_pack' as const,
-    selectedPacks: ['inbox_context_pack'] as ToolPackId[],
-    selectorReasons: ['test'],
+    selectedPack: 'safe_context_pack' as const,
+    selectedPacks: ['safe_context_pack'] as ToolPackId[],
+    exposureReasons: ['test'],
     turnFeatures: {
       explicitSendApproval: false,
       draftCandidatePresent: false,
       draftCandidateReason: null,
       pendingCalendarChangePresent: false,
-      calendarMutationIntent: false,
-      calendarQueryIntent: false,
-      workloadOverviewIntent: false,
-      reminderIntent: false,
-      alertIntent: false,
       channel: 'whatsapp' as const,
       hasRecentPendingCalendarPreview: false,
       pendingCalendarConfirmIntent: false,
       pendingCalendarCancelIntent: false,
-      pendingCalendarModifyIntent: false,
     },
     userTimezone: 'America/Vancouver',
     currentTimeUtc: '2026-03-02T10:00:00.000Z',
@@ -402,6 +410,7 @@ describe('buildContextTools search_inbox_context', () => {
     expect(helperMocks.runWithSubagentBudget).toHaveBeenCalledTimes(1);
     expect(nextSubagentCallIndex).toHaveBeenCalledTimes(1);
     expect((first as any).metadata).toBeUndefined();
+    expect((first as any).matches?.[0]?.date).toBe('Mar 1, 2026, 02:00 AM PST');
     expect((second as any).metadata?.cached).toBe(true);
     expect(EmailEvidencePackSchema.parse(second)).toBeTruthy();
   });
@@ -595,6 +604,7 @@ describe('buildContextTools search_inbox_context', () => {
     expect(helperMocks.runWithSubagentBudget).toHaveBeenCalledTimes(0);
     expect(nextSubagentCallIndex).toHaveBeenCalledTimes(0);
     expect((first as any).metadata).toBeUndefined();
+    expect((first as any).items?.[0]?.sentAt).toBe('Mar 1, 2026, 02:00 AM PST');
     expect((second as any).metadata?.cached).toBe(true);
   });
 
@@ -674,6 +684,7 @@ describe('buildContextTools search_inbox_context', () => {
     expect(helperMocks.runWithSubagentBudget).toHaveBeenCalledTimes(1);
     expect(nextSubagentCallIndex).toHaveBeenCalledTimes(1);
     expect((first as any).extractedText).toContain('Invoice attached.\nTotal due: $400');
+    expect((first as any).message?.sentAt).toBe('Mar 1, 2026, 02:00 AM PST');
     expect((second as any).metadata?.cached).toBe(true);
   });
 
