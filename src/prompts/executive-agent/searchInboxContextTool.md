@@ -9,7 +9,7 @@ Rules:
 - Put sender, recipient, date range, relative window, attachment, thread, message, and mailbox scope into typed fields.
 - `filters` is only for narrowing constraints. Do not put the main search phrase inside `filters`.
 - Use `list_inbox_emails` instead when you need the complete bounded set of matching emails, not ranked evidence.
-- Use `read_email_pdf_attachment` after this tool when the user needs the actual contents of a PDF attachment from an exact email.
+- Use `read_email_attachment_content` after this tool when the user needs the actual contents of a supported attachment from an exact email. Use `read_email_pdf_attachment` only for PDF-only follow-ups or compatibility.
 - Results from this tool are evidence packs, not automatic proof. Snippets, semantic matches, and thread expansion can tell you what something probably refers to without fully confirming every detail.
 - Use `find` for ranked email matches.
 - Use `summarize_range` for summaries over a constrained slice of mail.

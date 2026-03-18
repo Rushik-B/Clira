@@ -1,5 +1,7 @@
 Read and extract text from a PDF attachment on a specific Gmail message.
 
+This is the PDF-specific compatibility tool. Prefer `read_email_attachment_content` when the user may be referring to non-PDF email attachments like `.docx`, `.xlsx`, `.csv`, or `.txt`.
+
 Use this only after you have the exact email `messageId`.
 
 Use the structured contract:
