@@ -1,7 +1,9 @@
 import { z } from 'zod';
 import { prisma } from '@/lib/prisma';
 import { logger } from '@/lib/logger';
+import { readPromptFile } from '@/lib/prompts';
 import { createGmailServiceForUser } from '@/lib/security/getUserGmailCredentials';
+import { deliverContentReference } from '@/lib/services/media-delivery/service';
 import { parseReminderTime } from '@/lib/utils/timeParser';
 import { formatDateTimeInTimeZone } from '@/lib/utils/timezone';
 import { getSupermemoryClient, isSupermemoryConfigured } from '@/lib/services/supermemory/client';
@@ -17,6 +19,103 @@ import {
 import type {
   ExecutiveRuntimeContext,
 } from '../types';
+
+const deliverContentReferenceToolDescription = readPromptFile(
+  'executive-agent/deliverContentReferenceTool.md',
+);
+
+const contentReferenceSchema = z.object({
+  sourceKind: z.string().min(1),
+  locator: z.string().min(1),
+  displayName: z.string().trim().min(1).nullable().optional(),
+  mimeHint: z.string().trim().min(1).nullable().optional(),
+  trustClass: z.enum([
+    'trusted_internal',
+    'user_provided',
+    'third_party',
+    'untrusted_external',
+  ]),
+  requiresApproval: z.boolean(),
+  capability: z.enum(['document', 'container', 'list', 'link', 'binary']),
+  contentRefId: z.string().min(1),
+  provenance: z.object({
+    sourceLabel: z.string().min(1),
+    sourceKind: z.string().trim().min(1).nullable().optional(),
+    channel: z.string().trim().min(1).nullable().optional(),
+    conversationId: z.string().trim().min(1).nullable().optional(),
+    runId: z.string().trim().min(1).nullable().optional(),
+    messageId: z.string().trim().min(1).nullable().optional(),
+    attachmentId: z.string().trim().min(1).nullable().optional(),
+    originUri: z.string().trim().min(1).nullable().optional(),
+  }),
+});
+
+const deliverContentReferenceInputSchema = z.object({
+  reference: contentReferenceSchema.describe(
+    'A complete content reference copied from an earlier tool result contentRefs array.',
+  ),
+  targetChannel: z.enum(['telegram']).default('telegram'),
+  caption: z.string().trim().max(1024).optional(),
+});
+
+const deliverContentReferenceProviderSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    reference: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        sourceKind: { type: 'string' },
+        locator: { type: 'string' },
+        displayName: { type: ['string', 'null'] },
+        mimeHint: { type: ['string', 'null'] },
+        trustClass: {
+          type: 'string',
+          enum: ['trusted_internal', 'user_provided', 'third_party', 'untrusted_external'],
+        },
+        requiresApproval: { type: 'boolean' },
+        capability: {
+          type: 'string',
+          enum: ['document', 'container', 'list', 'link', 'binary'],
+        },
+        contentRefId: { type: 'string' },
+        provenance: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            sourceLabel: { type: 'string' },
+            sourceKind: { type: ['string', 'null'] },
+            channel: { type: ['string', 'null'] },
+            conversationId: { type: ['string', 'null'] },
+            runId: { type: ['string', 'null'] },
+            messageId: { type: ['string', 'null'] },
+            attachmentId: { type: ['string', 'null'] },
+            originUri: { type: ['string', 'null'] },
+          },
+          required: ['sourceLabel'],
+        },
+      },
+      required: [
+        'sourceKind',
+        'locator',
+        'trustClass',
+        'requiresApproval',
+        'capability',
+        'contentRefId',
+        'provenance',
+      ],
+    },
+    targetChannel: {
+      type: 'string',
+      enum: ['telegram'],
+    },
+    caption: {
+      type: 'string',
+    },
+  },
+  required: ['reference'],
+} as const;
 
 export function buildMessagingTools({
   context,
@@ -646,7 +745,38 @@ export function buildMessagingTools({
       },
 
       // ─────────────────────────────────────────────────────────────────────────
-      // Tool 16: Send Email (TERMINAL - Requires Explicit Permission)
+      // Tool 16: Deliver Content Reference
+      // ─────────────────────────────────────────────────────────────────────────
+      deliver_content_reference: {
+        description: deliverContentReferenceToolDescription,
+        inputSchema: deliverContentReferenceInputSchema,
+        providerInputSchema: deliverContentReferenceProviderSchema,
+        execute: async (args: z.infer<typeof deliverContentReferenceInputSchema>) => {
+          const stale = await ensureCurrentRun('deliver_content_reference');
+          if (stale) return stale;
+
+          const parsed = deliverContentReferenceInputSchema.safeParse(args);
+          if (!parsed.success) {
+            return {
+              success: false,
+              error: 'invalid_content_reference',
+              message:
+                parsed.error.issues[0]?.message ??
+                'Provide a full content reference copied from an earlier tool result.',
+            };
+          }
+
+          return deliverContentReference({
+            userId: input.userId,
+            reference: parsed.data.reference,
+            channel: parsed.data.targetChannel,
+            caption: parsed.data.caption ?? null,
+          });
+        },
+      },
+
+      // ─────────────────────────────────────────────────────────────────────────
+      // Tool 17: Send Email (TERMINAL - Requires Explicit Permission)
       // ─────────────────────────────────────────────────────────────────────────
       send_email: {
         description:
