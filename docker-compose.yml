@@ -1,29 +1,29 @@
-x-shared-image: &shared-image
-  build: .
-  image: clira-app:local
+x-shared-env: &shared-env
+  env_file:
+    - .env
+  environment: &base-env
+    NODE_ENV: production
+    DATABASE_URL: postgresql://${CLIRA_DB_APP_USER:-clira_app}:${CLIRA_DB_APP_PASSWORD:-clira_app}@db:5432/clira
+    DIRECT_URL: postgresql://${CLIRA_DB_APP_USER:-clira_app}:${CLIRA_DB_APP_PASSWORD:-clira_app}@db:5432/clira
+    REDIS_URL: redis://redis:6379
+    NEXTAUTH_URL: ${APP_PUBLIC_URL:-http://localhost:13000}
+    NEXT_PUBLIC_LANDING_PAGE_URL: ${APP_LANDING_PAGE_URL:-}
+    GOOGLE_APPLICATION_CREDENTIALS: /app/google-service-account.json
+    CLIRA_AI_TRACE_ENABLED: "true"
+    CLIRA_AI_TRACE_DIR: /var/lib/clira/ai-traces
+    CLIRA_AI_TRACE_CAPTURE: full
+  volumes:
+    - ./google-service-account.json:/app/google-service-account.json:ro
+    - ./.clira-runtime:/var/lib/clira
 
 services:
   app:
-    <<: *shared-image
+    build: .
+    image: clira-app:local
     command: sh -c "npx prisma migrate deploy && npm run start"
     ports:
       - "13000:3000"
-    env_file:
-      - .env
-    environment:
-      NODE_ENV: production
-      DATABASE_URL: postgresql://${CLIRA_DB_APP_USER:-clira_app}:${CLIRA_DB_APP_PASSWORD:-clira_app}@db:5432/clira
-      DIRECT_URL: postgresql://${CLIRA_DB_APP_USER:-clira_app}:${CLIRA_DB_APP_PASSWORD:-clira_app}@db:5432/clira
-      REDIS_URL: redis://redis:6379
-      NEXTAUTH_URL: ${APP_PUBLIC_URL:-http://localhost:13000}
-      NEXT_PUBLIC_LANDING_PAGE_URL: ${APP_LANDING_PAGE_URL:-}
-      GOOGLE_APPLICATION_CREDENTIALS: /app/google-service-account.json
-      CLIRA_AI_TRACE_ENABLED: "true"
-      CLIRA_AI_TRACE_DIR: /var/lib/clira/ai-traces
-      CLIRA_AI_TRACE_CAPTURE: full
-    volumes:
-      - ./google-service-account.json:/app/google-service-account.json:ro
-      - ./.clira-runtime:/var/lib/clira
+    <<: *shared-env
     depends_on:
       db:
         condition: service_healthy
@@ -31,101 +31,49 @@ services:
         condition: service_started
 
   worker:
-    <<: *shared-image
+    image: clira-app:local
     command: sh -c "npm run start:worker"
-    env_file:
-      - .env
-    environment:
-      NODE_ENV: production
-      DATABASE_URL: postgresql://${CLIRA_DB_APP_USER:-clira_app}:${CLIRA_DB_APP_PASSWORD:-clira_app}@db:5432/clira
-      DIRECT_URL: postgresql://${CLIRA_DB_APP_USER:-clira_app}:${CLIRA_DB_APP_PASSWORD:-clira_app}@db:5432/clira
-      REDIS_URL: redis://redis:6379
-      NEXTAUTH_URL: ${APP_PUBLIC_URL:-http://localhost:13000}
-      NEXT_PUBLIC_LANDING_PAGE_URL: ${APP_LANDING_PAGE_URL:-}
-      GOOGLE_APPLICATION_CREDENTIALS: /app/google-service-account.json
-      CLIRA_AI_TRACE_ENABLED: "true"
-      CLIRA_AI_TRACE_DIR: /var/lib/clira/ai-traces
-      CLIRA_AI_TRACE_CAPTURE: full
-    volumes:
-      - ./google-service-account.json:/app/google-service-account.json:ro
-      - ./.clira-runtime:/var/lib/clira
+    <<: *shared-env
     depends_on:
+      app:
+        condition: service_started
       db:
         condition: service_healthy
       redis:
         condition: service_started
 
   backfill-worker:
-    <<: *shared-image
+    image: clira-app:local
     command: sh -c "npm run start:backfill-worker"
-    env_file:
-      - .env
-    environment:
-      NODE_ENV: production
-      DATABASE_URL: postgresql://${CLIRA_DB_APP_USER:-clira_app}:${CLIRA_DB_APP_PASSWORD:-clira_app}@db:5432/clira
-      DIRECT_URL: postgresql://${CLIRA_DB_APP_USER:-clira_app}:${CLIRA_DB_APP_PASSWORD:-clira_app}@db:5432/clira
-      REDIS_URL: redis://redis:6379
-      NEXTAUTH_URL: ${APP_PUBLIC_URL:-http://localhost:13000}
-      NEXT_PUBLIC_LANDING_PAGE_URL: ${APP_LANDING_PAGE_URL:-}
-      GOOGLE_APPLICATION_CREDENTIALS: /app/google-service-account.json
-      CLIRA_AI_TRACE_ENABLED: "true"
-      CLIRA_AI_TRACE_DIR: /var/lib/clira/ai-traces
-      CLIRA_AI_TRACE_CAPTURE: full
-    volumes:
-      - ./google-service-account.json:/app/google-service-account.json:ro
-      - ./.clira-runtime:/var/lib/clira
+    <<: *shared-env
     depends_on:
+      app:
+        condition: service_started
       db:
         condition: service_healthy
       redis:
         condition: service_started
 
   gmail-pull-worker:
-    <<: *shared-image
+    image: clira-app:local
     command: sh -c "npm run start:gmail-pull-worker"
-    env_file:
-      - .env
-    environment:
-      NODE_ENV: production
-      DATABASE_URL: postgresql://${CLIRA_DB_APP_USER:-clira_app}:${CLIRA_DB_APP_PASSWORD:-clira_app}@db:5432/clira
-      DIRECT_URL: postgresql://${CLIRA_DB_APP_USER:-clira_app}:${CLIRA_DB_APP_PASSWORD:-clira_app}@db:5432/clira
-      REDIS_URL: redis://redis:6379
-      NEXTAUTH_URL: ${APP_PUBLIC_URL:-http://localhost:13000}
-      NEXT_PUBLIC_LANDING_PAGE_URL: ${APP_LANDING_PAGE_URL:-}
-      GOOGLE_APPLICATION_CREDENTIALS: /app/google-service-account.json
-      CLIRA_AI_TRACE_ENABLED: "true"
-      CLIRA_AI_TRACE_DIR: /var/lib/clira/ai-traces
-      CLIRA_AI_TRACE_CAPTURE: full
-    volumes:
-      - ./google-service-account.json:/app/google-service-account.json:ro
-      - ./.clira-runtime:/var/lib/clira
+    <<: *shared-env
     depends_on:
+      app:
+        condition: service_started
       db:
         condition: service_healthy
       redis:
         condition: service_started
 
   cron:
-    <<: *shared-image
+    image: clira-app:local
     command: sh -c "npm run start:cron"
-    env_file:
-      - .env
+    <<: *shared-env
     environment:
-      NODE_ENV: production
-      DATABASE_URL: postgresql://${CLIRA_DB_APP_USER:-clira_app}:${CLIRA_DB_APP_PASSWORD:-clira_app}@db:5432/clira
-      DIRECT_URL: postgresql://${CLIRA_DB_APP_USER:-clira_app}:${CLIRA_DB_APP_PASSWORD:-clira_app}@db:5432/clira
-      REDIS_URL: redis://redis:6379
-      NEXTAUTH_URL: ${APP_PUBLIC_URL:-http://localhost:13000}
-      NEXT_PUBLIC_LANDING_PAGE_URL: ${APP_LANDING_PAGE_URL:-}
+      <<: *base-env
       CRON_TARGET_BASE_URL: http://app:3000
       CRON_TIMEZONE: UTC
-      GOOGLE_APPLICATION_CREDENTIALS: /app/google-service-account.json
-      CLIRA_AI_TRACE_ENABLED: "true"
-      CLIRA_AI_TRACE_DIR: /var/lib/clira/ai-traces
-      CLIRA_AI_TRACE_CAPTURE: full
-    volumes:
-      - ./google-service-account.json:/app/google-service-account.json:ro
-      - ./.clira-runtime:/var/lib/clira
     depends_on:
       app:
         condition: service_started
