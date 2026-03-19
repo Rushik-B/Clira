@@ -47,6 +47,7 @@ function buildRequestToolPackExposureDescription(
   return [
     'Request one or more native action packs for the next pass when safe context is not enough and you need action tools.',
     'Use this only after deciding which action pack actually fits the user request.',
+    'If you call this tool, call it alone in the step (do not batch it with inbox search, PDF reads, or other tools). The next pass reloads your tool set; expensive reads should run after the right pack is exposed.',
     `Available action packs: ${summaries.join(' ')}`,
   ].join(' ');
 }
