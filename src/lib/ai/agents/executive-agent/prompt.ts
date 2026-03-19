@@ -22,7 +22,7 @@ import {
   formatReplyPipelineInstruction,
 } from './replyPipelineContext';
 
-export const EXECUTIVE_AGENT_PROMPT_VERSION = 'ea-prompt-v11';
+export const EXECUTIVE_AGENT_PROMPT_VERSION = 'ea-prompt-v12';
 
 // Injected only when the exec agent is activated by a system trigger (alert or reminder),
 // not by a user message. Tells the agent to reason with full context but output selectively.
@@ -77,6 +77,9 @@ function buildCurrentTurnMessage(params: {
   mcpToolSummaryLines: string[];
   mcpDegradedSummaryLines: string[];
   mcpAvailableServerLines: string[];
+  availableSkillLines: string[];
+  selectedSkillFragments: string[];
+  skillDegradedSummaryLines: string[];
 }): string {
   const sections = [
     '## Current Turn Context',
@@ -93,6 +96,7 @@ function buildCurrentTurnMessage(params: {
     '- Safe context tools for memory, inbox, calendar, PDF reads, progress updates, and reply preference reads are available every turn.',
     '- Only action tools already exposed this turn are callable right now.',
     '- "Available Action Packs" are candidates you may request with request_tool_pack_exposure when safe context is not enough.',
+    '- "Available Skills" are user-authored guidance candidates you may request with request_skill_exposure when that guidance would materially help.',
     '- Only MCP tools listed under "MCP Tools This Turn" are callable right now.',
     '- "Available MCP Server Packs" are candidates you may request with request_mcp_server_tools when native tools are insufficient.',
     '',
@@ -123,10 +127,31 @@ function buildCurrentTurnMessage(params: {
           '',
         ]
       : []),
+    ...(params.availableSkillLines.length > 0
+      ? [
+          '## Available Skills',
+          ...params.availableSkillLines.map((line) => `- ${line}`),
+          '',
+        ]
+      : []),
+    ...(params.selectedSkillFragments.length > 0
+      ? [
+          '## Selected Skills This Turn',
+          ...params.selectedSkillFragments,
+          '',
+        ]
+      : []),
     ...(params.mcpDegradedSummaryLines.length > 0
       ? [
           '## MCP Degraded Tools',
           ...params.mcpDegradedSummaryLines.map((line) => `- ${line}`),
+          '',
+        ]
+      : []),
+    ...(params.skillDegradedSummaryLines.length > 0
+      ? [
+          '## Skill Prompt Degraded Notes',
+          ...params.skillDegradedSummaryLines.map((line) => `- ${line}`),
           '',
         ]
       : []),
@@ -160,6 +185,9 @@ export async function buildExecutiveAgentPrompt(
     mcpToolSummaryLines?: string[];
     mcpDegradedSummaryLines?: string[];
     mcpAvailableServerLines?: string[];
+    availableSkillLines?: string[];
+    selectedSkillFragments?: string[];
+    skillDegradedSummaryLines?: string[];
   },
 ): Promise<PromptContext> {
   const systemPrompt = readPromptFile('whatsapp/executiveAgentPrompt.md');
@@ -273,6 +301,9 @@ export async function buildExecutiveAgentPrompt(
           mcpToolSummaryLines: options?.mcpToolSummaryLines ?? [],
           mcpDegradedSummaryLines: options?.mcpDegradedSummaryLines ?? [],
           mcpAvailableServerLines: options?.mcpAvailableServerLines ?? [],
+          availableSkillLines: options?.availableSkillLines ?? [],
+          selectedSkillFragments: options?.selectedSkillFragments ?? [],
+          skillDegradedSummaryLines: options?.skillDegradedSummaryLines ?? [],
         }),
       },
     ],

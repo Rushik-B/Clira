@@ -129,6 +129,102 @@ function buildRequestToolPackExposureTool(
   };
 }
 
+function buildRequestSkillExposureDescription(
+  selectableSkills: readonly {
+    id: string;
+    name: string;
+    catalogSummary: string;
+  }[],
+): string {
+  const summaries = selectableSkills.map(
+    (skill) => `${skill.name} (skillId=${skill.id}): ${skill.catalogSummary}`,
+  );
+  return [
+    'Request one or more user-authored skills for the next pass when the current task would benefit from that guidance.',
+    'Skills are read-only prompt guidance. They do not add tools or change Clira policy.',
+    'If you call this tool, call it alone in the step. The next pass reloads the prompt with the selected skill fragments.',
+    `Available skills: ${summaries.join(' ')}`,
+  ].join(' ');
+}
+
+function buildRequestSkillExposureSchema(
+  selectableSkillIds: readonly string[],
+): Record<string, unknown> {
+  return {
+    type: 'object',
+    properties: {
+      skillIds: {
+        type: 'array',
+        items: {
+          type: 'string',
+          enum: selectableSkillIds,
+        },
+        uniqueItems: true,
+        minItems: 1,
+        maxItems: 3,
+        description: 'One or more skill ids to expose on the next pass.',
+      },
+      reason: {
+        type: 'string',
+        minLength: 1,
+        maxLength: 240,
+        description: 'Short reason for why this guidance is needed.',
+      },
+    },
+    required: ['skillIds'],
+  };
+}
+
+function buildRequestSkillExposureTool(
+  context: ExecutiveRuntimeContext,
+) {
+  const selectableSkills = (context.skillExposure?.availableSkills ?? context.selectableSkills ?? [])
+    .filter((skill) => !context.skillExposure?.selectedSkillIds.includes(skill.id));
+
+  if (selectableSkills.length === 0) {
+    return null;
+  }
+
+  return {
+    description: buildRequestSkillExposureDescription(selectableSkills),
+    providerInputSchema: buildRequestSkillExposureSchema(
+      selectableSkills.map((skill) => skill.id),
+    ),
+    execute: async (rawArgs: Record<string, unknown>) => {
+      const args =
+        rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)
+          ? rawArgs
+          : {};
+      const allowedSkillIds = new Set(selectableSkills.map((skill) => skill.id));
+      const requestedSkillIds = Array.isArray(args.skillIds)
+        ? args.skillIds.filter(
+            (value): value is string =>
+              typeof value === 'string' && allowedSkillIds.has(value),
+          )
+        : [];
+      const uniqueRequestedSkillIds = Array.from(new Set(requestedSkillIds));
+
+      if (uniqueRequestedSkillIds.length === 0) {
+        return {
+          ok: false,
+          error: 'invalid_skill_selection',
+          message: 'Select at least one available skill.',
+        };
+      }
+
+      return {
+        ok: true,
+        requestedSkillIds: uniqueRequestedSkillIds,
+        reason:
+          typeof args.reason === 'string' && args.reason.trim().length > 0
+            ? args.reason.trim()
+            : null,
+        rerunRequired: true,
+      };
+    },
+  };
+}
+
 function buildOrderedToolNames(context: ExecutiveRuntimeContext): string[] {
   const nativeToolNames = buildPackToolAllowlistForSelection(
     context.selectedPacks,
@@ -147,6 +243,14 @@ function buildOrderedToolNames(context: ExecutiveRuntimeContext): string[] {
 
   if (requestableActionPackIds.length > 0) {
     nativeWrapperNames.push('request_tool_pack_exposure');
+  }
+
+  if (
+    (context.skillExposure?.availableSkills ?? context.selectableSkills ?? []).some(
+      (skill) => !context.skillExposure?.selectedSkillIds.includes(skill.id),
+    )
+  ) {
+    nativeWrapperNames.push('request_skill_exposure');
   }
 
   if (
@@ -200,6 +304,10 @@ export function buildExecutiveAgentTools(context: ExecutiveRuntimeContext): Reco
   const requestToolPackExposure = buildRequestToolPackExposureTool(context);
   if (requestToolPackExposure) {
     allTools.request_tool_pack_exposure = requestToolPackExposure;
+  }
+  const requestSkillExposure = buildRequestSkillExposureTool(context);
+  if (requestSkillExposure) {
+    allTools.request_skill_exposure = requestSkillExposure;
   }
 
   allTools.send_progress_update = context.input.progressContext

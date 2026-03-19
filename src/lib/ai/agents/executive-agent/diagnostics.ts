@@ -78,6 +78,7 @@ export function summarizeToolInventoryForLogs(params: {
   const mcpToolNames = allToolNames.filter((name) => name.startsWith('mcp__'));
   const mcpWrapperToolNames = allToolNames.filter((name) =>
     [
+      'request_skill_exposure',
       'request_mcp_server_tools',
       'plan_mcp_action',
       'commit_mcp_action',
@@ -104,11 +105,13 @@ export function buildHarnessMetadata(params: {
   primaryPack: string | null;
   packIds: readonly string[];
   mcpConnectionIds: readonly string[];
+  skillIds: readonly string[];
   exposureReasons: readonly string[];
   repairAttempted: boolean;
   repairReason?: string | null;
   repairExpandedPacks?: readonly string[];
   repairExpandedMcpConnectionIds?: readonly string[];
+  skillPrompt?: Prisma.InputJsonValue;
   workingState: ExecutiveWorkingState | null;
   promptVersion: string;
   packVersion: string;
@@ -121,11 +124,13 @@ export function buildHarnessMetadata(params: {
     primaryPack: params.primaryPack,
     packIds: params.packIds,
     mcpConnectionIds: params.mcpConnectionIds,
+    skillIds: params.skillIds,
     exposureReasons: params.exposureReasons,
     repairAttempted: params.repairAttempted,
     repairReason: params.repairReason ?? null,
     repairExpandedPacks: params.repairExpandedPacks ?? [],
     repairExpandedMcpConnectionIds: params.repairExpandedMcpConnectionIds ?? [],
+    skillPrompt: params.skillPrompt ?? null,
     workingState: params.workingState,
     promptVersion: params.promptVersion,
     packVersion: params.packVersion,
