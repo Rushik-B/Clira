@@ -108,7 +108,7 @@ function buildSecurityHeaders(nonce: string) {
   } as const;
 }
 
-export default async function middleware(request: NextRequest) {
+export default async function proxy(request: NextRequest) {
   // Block TRACE and TRACK methods to prevent proxy disclosure / XST attacks
   const method = request.method.toUpperCase();
   if (method === "TRACE" || method === "TRACK") {
@@ -153,7 +153,7 @@ export default async function middleware(request: NextRequest) {
     // Redirect unauthenticated users to landing page or signin
     if (!token) {
       const landingPageUrl = process.env.NEXT_PUBLIC_LANDING_PAGE_URL;
-      
+
       // For API routes, return 401 instead of redirect
       if (pathname.startsWith("/api/")) {
         return NextResponse.json(
@@ -161,7 +161,7 @@ export default async function middleware(request: NextRequest) {
           { status: 401 }
         );
       }
-      
+
       // For page routes, redirect to landing page (or signin as fallback)
       if (landingPageUrl) {
         return NextResponse.redirect(new URL(landingPageUrl, request.url));

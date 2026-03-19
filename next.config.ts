@@ -3,6 +3,7 @@ import type { NextConfig } from "next";
 const isProduction = process.env.NODE_ENV === 'production';
 
 const nextConfig: NextConfig = {
+  outputFileTracingRoot: process.cwd(),
   poweredByHeader: false,
   env: {
     NEXT_PUBLIC_USE_MOCK_DATA_QUEUE: process.env.NEXT_PUBLIC_USE_MOCK_DATA_QUEUE || 'false',
