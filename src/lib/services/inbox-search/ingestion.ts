@@ -3,6 +3,7 @@ import { indexInboxSearchEmail } from '@/lib/services/inbox-search/indexer';
 import { touchInboxSearchRealtimeCheckpoint } from '@/lib/services/inbox-search/checkpoint';
 import type { InboxSearchIndexInput, InboxSearchIndexResult } from '@/lib/services/inbox-search/types';
 import { prisma } from '@/lib/prisma';
+import { extractUrlsFromText } from '@/lib/email/text';
 
 export type InboxSearchStoredEmailIndexResult =
   | InboxSearchIndexResult
@@ -38,6 +39,80 @@ export function buildInboxSearchInputFromParsedEmail(params: {
     sentAt: new Date(email.date),
     hasAttachment: email.hasAttachments,
   };
+}
+
+function scoreBodyQuality(body: string): number {
+  const trimmed = body.trim();
+  if (!trimmed) {
+    return 0;
+  }
+
+  return extractUrlsFromText(trimmed).length * 100 + Math.min(trimmed.length, 4000);
+}
+
+function shouldRepairStoredEmailBody(existingBody: string | null | undefined, nextBody: string): boolean {
+  const trimmedExisting = (existingBody ?? '').trim();
+  const trimmedNext = nextBody.trim();
+
+  if (!trimmedNext || trimmedExisting === trimmedNext) {
+    return false;
+  }
+
+  if (!trimmedExisting) {
+    return true;
+  }
+
+  return scoreBodyQuality(trimmedNext) > scoreBodyQuality(trimmedExisting);
+}
+
+export async function repairStoredEmailFromParsedEmail(params: {
+  userId: string;
+  mailboxId: string;
+  email: Pick<EmailData, 'messageId' | 'body' | 'snippet'>;
+}): Promise<boolean> {
+  const emailRecord = await prisma.email.findUnique({
+    where: {
+      mailboxId_messageId: {
+        mailboxId: params.mailboxId,
+        messageId: params.email.messageId,
+      },
+    },
+    include: {
+      thread: {
+        select: {
+          userId: true,
+        },
+      },
+    },
+  });
+
+  if (!emailRecord) {
+    return false;
+  }
+
+  if (emailRecord.thread.userId !== params.userId) {
+    throw new Error(
+      `Email ${params.email.messageId} in mailbox ${params.mailboxId} does not belong to user ${params.userId}`,
+    );
+  }
+
+  const shouldUpdateBody = shouldRepairStoredEmailBody(emailRecord.body, params.email.body);
+  const nextSnippet = params.email.snippet?.trim() || null;
+  const shouldUpdateSnippet = Boolean(nextSnippet && !(emailRecord.snippet ?? '').trim());
+
+  if (!shouldUpdateBody && !shouldUpdateSnippet) {
+    return false;
+  }
+
+  await prisma.email.update({
+    where: { id: emailRecord.id },
+    data: {
+      ...(shouldUpdateBody ? { body: params.email.body } : {}),
+      ...(shouldUpdateSnippet ? { snippet: nextSnippet } : {}),
+    },
+  });
+
+  return true;
 }
 
 export async function indexStoredInboxEmail(params: {

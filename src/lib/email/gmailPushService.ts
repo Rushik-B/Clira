@@ -8,6 +8,11 @@ import { createGmailServiceForUser } from '@/lib/security/getUserGmailCredential
 import { encryptEmailContent, encryptThreadContent, decryptEmailContent, decryptEmails, decryptThreadContent } from '@/lib/security/emailCrypto';
 import { triggerAlertNotification } from '@/lib/services/alertNotificationService';
 import { enqueueInboxIndexJob } from '@/lib/services/inbox-search';
+import {
+  extractGmailPayloadBodyText,
+  extractGmailPayloadBodyTextWithAttachments,
+  truncateGmailExtractedBody,
+} from '@/lib/email/gmailPayloadBody';
 import { reconcileResolvedGeneratedDrafts } from '@/lib/services/queue/reconcileResolvedGeneratedDrafts';
 // AI queue label removed: no longer creating/applying a dedicated Gmail label
 import type { AiTraceContext } from '@/lib/ai/tracing';
@@ -1310,7 +1315,7 @@ export class GmailPushService {
             id: message.id
           });
 
-          const parsedEmail = this.parseGmailMessageWithLabels(fullMessage.data);
+          const parsedEmail = await this.parseGmailMessageWithLabels(fullMessage.data);
           if (parsedEmail) {
             // Always add the email to the list for processing
             emails.push(parsedEmail);
@@ -1404,7 +1409,7 @@ export class GmailPushService {
             id: messageId
           });
 
-          const parsedEmail = this.parseGmailMessageWithLabels(message.data);
+          const parsedEmail = await this.parseGmailMessageWithLabels(message.data);
           if (parsedEmail) {
             // Always add the email to the list for processing
             emails.push(parsedEmail);
@@ -1436,10 +1441,36 @@ export class GmailPushService {
   /**
    * Parse Gmail message to our email format WITH LABELS for filtering
    */
-  private parseGmailMessageWithLabels(message: any): any | null {
+  private async fetchMessageAttachmentData(messageId: string, attachmentId: string): Promise<string | null> {
+    try {
+      const response = await this.gmail.users.messages.attachments.get({
+        userId: 'me',
+        messageId,
+        id: attachmentId,
+      });
+
+      return typeof response.data?.data === 'string' ? response.data.data : null;
+    } catch (error) {
+      console.warn('⚠️ Failed to fetch textual attachment while parsing Gmail push body', {
+        messageId,
+        attachmentId,
+        error,
+      });
+      return null;
+    }
+  }
+
+  private async parseGmailMessageWithLabels(message: any): Promise<any | null> {
     try {
       const headers = message.payload?.headers || [];
       const getHeader = (name: string) => headers.find((h: any) => h.name.toLowerCase() === name.toLowerCase())?.value || '';
+      const inlineBody = extractGmailPayloadBodyText(message.payload);
+      const body =
+        inlineBody ||
+        await extractGmailPayloadBodyTextWithAttachments(
+          message.payload,
+          async ({ attachmentId }) => this.fetchMessageAttachmentData(message.id, attachmentId),
+        );
 
       return {
         messageId: message.id,
@@ -1451,7 +1482,7 @@ export class GmailPushService {
         to: getHeader('to').split(',').map((email: string) => email.trim()),
         cc: getHeader('cc').split(',').map((email: string) => email.trim()).filter(Boolean),
         subject: getHeader('subject'),
-        body: this.extractEmailBody(message.payload),
+        body: truncateGmailExtractedBody(body),
         snippet: message.snippet || '',
         isSent: message.labelIds?.includes('SENT') || false,
         isDraft: message.labelIds?.includes('DRAFT') || false,
@@ -1462,25 +1493,6 @@ export class GmailPushService {
       console.error('Error parsing Gmail message:', error);
       return null;
     }
-  }
-
-  /**
-   * Extract email body from Gmail message payload
-   */
-  private extractEmailBody(payload: any): string {
-    if (payload.body?.data) {
-      return Buffer.from(payload.body.data, 'base64').toString('utf-8');
-    }
-
-    if (payload.parts) {
-      for (const part of payload.parts) {
-        if (part.mimeType === 'text/plain' && part.body?.data) {
-          return Buffer.from(part.body.data, 'base64').toString('utf-8');
-        }
-      }
-    }
-
-    return '';
   }
 
   /**

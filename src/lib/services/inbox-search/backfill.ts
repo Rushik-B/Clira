@@ -9,7 +9,10 @@ import {
   saveInboxBackfillProgress,
   type InboxBackfillPhase,
 } from '@/lib/services/inbox-search/checkpoint';
-import { buildInboxSearchInputFromParsedEmail } from '@/lib/services/inbox-search/ingestion';
+import {
+  buildInboxSearchInputFromParsedEmail,
+  repairStoredEmailFromParsedEmail,
+} from '@/lib/services/inbox-search/ingestion';
 import { indexInboxSearchEmail } from '@/lib/services/inbox-search/indexer';
 import { createGmailServiceForUser } from '@/lib/security/getUserGmailCredentials';
 
@@ -179,6 +182,21 @@ async function runBackfillPhase(params: {
     for (const thread of page.threads) {
       for (const email of thread.emails) {
         emailsSeen += 1;
+
+        try {
+          await repairStoredEmailFromParsedEmail({
+            userId,
+            mailboxId,
+            email,
+          });
+        } catch (error) {
+          logger.warn('[InboxSearchBackfill] failed to repair stored email body before indexing', {
+            userId,
+            mailboxId,
+            messageId: email.messageId,
+            error,
+          });
+        }
 
         const result = await indexEmail(
           buildInboxSearchInputFromParsedEmail({

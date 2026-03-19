@@ -101,7 +101,7 @@ export function resolveContentMediaFamily(params: {
   if (ARCHIVE_MIME_TYPES.has(mimeType)) return 'archive';
 
   if (filename?.endsWith('.pdf')) return 'pdf';
-  if (filename && /\.(txt|md|json|xml)$/i.test(filename)) return 'text';
+  if (filename && /\.(txt|md|json|xml|ics)$/i.test(filename)) return 'text';
   if (filename && /\.(html|htm)$/i.test(filename)) return 'html';
   if (filename && /\.(png|jpe?g|gif|webp)$/i.test(filename)) return 'image';
   if (filename && /\.(ogg|oga|opus|mp3|wav|m4a)$/i.test(filename)) return 'audio';

@@ -214,6 +214,13 @@ describe('readEmailAttachmentContent', () => {
       mediaFamily: 'text' as const,
       extractedText: 'Bring passport to the appointment.',
     },
+    {
+      kind: 'txt',
+      filename: 'invite.ics',
+      mimeType: 'text/calendar',
+      mediaFamily: 'text' as const,
+      extractedText: 'BEGIN:VCALENDAR\nURL:https://meet.google.com/abc-defg-hij\nEND:VCALENDAR',
+    },
   ])('extracts a supported $kind email attachment', async ({ kind, filename, mimeType, mediaFamily, extractedText }) => {
     const gmailContext = createGmailContext({
       filename,

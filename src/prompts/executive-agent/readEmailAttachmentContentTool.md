@@ -8,6 +8,7 @@ Supported attachment types right now:
 - `xlsx`
 - `csv`
 - `txt`
+- calendar text attachments like `.ics`
 
 Use the structured contract:
 - Required: `messageId`
@@ -17,7 +18,7 @@ Rules:
 - First locate the exact email with `search_inbox_context` or `list_inbox_emails`.
 - Pass `mailboxId` or `mailboxEmail` when you already know it from a prior tool result.
 - If the tool says the email has multiple supported attachments, call it again with `attachmentId` or a more specific `attachmentFilename`.
-- Use this when the user wants the actual contents of an attached document, spreadsheet, CSV, text file, or PDF.
+- Use this when the user wants the actual contents of an attached document, spreadsheet, CSV, text file, calendar invite attachment, or PDF.
 - Successful results include `contentRefs`. For **send/show the original file** on the messaging channel, use those refs with `deliver_content_reference` (after `media_delivery_pack` is exposed). **Do not** batch `request_tool_pack_exposure` with this tool; request the pack **alone**, then read + deliver on a later step.
 - Do not claim an exact attachment fact unless it appears in this tool's `extractedText`.
 

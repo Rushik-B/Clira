@@ -30,4 +30,14 @@ Sent from my iPhone`;
     expect(prepared).not.toContain('Sent from my iPhone');
     expect(prepared).not.toContain('--');
   });
+
+  test('preserves actionable href targets while stripping html markup', () => {
+    const raw = '<div><a href="https://meet.google.com/abc-defg-hij">Join with Google Meet</a></div>';
+
+    const prepared = prepareInboxBodyText(raw);
+
+    expect(prepared).toContain('Join with Google Meet');
+    expect(prepared).toContain('https://meet.google.com/abc-defg-hij');
+    expect(prepared).not.toContain('<a ');
+  });
 });

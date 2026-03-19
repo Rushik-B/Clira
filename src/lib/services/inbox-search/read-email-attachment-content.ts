@@ -105,8 +105,8 @@ const SUPPORTED_EMAIL_ATTACHMENT_DESCRIPTORS: readonly SupportedAttachmentDescri
   {
     kind: 'txt',
     label: 'TXT',
-    mimeTypes: ['text/plain'],
-    filenamePattern: /\.txt$/i,
+    mimeTypes: ['text/plain', 'text/calendar'],
+    filenamePattern: /\.(txt|ics)$/i,
     mediaFamily: 'text',
   },
 ] as const;
