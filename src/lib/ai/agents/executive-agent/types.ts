@@ -25,6 +25,10 @@ import type {
 import type {
   McpSelectableServerPack,
 } from '@/lib/services/mcp/policy/service';
+import type {
+  SelectableSkill,
+  SkillExposure,
+} from '@/lib/services/skills';
 
 export interface ExecutiveAgentInput {
   userId: string;
@@ -126,6 +130,7 @@ export interface ToolExposurePlan {
   primaryPack: ToolPackId;
   packIds: ToolPackId[];
   mcpConnectionIds: string[];
+  skillIds: string[];
   reasons: string[];
   reminders: string[];
   repairAttempted: boolean;
@@ -204,5 +209,7 @@ export type ExecutiveRuntimeContext = {
   toolResultCache: ExecutiveToolResultReuseCache;
   mcpToolExposure?: McpToolExposure | null;
   mcpSelectableServerPacks?: readonly McpSelectableServerPack[] | null;
+  skillExposure?: SkillExposure | null;
+  selectableSkills?: readonly SelectableSkill[] | null;
   requestableActionPackIds?: readonly Exclude<ToolPackId, 'safe_context_pack'>[] | null;
 };

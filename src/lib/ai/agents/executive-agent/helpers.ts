@@ -206,6 +206,25 @@ export function extractRequestedPackIdsFromExecution(params: {
   return Array.from(new Set(requestedPackIds));
 }
 
+export function extractRequestedSkillIdsFromExecution(params: {
+  toolResults: unknown;
+  steps?: unknown;
+}): string[] {
+  const result = extractLatestToolResultFromExecution({
+    toolResults: params.toolResults,
+    steps: params.steps,
+    toolName: 'request_skill_exposure',
+  });
+
+  const requestedSkillIds = Array.isArray(result?.requestedSkillIds)
+    ? result.requestedSkillIds.filter(
+        (value): value is string => typeof value === 'string' && value.length > 0,
+      )
+    : [];
+
+  return Array.from(new Set(requestedSkillIds));
+}
+
 function extractLatestToolResultFromExecution(params: {
   toolResults: unknown;
   steps?: unknown;
@@ -1314,6 +1333,7 @@ type ToolTimingMetadata = {
 };
 
 const DEFER_ON_STALE_TOOLS = new Set([
+  'request_skill_exposure',
   'request_tool_pack_exposure',
   'request_mcp_server_tools',
   'send_email',
