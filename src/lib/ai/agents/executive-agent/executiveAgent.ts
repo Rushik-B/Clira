@@ -37,6 +37,7 @@ import {
   collectExecutedToolNames,
   collectOutOfPackToolNames,
   collectToolNamesFromExecution,
+  extractRequestedSkillIdsFromExecution,
   extractRequestedPackIdsFromExecution,
   extractRequestedMcpConnectionIdsFromExecution,
   resolveTerminalFallbackResponse,
@@ -97,6 +98,11 @@ import {
   listSelectableMcpServerPacks,
   resolveMcpToolExposure,
 } from '@/lib/services/mcp/policy/service';
+import {
+  compileSkillPromptContext,
+  listSelectableSkills,
+  resolveSkillExposure,
+} from '@/lib/services/skills';
 import type { ExecutiveWorkingState } from './types';
 
 function mergeUnique<T>(existing: readonly T[], additions: readonly T[]): T[] {
@@ -226,6 +232,7 @@ export class ExecutiveAgent {
     let toolAbort: ReturnType<typeof createDeadlineController> | undefined;
     let primaryPack: ToolPackId | null = null;
     let packIds: ToolPackId[] = [];
+    let skillIds: string[] = [];
     let exposureReasons: string[] = [];
     let turnFeatures: ExecutiveTurnFeatures | null = null;
     let mcpToolExposure: Awaited<ReturnType<typeof resolveMcpToolExposure>> | null = null;
@@ -236,6 +243,7 @@ export class ExecutiveAgent {
     let repairExpandedPacks: ToolPackId[] = [];
     let repairExpandedMcpConnectionIds: string[] = [];
     let timeoutSynthesisResponse: string | null = null;
+    let skillPromptMetadata: Prisma.InputJsonValue | null = null;
     const partialToolExecutions: PartialToolExecution[] = [];
 
     try {
@@ -275,6 +283,7 @@ export class ExecutiveAgent {
       });
       turnFeatures = activeTurnFeatures;
       const requestableActionPackIds = listRequestableActionPackIds(activeTurnFeatures);
+      const selectableSkills = await listSelectableSkills(input.userId);
       const selectableMcpServerPacks = await listSelectableMcpServerPacks({
         userId: input.userId,
         channel: activeTurnFeatures.channel,
@@ -283,6 +292,7 @@ export class ExecutiveAgent {
         input,
         features: activeTurnFeatures,
         mcpServerPacks: selectableMcpServerPacks,
+        selectableSkills,
       });
 
       toolAbort = createDeadlineController({
@@ -302,6 +312,7 @@ export class ExecutiveAgent {
         stopWhenToolCalled('send_email'),
         stopWhenToolCalled('plan_calendar_change'),
         stopWhenToolCalled('commit_calendar_change'),
+        stopWhenToolCalled('request_skill_exposure'),
         stopWhenToolCalled('request_tool_pack_exposure'),
         stopWhenToolCalled('request_mcp_server_tools'),
         stopWhenToolCalled('plan_mcp_action'),
@@ -333,6 +344,7 @@ export class ExecutiveAgent {
         input.runContext?.setSelectedPack?.(plan.primaryPack);
         primaryPack = plan.primaryPack;
         packIds = plan.packIds;
+        skillIds = plan.skillIds;
         exposureReasons = plan.reasons;
 
         const activeMcpToolExposure = await resolveMcpToolExposure({
@@ -342,6 +354,17 @@ export class ExecutiveAgent {
           selectedConnectionIds: plan.mcpConnectionIds,
         });
         mcpToolExposure = activeMcpToolExposure;
+        const activeSkillExposure = await resolveSkillExposure({
+          userId: input.userId,
+          selectedSkillIds: plan.skillIds,
+        });
+        const skillPromptFragments = compileSkillPromptContext({
+          availableSkills: activeSkillExposure.availableSkills,
+          selectedSkills: activeSkillExposure.selectedSkills,
+          selectedSkillIds: plan.skillIds,
+          unavailableSkillIds: activeSkillExposure.unavailableSkillIds,
+        });
+        skillPromptMetadata = skillPromptFragments.metadata as Prisma.InputJsonValue;
 
         const mcpServersForLogs = summarizeMcpServersForLogs(
           activeMcpToolExposure,
@@ -359,9 +382,11 @@ export class ExecutiveAgent {
           passIndex,
           primaryPack,
           packIds,
+          skillIds: plan.skillIds,
           mcpServers: mcpServersForLogs,
           exposureReasons,
           repairAttempted: plan.repairAttempted,
+          skillPromptDegradations: skillPromptFragments.metadata.degradations,
           draftCandidatePresent: activeTurnFeatures.draftCandidatePresent,
           draftCandidateReason: activeTurnFeatures.draftCandidateReason,
           pendingCalendarChangePresent: activeTurnFeatures.pendingCalendarChangePresent,
@@ -383,12 +408,16 @@ export class ExecutiveAgent {
           pendingCalendarInstruction,
           harnessReminders: [
             ...plan.reminders,
+            ...skillPromptFragments.reminderLines,
             ...mcpPromptFragments.reminderLines,
           ],
           actionPackSummaryLines,
           mcpToolSummaryLines: mcpPromptFragments.toolSummaryLines,
           mcpDegradedSummaryLines: mcpPromptFragments.degradedSummaryLines,
           mcpAvailableServerLines: mcpPromptFragments.availableServerLines,
+          availableSkillLines: skillPromptFragments.availableSkillLines,
+          selectedSkillFragments: skillPromptFragments.selectedSkillFragments,
+          skillDegradedSummaryLines: skillPromptFragments.degradedSummaryLines,
         });
         const {
           systemPrompt: promptSystemPrompt,
@@ -427,6 +456,8 @@ export class ExecutiveAgent {
           toolResultCache,
           mcpToolExposure: activeMcpToolExposure,
           mcpSelectableServerPacks: selectableMcpServerPacks,
+          skillExposure: activeSkillExposure,
+          selectableSkills,
           requestableActionPackIds,
         });
 
@@ -590,11 +621,18 @@ export class ExecutiveAgent {
           toolResults,
           steps,
         }).filter((packId) => !plan.packIds.includes(packId));
+        const requestedSkillIds = extractRequestedSkillIdsFromExecution({
+          toolResults,
+          steps,
+        }).filter((skillId) => !plan.skillIds.includes(skillId));
         const requestedMcpConnectionIds = extractRequestedMcpConnectionIdsFromExecution({
           toolResults,
           steps,
         }).filter((connectionId) => !(plan.mcpConnectionIds ?? []).includes(connectionId));
-        const rerunRequired = requestedPackIds.length > 0 || requestedMcpConnectionIds.length > 0;
+        const rerunRequired =
+          requestedPackIds.length > 0 ||
+          requestedSkillIds.length > 0 ||
+          requestedMcpConnectionIds.length > 0;
         if (
           !response &&
           steps.length > 0 &&
@@ -693,6 +731,8 @@ export class ExecutiveAgent {
           toolNames,
           outOfPackToolNames,
           selectedConnectionIds: activeMcpToolExposure.selectedConnectionIds,
+          selectedSkillIds: activeSkillExposure.selectedSkillIds,
+          skillPromptMetadata: skillPromptFragments.metadata,
           workingState: workingStateController.getState(),
         };
       };
@@ -705,6 +745,10 @@ export class ExecutiveAgent {
           toolResults: passResult.toolResults,
           steps: passResult.steps,
         }).filter((packId) => !exposurePlan.packIds.includes(packId));
+        const requestedSkillIds = extractRequestedSkillIdsFromExecution({
+          toolResults: passResult.toolResults,
+          steps: passResult.steps,
+        }).filter((skillId) => !exposurePlan.skillIds.includes(skillId));
         const requestedMcpConnectionIds = extractRequestedMcpConnectionIdsFromExecution({
           toolResults: passResult.toolResults,
           steps: passResult.steps,
@@ -715,26 +759,36 @@ export class ExecutiveAgent {
         let expandedPackIds: ToolPackId[] = [];
         let expandedMcpConnectionIds: string[] = [];
 
-        if (requestedPackIds.length > 0 || requestedMcpConnectionIds.length > 0) {
+        if (
+          requestedPackIds.length > 0 ||
+          requestedSkillIds.length > 0 ||
+          requestedMcpConnectionIds.length > 0
+        ) {
           repairAttempted = true;
           expandedPackIds = requestedPackIds;
           expandedMcpConnectionIds = requestedMcpConnectionIds;
           nextRepairReason =
-            requestedPackIds.length > 0 && requestedMcpConnectionIds.length > 0
-              ? 'requested_tool_pack_and_mcp_server_tools'
-              : requestedPackIds.length > 0
-                ? 'requested_tool_pack_exposure'
-                : 'requested_mcp_server_tools';
+            requestedSkillIds.length > 0 && requestedPackIds.length === 0 && requestedMcpConnectionIds.length === 0
+              ? 'requested_skill_exposure'
+              : requestedSkillIds.length > 0
+                ? 'requested_additional_exposure'
+                : requestedPackIds.length > 0 && requestedMcpConnectionIds.length > 0
+                  ? 'requested_tool_pack_and_mcp_server_tools'
+                  : requestedPackIds.length > 0
+                    ? 'requested_tool_pack_exposure'
+                    : 'requested_mcp_server_tools';
           nextPlan = {
             ...nextPlan,
             primaryPack: requestedPackIds[0] ?? nextPlan.primaryPack,
             packIds: mergeUnique(nextPlan.packIds, requestedPackIds),
+            skillIds: mergeUnique(nextPlan.skillIds, requestedSkillIds),
             mcpConnectionIds: mergeUnique(nextPlan.mcpConnectionIds, requestedMcpConnectionIds),
             repairAttempted: true,
           };
 
           logger.info('[executiveAgent] harness.exposure_rerun', {
             repairReason: nextRepairReason,
+            repairExpandedSkillIds: requestedSkillIds,
             repairExpandedPacks: expandedPackIds,
             repairExpandedMcpConnectionIds: expandedMcpConnectionIds,
             nextPassIndex: passIndex + 1,
@@ -784,6 +838,7 @@ export class ExecutiveAgent {
         const planChanged =
           nextPlan.primaryPack !== exposurePlan.primaryPack ||
           !sameStringSet(nextPlan.packIds, exposurePlan.packIds) ||
+          !sameStringSet(nextPlan.skillIds, exposurePlan.skillIds) ||
           !sameStringSet(nextPlan.mcpConnectionIds, exposurePlan.mcpConnectionIds);
         if (!planChanged) {
           break;
@@ -824,11 +879,13 @@ export class ExecutiveAgent {
         primaryPack,
         packIds,
         mcpConnectionIds: passResult.selectedConnectionIds,
+        skillIds: passResult.selectedSkillIds,
         exposureReasons,
         repairAttempted,
         repairReason,
         repairExpandedPacks,
         repairExpandedMcpConnectionIds,
+        skillPrompt: passResult.skillPromptMetadata as Prisma.InputJsonValue,
         workingState: passResult.workingState,
         promptVersion: EXECUTIVE_AGENT_PROMPT_VERSION,
         packVersion: EXECUTIVE_AGENT_PACK_VERSION,
@@ -880,11 +937,13 @@ export class ExecutiveAgent {
         primaryPack,
         packIds,
         mcpConnectionIds: currentMcpToolExposure?.selectedConnectionIds ?? [],
+        skillIds,
         exposureReasons,
         repairAttempted,
         repairReason,
         repairExpandedPacks,
         repairExpandedMcpConnectionIds,
+        skillPrompt: skillPromptMetadata,
         workingState: currentWorkingStateController?.getState() ?? null,
         promptVersion: EXECUTIVE_AGENT_PROMPT_VERSION,
         packVersion: EXECUTIVE_AGENT_PACK_VERSION,
