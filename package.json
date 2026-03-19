@@ -7,8 +7,8 @@
     "npm": "10.x"
   },
   "scripts": {
-    "dev": "next dev --webpack",
-    "build": "next build --webpack && tsc -p config/tsconfig.worker.json && tsc-alias -p config/tsconfig.worker.json",
+    "dev": "next dev",
+    "build": "next build && tsc -p config/tsconfig.worker.json && tsc-alias -p config/tsconfig.worker.json",
     "build:worker": "tsc -p config/tsconfig.worker.json && tsc-alias -p config/tsconfig.worker.json",
     "prebuild": "npm run prisma:generate",
     "prebuild:worker": "npm run prisma:generate",

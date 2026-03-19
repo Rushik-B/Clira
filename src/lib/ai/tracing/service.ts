@@ -27,9 +27,15 @@ function getCaptureMode(): 'full' | 'summary' | 'off' {
 export function resolveAiTraceDir(): string {
   const configured = process.env.CLIRA_AI_TRACE_DIR?.trim();
   if (configured) {
-    return path.isAbsolute(configured) ? configured : path.resolve(process.cwd(), configured);
+    return path.isAbsolute(configured)
+      ? configured
+      : path.resolve(/*turbopackIgnore: true*/ process.cwd(), configured);
   }
-  return path.resolve(process.cwd(), '.clira-runtime/ai-traces');
+  return path.join(
+    /*turbopackIgnore: true*/ process.cwd(),
+    '.clira-runtime',
+    'ai-traces',
+  );
 }
 
 function buildDayPartition(date = new Date()): string {
