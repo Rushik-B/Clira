@@ -14,7 +14,12 @@ ARG REDIS_URL=redis://dummy:6379
 # Empty NEXT_PUBLIC_LANDING_PAGE_URL at build time so client code falls back to /signin
 ARG NEXT_PUBLIC_LANDING_PAGE_URL=""
 RUN npx prisma generate
-RUN DATABASE_URL="${DATABASE_URL}" REDIS_URL="${REDIS_URL}" NEXT_PUBLIC_LANDING_PAGE_URL="${NEXT_PUBLIC_LANDING_PAGE_URL}" NODE_OPTIONS="--max-old-space-size=4096" npm run build
+RUN --mount=type=cache,target=/app/.next/cache \
+    DATABASE_URL="${DATABASE_URL}" \
+    REDIS_URL="${REDIS_URL}" \
+    NEXT_PUBLIC_LANDING_PAGE_URL="${NEXT_PUBLIC_LANDING_PAGE_URL}" \
+    NODE_OPTIONS="--max-old-space-size=4096" \
+    npm run build
 RUN npm prune --omit=dev
 
 FROM node:22-alpine AS runner

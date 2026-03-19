@@ -943,7 +943,7 @@ export class ExecutiveAgent {
         repairReason,
         repairExpandedPacks,
         repairExpandedMcpConnectionIds,
-        skillPrompt: skillPromptMetadata,
+        skillPrompt: skillPromptMetadata ?? undefined,
         workingState: currentWorkingStateController?.getState() ?? null,
         promptVersion: EXECUTIVE_AGENT_PROMPT_VERSION,
         packVersion: EXECUTIVE_AGENT_PACK_VERSION,
