@@ -8,6 +8,7 @@ Use this index to navigate the codebase runbooks quickly.
 2. `docs/gmail-pubsub.md` - Gmail push delivery configuration
 3. `docs/architecture.md` - pipeline and component layout
 4. `docs/operations.md` - production-style operations and cron runbook
+5. `docs/ai-providers.md` - language-model provider selection and OpenRouter setup
 
 ## Feature Guides
 

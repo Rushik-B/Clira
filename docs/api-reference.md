@@ -12,7 +12,7 @@ This document lists all application API routes under `src/app/api` and their exp
 
 ## High-Impact Endpoints
 
-- Health: `GET /api/health`
+- Health: `GET /api/health` (reports active language-model providers and missing provider config)
 - Queue stream (SSE): `GET /api/queue/stream`
 - Gmail push webhook: `POST /api/gmail-push/webhook` (only when `GMAIL_INGESTION_MODE=push`)
 - Gmail watch setup: `POST /api/gmail-push/setup`

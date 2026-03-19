@@ -49,7 +49,8 @@ Checks:
 
 - User onboarding state complete (`masterPromptGenerated`)
 - Email passed filtering rules
-- LLM key (`GOOGLE_GENERATIVE_AI_API_KEY`) is present
+- The active language-model provider is configured. For Gemini that means `GOOGLE_GENERATIVE_AI_API_KEY` or `GOOGLE_API_KEY`; for OpenRouter that means `OPENROUTER_API_KEY`
+- If `/api/health` reports missing provider config, compare `AI_PROVIDER` and any per-model overrides with `docs/ai-providers.md`
 
 ## Pub/Sub Webhook Retries Continuously
 

@@ -21,6 +21,14 @@ Set all required values in `.env`.
 Fresh Docker volumes bootstrap a dedicated app DB role from `CLIRA_DB_APP_USER` / `CLIRA_DB_APP_PASSWORD`.
 If your Postgres volume already exists, create or update that role once before starting app and workers.
 
+### Language model provider
+
+Clira defaults to Gemini-backed models. To keep the current setup unchanged, leave `AI_PROVIDER=google` and set `GOOGLE_GENERATIVE_AI_API_KEY` (or `GOOGLE_API_KEY`).
+
+If you want to use OpenRouter, set `AI_PROVIDER=openrouter`, `OPENROUTER_API_KEY`, and explicit role model ids as described in `docs/ai-providers.md`.
+
+Per-model provider overrides take precedence over the global provider if you need a mixed setup.
+
 ## 2) Start infra
 
 ```bash
