@@ -6,12 +6,16 @@ const {
   buildExecutiveAgentToolsMock,
   resolveMcpToolExposureMock,
   listSelectableMcpServerPacksMock,
+  listSelectableSkillsMock,
+  resolveSkillExposureMock,
 } = vi.hoisted(() => ({
   callTextWithToolsMock: vi.fn(),
   callTextWithMessagesMock: vi.fn(),
   buildExecutiveAgentToolsMock: vi.fn(),
   resolveMcpToolExposureMock: vi.fn(),
   listSelectableMcpServerPacksMock: vi.fn(),
+  listSelectableSkillsMock: vi.fn(),
+  resolveSkillExposureMock: vi.fn(),
 }));
 
 vi.mock('@/lib/ai/callLlm', () => ({
@@ -114,6 +118,31 @@ vi.mock('@/lib/services/mcp/policy/service', async (importOriginal) => {
       },
     }),
     listSelectableMcpServerPacks: listSelectableMcpServerPacksMock.mockResolvedValue([]),
+  };
+});
+
+vi.mock('@/lib/services/skills', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/services/skills')>();
+  return {
+    ...actual,
+    listSelectableSkills: listSelectableSkillsMock.mockResolvedValue([]),
+    resolveSkillExposure: resolveSkillExposureMock.mockResolvedValue({
+      selectedSkillIds: [],
+      selectedSkills: [],
+      availableSkills: [],
+      unavailableSkillIds: [],
+    }),
+    compileSkillPromptContext: vi.fn(() => ({
+      availableSkillLines: [],
+      selectedSkillFragments: [],
+      reminderLines: [],
+      degradedSummaryLines: [],
+      metadata: {
+        availableSkillCount: 0,
+        selectedSkillIds: [],
+        degradations: [],
+      },
+    })),
   };
 });
 
