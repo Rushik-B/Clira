@@ -22,7 +22,7 @@ import { OnboardingStatusBanner } from '@/components/ui/OnboardingStatusBanner';
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary';
 import type { TextChannelsSettingsSnapshot } from '@/lib/services/textChannelsSettings';
 
-type SettingsSection = 'account-privacy' | 'assistant-replies' | 'folders-labels' | 'text-channels' | 'inboxes' | 'mcp-connections';
+type SettingsSection = 'account-privacy' | 'assistant-replies' | 'skills' | 'folders-labels' | 'text-channels' | 'inboxes' | 'mcp-connections';
 
 interface CliraAppProps {
   initialTextChannelsSettings?: TextChannelsSettingsSnapshot | null;

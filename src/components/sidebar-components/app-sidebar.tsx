@@ -40,7 +40,7 @@ import { Sparkles } from "@/components/icons/icons"
 // Custom icon type for our custom icons
 type CustomIcon = React.ComponentType<{ className?: string; style?: React.CSSProperties }>
 
-type SettingsSection = 'account-privacy' | 'assistant-replies' | 'folders-labels' | 'text-channels' | 'inboxes' | 'mcp-connections'
+type SettingsSection = 'account-privacy' | 'assistant-replies' | 'skills' | 'folders-labels' | 'text-channels' | 'inboxes' | 'mcp-connections'
 
 interface AppSidebarProps extends React.ComponentProps<typeof Sidebar> {
   activePage: PageType
@@ -153,6 +153,13 @@ export function AppSidebar({
           icon: Filter,
           onClick: () => handleNavigation('settings', 'assistant-replies'),
           isActive: activeSettingsSection === 'assistant-replies'
+        },
+        {
+          title: "Skills",
+          url: "/settings/skills",
+          icon: Sparkles,
+          onClick: () => handleNavigation('settings', 'skills'),
+          isActive: activeSettingsSection === 'skills'
         },
         {
           title: "Folders & Labels",

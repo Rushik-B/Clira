@@ -6,11 +6,12 @@ import { AssistantRepliesPage } from './settings/AssistantRepliesPage';
 import { FoldersLabelsPage } from './settings/FoldersLabelsPage';
 import { MailboxConnectionsPage } from './settings/MailboxConnectionsPage';
 import { McpConnectionsPage } from './settings/McpConnectionsPage';
+import { SkillsSettingsPage } from './settings/SkillsSettingsPage';
 import { TextChannelsIntegrationPage } from './settings/TextChannelsIntegrationPage';
 import type { TextChannelsSettingsSnapshot } from '@/lib/services/textChannelsSettings';
 
 interface SettingsPageProps {
-  activeSection?: 'account-privacy' | 'assistant-replies' | 'folders-labels' | 'text-channels' | 'inboxes' | 'mcp-connections';
+  activeSection?: 'account-privacy' | 'assistant-replies' | 'skills' | 'folders-labels' | 'text-channels' | 'inboxes' | 'mcp-connections';
   initialTextChannelsSettings?: TextChannelsSettingsSnapshot | null;
 }
 
@@ -22,6 +23,8 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   switch (activeSection) {
     case 'assistant-replies':
       return <AssistantRepliesPage />;
+    case 'skills':
+      return <SkillsSettingsPage />;
     case 'folders-labels':
       return <FoldersLabelsPage />;
     case 'text-channels':
