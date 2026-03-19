@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { callObject } from '@/lib/ai/callLlm';
-import { models } from '@/lib/ai/models';
+import { getGoogleThinkingProviderOptions, models } from '@/lib/ai/models';
 import type { RelevanceClassification } from './types';
 
 const classifierSchema = z.object({
@@ -94,7 +94,9 @@ export async function classifyMessageRelevance({
       schema: classifierSchema,
       prompt,
       temperature: 0,
-      providerOptions: { google: { thinkingConfig: { thinkingBudget: 0 } } },
+      providerOptions: getGoogleThinkingProviderOptions('flashLite', {
+        thinkingBudget: 0,
+      }),
       op: 'messaging-orchestration.relevance',
       concurrency: {
         key: 'messaging-orchestration.relevance',

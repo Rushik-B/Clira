@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { callObject } from '@/lib/ai/callLlm';
-import { models } from '@/lib/ai/models';
+import { getGoogleThinkingProviderOptions, models } from '@/lib/ai/models';
 import { logger } from '@/lib/logger';
 import {
   CalendarCreatorLlmSchema,
@@ -83,7 +83,9 @@ export async function runCalendarCreatorAgent(
       schema: CalendarCreatorLlmSchema,
       temperature: 0.05,
       abortSignal: context.abortSignal,
-      providerOptions: { google: { thinkingConfig: { thinkingBudget: 0 } } },
+      providerOptions: getGoogleThinkingProviderOptions('flash', {
+        thinkingBudget: 0,
+      }),
       op: 'calendar.creator.plan',
       concurrency: { key: 'calendar.creator.plan', maxConcurrency: 4 },
       retry: { maxAttempts: 2, baseDelayMs: 400 },

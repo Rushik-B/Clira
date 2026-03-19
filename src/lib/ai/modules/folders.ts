@@ -1,5 +1,5 @@
 import { callObject } from '../callLlm';
-import { models } from '../models';
+import { getGoogleThinkingProviderOptions, models } from '../models';
 import { FolderGenerationResultSchema } from '../schemas/schemas';
 import type { z } from 'zod';
 import { readPromptFile } from '../../prompts';
@@ -59,13 +59,9 @@ export async function generateFoldersFromEmails({
     concurrency: { key: 'folders', maxConcurrency: 3 },
     retry: { maxAttempts: 3 },
     abortSignal,
-    providerOptions: {
-      google: {
-        thinkingConfig: {
-          thinkingBudget: 1024,
-        },
-      },
-    },
+    providerOptions: getGoogleThinkingProviderOptions('folderGeneration', {
+      thinkingBudget: 1024,
+    }),
   });
 
   return object;

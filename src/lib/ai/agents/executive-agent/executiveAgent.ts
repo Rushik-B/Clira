@@ -4,7 +4,7 @@ import {
   createDeadlineController,
 } from '@/lib/ai/callLlm';
 import { LlmError } from '@/lib/ai/errors';
-import { models } from '@/lib/ai/models';
+import { getGoogleThinkingProviderOptions, models } from '@/lib/ai/models';
 import {
   isNativeSteeringEnabled,
   requireNativeSteeringRuntime,
@@ -313,8 +313,10 @@ export class ExecutiveAgent {
         input.userRequest.startsWith('REMINDER DELIVERY:') ||
         input.userRequest.startsWith('ALERT NOTIFICATION:');
       const providerOptions = isNotificationFlow
-        ? { google: { thinkingConfig: { thinkingBudget: 0 } } }
-        : { google: { thinkingConfig: { thinkingLevel: resolveExecAgentThinkingLevel() } } };
+        ? getGoogleThinkingProviderOptions('execAgent', { thinkingBudget: 0 })
+        : getGoogleThinkingProviderOptions('execAgent', {
+            thinkingLevel: resolveExecAgentThinkingLevel(),
+          });
 
       const nativeSteerEnabled = isNativeSteeringEnabled(resolvedChannel);
       if (nativeSteerEnabled) {
@@ -613,7 +615,9 @@ export class ExecutiveAgent {
               op: `${resolvedChannel}.executive.synthesis`,
               concurrency: { key: `${resolvedChannel}.executive`, maxConcurrency: 4 },
               retry: { maxAttempts: 3, baseDelayMs: 500 },
-              providerOptions: { google: { thinkingConfig: { thinkingBudget: 0 } } },
+              providerOptions: getGoogleThinkingProviderOptions('execAgent', {
+                thinkingBudget: 0,
+              }),
               traceContext: input.traceContext,
             });
             const synthesized = (synthesis.text || '').trim();
@@ -921,7 +925,9 @@ export class ExecutiveAgent {
             op: `${resolvedChannel}.executive.timeout_synthesis`,
             concurrency: { key: `${resolvedChannel}.executive`, maxConcurrency: 4 },
             retry: { maxAttempts: 1, baseDelayMs: 250 },
-            providerOptions: { google: { thinkingConfig: { thinkingBudget: 0 } } },
+            providerOptions: getGoogleThinkingProviderOptions('execAgent', {
+              thinkingBudget: 0,
+            }),
             traceContext: input.traceContext,
           });
           const text = (synthesis.text || '').trim();

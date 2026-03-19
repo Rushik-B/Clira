@@ -42,6 +42,7 @@ vi.mock('@/lib/prompts', () => ({
 }));
 
 vi.mock('@/lib/ai/models', () => ({
+  getGoogleThinkingProviderOptions: () => undefined,
   models: {
     emailRetrieval: modelMocks.emailRetrieval,
   },

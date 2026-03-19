@@ -1,6 +1,6 @@
 import { readPromptFile } from '@/lib/prompts';
 import { callObject } from '@/lib/ai/callLlm';
-import { models } from '@/lib/ai/models';
+import { getGoogleThinkingProviderOptions, models } from '@/lib/ai/models';
 import { logger } from '@/lib/logger';
 import {
   CalendarSearchResultSchema,
@@ -191,7 +191,9 @@ export async function searchCalendarEvents(
       schema: CalendarSearchResultSchema,
       temperature: 0.3, // Slightly higher than analysis for creative semantic matching
       abortSignal: context.abortSignal,
-      providerOptions: { google: { thinkingConfig: { thinkingBudget: 0 } } },
+      providerOptions: getGoogleThinkingProviderOptions('calendarSearch', {
+        thinkingBudget: 0,
+      }),
       op: 'calendar.search',
       concurrency: { key: 'calendar.search', maxConcurrency: 4 },
       retry: { maxAttempts: 2, baseDelayMs: 500 },

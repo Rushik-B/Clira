@@ -10,7 +10,7 @@
 
 import { z } from 'zod';
 import { callObject } from '@/lib/ai/callLlm';
-import { models } from '@/lib/ai/models';
+import { getGoogleThinkingProviderOptions, models } from '@/lib/ai/models';
 import { logger } from '@/lib/logger';
 import { readPromptFile } from '@/lib/prompts';
 import {
@@ -260,7 +260,9 @@ Body excerpt: ${truncatedBody}...`;
       prompt: userPrompt,
       schema: ReceivedEmailsInsightsSchema,
       temperature: 0.3,
-      providerOptions: { google: { thinkingConfig: { thinkingLevel: 'medium' } } },
+      providerOptions: getGoogleThinkingProviderOptions('flashLite', {
+        thinkingLevel: 'medium',
+      }),
       op: 'supermemory.profile.analyze-received',
       concurrency: { key: 'supermemory.profile', maxConcurrency: 3 },
       retry: { maxAttempts: 2 },
