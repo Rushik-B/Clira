@@ -445,6 +445,25 @@ model ReplyInstructionDoc {
   @@index([userId, isActive])
 }
 
+model UserSkill {
+  id             String    @id @default(cuid())
+  userId         String
+  slug           String
+  name           String
+  description    String
+  body           String
+  enabled        Boolean   @default(true)
+  catalogSummary String
+  archivedAt     DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, slug], name: "UserSkill_userId_slug_key")
+  @@index([userId, archivedAt, enabled], name: "UserSkill_userId_archivedAt_enabled_idx")
+  @@index([userId, updatedAt], name: "UserSkill_userId_updatedAt_idx")
+}
+
 model OAuthAccount {
   id                String   @id @default(cuid())
   userId            String
@@ -635,6 +654,7 @@ model User {
   mailboxes                          Mailbox[]
   masterPrompts                      MasterPrompt[]
   replyInstructionDocs               ReplyInstructionDoc[]
+  userSkills                         UserSkill[]
   accounts                           OAuthAccount[]
   inboxSearchDocuments               InboxSearchDocument[]
   inboxSearchCheckpoints             InboxSearchCheckpoint[]
