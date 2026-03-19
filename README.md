@@ -97,6 +97,14 @@ docker compose up --build
 
 This starts `app`, `worker`, `cron`, `db`, and `redis` using the production image build.
 
+Before running on a VM, set `APP_PUBLIC_URL` in `.env` to the real externally reachable app URL.
+Examples:
+
+- `APP_PUBLIC_URL=http://<vm-ip>:13000`
+- `APP_PUBLIC_URL=https://app.example.com`
+
+If you want unauthenticated users redirected to a separate landing page, also set `APP_LANDING_PAGE_URL`.
+
 ## Required Environment Variables
 
 | Variable | Purpose |
@@ -106,6 +114,7 @@ This starts `app`, `worker`, `cron`, `db`, and `redis` using the production imag
 | `REDIS_URL` | Redis connection for BullMQ + runtime cache |
 | `NEXTAUTH_SECRET` | Auth/session signing secret |
 | `NEXTAUTH_URL` | Canonical app URL |
+| `APP_PUBLIC_URL` | Docker/VM public app URL used to populate `NEXTAUTH_URL` inside containers |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Google OAuth for mailbox auth |
 | `AI_PROVIDER` | Language-model provider selector (`google` default, `openrouter` optional) |
 | `GOOGLE_GENERATIVE_AI_API_KEY` / `GOOGLE_API_KEY` | Gemini auth when `AI_PROVIDER=google` |

@@ -8,7 +8,13 @@ Checks:
 
 - `NEXTAUTH_SECRET` is set and stable
 - `NEXTAUTH_URL` matches actual app URL
+- Docker deploys: `APP_PUBLIC_URL` matches the real external VM/domain URL
 - Google OAuth callback URL is correctly configured
+
+Actions:
+
+- If using `docker compose`, set `APP_PUBLIC_URL` in `.env`, then recreate `app`, `worker`, `gmail-pull-worker`, `backfill-worker`, and `cron`
+- Re-check Google OAuth callback configuration after any public URL change
 
 ## Gmail Push Not Processing New Mail
 
@@ -42,6 +48,11 @@ Checks:
 - `REDIS_URL` is reachable
 - Worker process (`npm run start:worker`) is running
 - Job enqueue logs appear in API routes
+
+Docker-specific checks:
+
+- Containers use `redis://redis:6379`, not `redis://localhost:16379`
+- The cron container also resolves `db` and `redis` by service name, not localhost
 
 ## Replies Not Generated
 
