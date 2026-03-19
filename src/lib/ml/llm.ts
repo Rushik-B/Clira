@@ -4,7 +4,7 @@ import { generateReply as sdkGenerateReply } from '../ai/modules/reply';
 import { generateFoldersFromEmails as sdkGenerateFolders } from '../ai/modules/folders';
 import { generateEmailMappings as sdkGenerateMappings, suggestEmailMappings as sdkSuggestMappings } from '../ai/modules/mapping';
 import { callText } from '../ai/callLlm';
-import { models } from '../ai/models';
+import { assertLanguageModelConfig, models } from '../ai/models';
 
 // Removed legacy token tracker in favor of AI SDK usage logs
 
@@ -108,11 +108,7 @@ export class LLMService {
   // Phase 4: all text generations now routed via AI SDK wrappers (no LangChain usage)
 
   constructor() {
-    // Ensure Google AI key is present for AI SDK provider
-    if (!process.env.GOOGLE_API_KEY && !process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
-      console.error("❌ Google Generative AI API key is not set (GOOGLE_API_KEY or GOOGLE_GENERATIVE_AI_API_KEY)!");
-      throw new Error("Google Generative AI API key is required");
-    }
+    assertLanguageModelConfig(['flash', 'pro', 'flashLite', 'folderGeneration']);
   }
 
   // Removed executeWithRateLimit/processQueue/retryRequest; using AI SDK call wrappers
