@@ -33,11 +33,13 @@ import {
 } from '@/lib/ai/tracing';
 import {
   buildOrchestrationMessageMetadata,
+  detectMessagingCommand,
   emitOrchestratorEvent,
   getMessagingOrchestrator,
   getDuplicateInboundMessageIdFromAdapter,
   isAbortError,
   type ChannelAdapter,
+  type MessagingCommand,
   type RunContext,
 } from '@/lib/services/messaging-orchestration';
 import {
@@ -62,7 +64,7 @@ export interface ProcessMessageResult {
 }
 
 /** Commands that trigger special handling instead of agent invocation */
-type Command = 'send' | 'save' | 'clear' | 'cancel' | 'help' | null;
+type Command = MessagingCommand;
 
 /** Transcript phrases that mean "no speech / unintelligible" — fast-fallback without running EA */
 const VOICE_MEMO_NO_CONTENT_PHRASES = [
@@ -82,79 +84,6 @@ function isVoiceMemoNoContent(transcript: string): boolean {
   const t = transcript.trim().toLowerCase();
   if (!t) return true;
   return VOICE_MEMO_NO_CONTENT_PHRASES.some((phrase) => t === phrase || t.startsWith(phrase));
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Command Detection
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Detects if a message is a command.
- * Commands are case-insensitive and can include variations.
- */
-function detectCommand(text: string): Command {
-  const normalized = text.toLowerCase().trim();
-
-  // Send command: user wants to send the current draft
-  if (
-    normalized === 'send' ||
-    normalized === 'send it' ||
-    normalized === 'send now' ||
-    normalized === 'yes send' ||
-    normalized === 'yes, send' ||
-    normalized === 'yes send it' ||
-    normalized === 'send email' ||
-    normalized === 'send the email'
-  ) {
-    return 'send';
-  }
-
-  // Save command: user wants to save the draft to Gmail drafts
-  if (
-    normalized === 'save' ||
-    normalized === 'save it' ||
-    normalized === 'save draft' ||
-    normalized === 'save as draft' ||
-    normalized === 'save to drafts'
-  ) {
-    return 'save';
-  }
-
-  // Clear command: reset the conversation
-  if (
-    normalized === 'clear' ||
-    normalized === 'reset' ||
-    normalized === 'start over' ||
-    normalized === 'new conversation' ||
-    normalized === 'clear conversation'
-  ) {
-    return 'clear';
-  }
-
-  // Cancel command: discard the current draft
-  if (
-    normalized === 'cancel' ||
-    normalized === 'cancel draft' ||
-    normalized === 'discard' ||
-    normalized === 'discard draft' ||
-    normalized === 'nevermind' ||
-    normalized === 'never mind'
-  ) {
-    return 'cancel';
-  }
-
-  // Help command: show available commands
-  if (
-    normalized === 'help' ||
-    normalized === '/help' ||
-    normalized === 'commands' ||
-    normalized === 'what can you do' ||
-    normalized === 'what can you do?'
-  ) {
-    return 'help';
-  }
-
-  return null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -659,7 +588,7 @@ export async function processWhatsAppMessage(
   await adapter.persistInbound();
 
   // Step 5: Detect and handle commands
-  let activeCommand: Command = detectCommand(effectiveText);
+  let activeCommand: Command = detectMessagingCommand(effectiveText);
   if (activeCommand) {
     logger.info(`[messageProcessor] Detected command: ${activeCommand}`);
   }
@@ -1054,7 +983,7 @@ export async function processWebChatMessage(
   // Add user message to the conversation
   await adapter.persistInbound();
 
-  let activeCommand: Command = detectCommand(effectiveText);
+  let activeCommand: Command = detectMessagingCommand(effectiveText);
   if (activeCommand) {
     logger.info(`[messageProcessor] Detected command: ${activeCommand}`);
   }
