@@ -8,6 +8,7 @@ import {
   selectExecutiveToolPackForTurn,
 } from '@/lib/ai/agents/executive-agent/selector';
 import type { ExecutiveAgentInput } from '@/lib/ai/agents/executive-agent/types';
+import type { SelectableSkill } from '@/lib/services/skills';
 
 const { listSelectableMcpServerPacksMock } = vi.hoisted(() => ({
   listSelectableMcpServerPacksMock: vi.fn(),
@@ -74,6 +75,17 @@ function buildMcpServerPack(overrides: Partial<{
     packDescription: 'Docs Workspace: 1 read tools (Search docs)',
     capabilityTags: ['docs_search', 'external_knowledge'],
     eligibleModelToolNames: ['mcp__docs__search_docs'],
+    ...overrides,
+  };
+}
+
+function buildSelectableSkill(overrides: Partial<SelectableSkill> = {}): SelectableSkill {
+  return {
+    id: 'skill-1',
+    slug: 'investor-updates',
+    name: 'Investor Updates',
+    description: 'Handle investor update requests tersely.',
+    catalogSummary: 'Handle investor update requests tersely.',
     ...overrides,
   };
 }
@@ -170,6 +182,25 @@ describe('Executive agent exposure planner', () => {
 
     expect(selection.mcpConnectionIds).toEqual(['mcp-conn-1']);
     expect(selection.reasons).toContain('explicit MCP server alias match');
+  });
+
+  test('exact skill name mention deterministically preselects the skill', async () => {
+    const input = buildInput({
+      userRequest: 'Use Investor Updates for this reply.',
+    });
+
+    const features = extractExecutiveTurnFeatures({
+      input,
+      pendingCalendarChangePresent: false,
+    });
+    const selection = await selectExecutiveToolPackForTurn({
+      input,
+      features,
+      selectableSkills: [buildSelectableSkill()],
+    });
+
+    expect(selection.skillIds).toEqual(['skill-1']);
+    expect(selection.reasons).toContain('explicit skill name match');
   });
 
   test('generic docs phrasing does not preselect MCP connections', async () => {
