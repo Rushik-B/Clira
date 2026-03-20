@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { reminderNotificationQueue } from '@/lib/services/utils/queues';
-import { markReminderMissed } from '@/lib/services/reminderNotificationService';
+import { markReminderMissed, utcDueMinuteEpochMs } from '@/lib/services/reminderNotificationService';
 
 const CRON_SECRET = process.env.CRON_SECRET;
 const STALE_MS = 24 * 60 * 60 * 1000;
@@ -12,6 +12,7 @@ const STALE_MS = 24 * 60 * 60 * 1000;
  * Runs on cron schedule to check for due reminders and enqueue them for delivery.
  * - Queues reminders that are due now or overdue (`current_time >= reminder_time`)
  * - Marks stale reminders (>24h old) as MISSED
+ * - Coalesces reminders that share the same user and UTC minute into one queue job
  * - Uses deduplication via jobId to prevent double-delivery
  */
 export async function POST(request: NextRequest) {
@@ -57,6 +58,9 @@ export async function POST(request: NextRequest) {
   let skipped = 0;
   let staleMarked = 0;
 
+  type DueRow = (typeof reminders)[number] & { dueAt: Date };
+  const dueRows: DueRow[] = [];
+
   for (const reminder of reminders) {
     const dueAt = reminder.status === 'SNOOZED' && reminder.snoozedUntil
       ? reminder.snoozedUntil
@@ -72,16 +76,38 @@ export async function POST(request: NextRequest) {
       continue;
     }
 
-    const jobId = `reminder-${reminder.id}-${dueAt.getTime()}`;
+    dueRows.push({ ...reminder, dueAt });
+  }
+
+  const groups = new Map<string, DueRow[]>();
+  for (const row of dueRows) {
+    const minuteEpoch = utcDueMinuteEpochMs(row.dueAt);
+    const key = `${row.userId}:${minuteEpoch}`;
+    const list = groups.get(key);
+    if (list) {
+      list.push(row);
+    } else {
+      groups.set(key, [row]);
+    }
+  }
+
+  for (const rows of groups.values()) {
+    rows.sort((a, b) => a.dueAt.getTime() - b.dueAt.getTime() || a.title.localeCompare(b.title));
+    const first = rows[0];
+    const minuteEpoch = utcDueMinuteEpochMs(first.dueAt);
+    const jobId = `reminder-batch-${first.userId}-${minuteEpoch}`;
     try {
       await reminderNotificationQueue.add(
         'reminder-notification',
         {
-          reminderId: reminder.id,
-          userId: reminder.userId,
-          userEmail: reminder.user.email,
-          title: reminder.title,
-          context: reminder.context ?? undefined,
+          userId: first.userId,
+          userEmail: first.user.email,
+          dueMinuteEpochMs: minuteEpoch,
+          items: rows.map((r) => ({
+            reminderId: r.id,
+            title: r.title,
+            context: r.context ?? undefined,
+          })),
         },
         { jobId },
       );

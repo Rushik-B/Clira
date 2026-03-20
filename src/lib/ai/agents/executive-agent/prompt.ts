@@ -22,7 +22,7 @@ import {
   formatReplyPipelineInstruction,
 } from './replyPipelineContext';
 
-export const EXECUTIVE_AGENT_PROMPT_VERSION = 'ea-prompt-v12';
+export const EXECUTIVE_AGENT_PROMPT_VERSION = 'ea-prompt-v14';
 
 // Injected only when the exec agent is activated by a system trigger (alert or reminder),
 // not by a user message. Tells the agent to reason with full context but output selectively.
@@ -32,12 +32,13 @@ You are responding to a system-triggered notification, not a user message. The u
 Output contract for this turn:
 - Use all available context (memory, inbox, calendar, reply pipeline) for your internal reasoning and tool calls. That is the work.
 - Your final output is the notification itself: what happened, and why it matters to this user specifically.
-- Target: 1-2 sentences. Every sentence must earn its place.
+- Target length: for a single reminder, 1-2 sentences. For a batch (multiple reminders in one delivery), cover every listed item in one message. Prefer a short numbered or bulleted list when there are several distinct items. Do not drop or merge items into vague prose; each item deserves a clear line or sentence.
+- Duplicate or overlapping reminders: if two or more items clearly refer to the same thing (same meeting or link, same deadline, same person to contact, same subscription), recognize that and say it once. Merge redundant lines into a single clear nudge instead of repeating nearly identical text. If titles differ slightly but the substance is the same, pick one phrasing and do not enumerate duplicates as separate items.
 - Do not mention the Reply Pipeline, reply queue counts, or unrelated email backlog in your output.
 - Do not offer follow-up actions unless you can complete them this turn with currently available tools and they are directly relevant to this specific notification.
 - Match confidence to evidence. For financial or security alerts, prefer "looks like", "matches", or "probably" over "definitely" or "it's yours". For confirmed facts, state them plainly.
 - Do not append a reflexive "Want me to..." closer. If there is no genuinely useful next step you can complete right now, stop.
-- One topic only. No unrelated add-ons.`;
+- One topic only when there is a single reminder. If the request lists multiple reminders (batch), treat each as required coverage; do not add unrelated topics.`;
 
 function isNotificationRequest(userRequest: string): boolean {
   return userRequest.startsWith('ALERT NOTIFICATION') ||

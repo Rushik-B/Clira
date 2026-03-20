@@ -321,8 +321,8 @@ export class ExecutiveAgent {
       ];
 
       const isNotificationFlow =
-        input.userRequest.startsWith('REMINDER DELIVERY:') ||
-        input.userRequest.startsWith('ALERT NOTIFICATION:');
+        input.userRequest.startsWith('REMINDER DELIVERY') ||
+        input.userRequest.startsWith('ALERT NOTIFICATION');
       const providerOptions = isNotificationFlow
         ? getGoogleThinkingProviderOptions('execAgent', { thinkingBudget: 0 })
         : getGoogleThinkingProviderOptions('execAgent', {

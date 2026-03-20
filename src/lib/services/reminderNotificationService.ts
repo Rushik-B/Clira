@@ -20,7 +20,8 @@ import {
 import { resolveMessagingTargets } from '@/lib/services/messagingDeliveryTargets';
 import { buildNotificationProgressContext } from '@/lib/services/notificationProgressContext';
 import { convertUserLocalTimeToUtc, getZonedTimeComponents } from '@/lib/utils/timezone';
-import type { Prisma, ReminderStatus } from '@prisma/client';
+import type { ReminderNotificationJobData } from '@/lib/services/utils/queues';
+import type { NotificationDeliveryChannel, Prisma, ReminderStatus } from '@prisma/client';
 
 type ReminderRecurrence = {
   type: 'daily' | 'weekly' | 'monthly';
@@ -29,12 +30,9 @@ type ReminderRecurrence = {
   until?: string;
 };
 
-export interface ReminderNotificationInput {
-  reminderId: string;
-  userId: string;
-  userEmail: string;
-  title: string;
-  context?: string;
+/** Start of the UTC minute containing `d`, in epoch ms (used for cron batching). */
+export function utcDueMinuteEpochMs(d: Date): number {
+  return Math.floor(d.getTime() / 60000) * 60000;
 }
 
 const REMINDER_DELIVERABLE_STATUS_LIST: ReminderStatus[] = ['PENDING', 'SNOOZED'];
@@ -190,82 +188,182 @@ export async function markReminderMissed({
   });
 }
 
-export async function triggerReminderNotification(input: ReminderNotificationInput): Promise<void> {
-  const reminder = await prisma.reminder.findFirst({
-    where: { id: input.reminderId, userId: input.userId },
+type ReminderDeliveryRow = {
+  id: string;
+  userId: string;
+  title: string;
+  description: string | null;
+  context: string | null;
+  status: ReminderStatus;
+  scheduledAt: Date;
+  snoozedUntil: Date | null;
+  recurrence: Prisma.JsonValue | null;
+  linkedEmailId: string | null;
+  linkedEventId: string | null;
+  user: {
+    email: string | null;
+    settings: {
+      whatsappPhoneNumber: string | null;
+      whatsappVerified: boolean | null;
+      calendarTimezone: string | null;
+      notificationDeliveryChannel: string | null;
+    } | null;
+  } | null;
+};
+
+const REMINDER_DELIVERY_SELECT = {
+  id: true,
+  userId: true,
+  title: true,
+  description: true,
+  context: true,
+  status: true,
+  scheduledAt: true,
+  snoozedUntil: true,
+  recurrence: true,
+  linkedEmailId: true,
+  linkedEventId: true,
+  user: {
     select: {
-      id: true,
-      userId: true,
-      title: true,
-      description: true,
-      context: true,
-      status: true,
-      scheduledAt: true,
-      snoozedUntil: true,
-      recurrence: true,
-      linkedEmailId: true,
-      linkedEventId: true,
-      user: {
+      email: true,
+      settings: {
         select: {
-          email: true,
-          settings: {
-            select: {
-              whatsappPhoneNumber: true,
-              whatsappVerified: true,
-              calendarTimezone: true,
-              notificationDeliveryChannel: true,
-            },
-          },
+          whatsappPhoneNumber: true,
+          whatsappVerified: true,
+          calendarTimezone: true,
+          notificationDeliveryChannel: true,
         },
       },
     },
+  },
+} satisfies Prisma.ReminderSelect;
+
+function reminderDueAt(r: ReminderDeliveryRow): Date {
+  return r.status === 'SNOOZED' && r.snoozedUntil ? r.snoozedUntil : r.scheduledAt;
+}
+
+function buildBatchReminderSystemMessage(reminders: ReminderDeliveryRow[]): string {
+  const n = reminders.length;
+  if (n === 1) {
+    const r = reminders[0];
+    const dueAt = reminderDueAt(r);
+    return (
+      `REMINDER DELIVERY\n` +
+      `Title: "${r.title}"\n` +
+      (r.context ? `Context: ${r.context}\n` : '') +
+      `Scheduled for: ${dueAt.toISOString()}`
+    );
+  }
+
+  const lines = reminders.map((r, i) => {
+    const dueAt = reminderDueAt(r);
+    return (
+      `${i + 1}) Title: "${r.title}"\n` +
+      (r.context ? `   Context: ${r.context}\n` : '') +
+      `   Scheduled for: ${dueAt.toISOString()}`
+    );
+  });
+  return (
+    `REMINDER DELIVERY (batch: ${n} reminders due this minute)\n\n` +
+    `This is one delivery covering every item below. Address every item in a single message. ` +
+    `Use a short numbered or bulleted list when it keeps things clear. ` +
+    `Do not omit an item, do not merge two items into one vague line, and do not add topics that are not listed.\n\n` +
+    lines.join('\n\n')
+  );
+}
+
+/**
+ * Delivers one or more reminders for the same user that share the same UTC minute bucket.
+ * Enqueued by the reminder cron as one job per (user, minute).
+ */
+export async function triggerReminderNotifications(data: ReminderNotificationJobData): Promise<void> {
+  const { userId, userEmail, dueMinuteEpochMs, items } = data;
+  if (items.length === 0) {
+    logger.warn('[reminderNotification] Empty batch, skipping');
+    return;
+  }
+
+  const uniqueIds = [...new Set(items.map((i) => i.reminderId))];
+  const loaded = await prisma.reminder.findMany({
+    where: { id: { in: uniqueIds }, userId },
+    select: REMINDER_DELIVERY_SELECT,
   });
 
-  if (!reminder) {
-    logger.warn(`[reminderNotification] Reminder not found: ${input.reminderId}`);
-    return;
-  }
-
-  if (!REMINDER_DELIVERABLE_STATUS_LIST.includes(reminder.status)) {
-    logger.info(`[reminderNotification] Skipping - status=${reminder.status} reminder=${reminder.id}`);
-    return;
-  }
-
+  const byId = new Map(loaded.map((r) => [r.id, r as ReminderDeliveryRow]));
   const now = new Date();
-  const dueAt = reminder.status === 'SNOOZED' && reminder.snoozedUntil ? reminder.snoozedUntil : reminder.scheduledAt;
   const staleCutoff = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  const deliverable: ReminderDeliveryRow[] = [];
 
-  if (dueAt.getTime() < staleCutoff.getTime()) {
-    await markReminderMissed({
-      reminderId: reminder.id,
-      userId: reminder.userId,
-      reason: 'stale',
-    });
+  for (const id of uniqueIds) {
+    const reminder = byId.get(id);
+    if (!reminder) {
+      logger.warn(`[reminderNotification] Reminder not found: ${id}`);
+      continue;
+    }
+    if (!REMINDER_DELIVERABLE_STATUS_LIST.includes(reminder.status)) {
+      logger.info(`[reminderNotification] Skipping - status=${reminder.status} reminder=${reminder.id}`);
+      continue;
+    }
+
+    const dueAt = reminderDueAt(reminder);
+    if (dueAt.getTime() < staleCutoff.getTime()) {
+      await markReminderMissed({
+        reminderId: reminder.id,
+        userId: reminder.userId,
+        reason: 'stale',
+      });
+      continue;
+    }
+    if (dueAt.getTime() > now.getTime()) {
+      logger.info(`[reminderNotification] Not due yet - reminder=${reminder.id}`);
+      continue;
+    }
+    if (
+      dueMinuteEpochMs !== 0 &&
+      utcDueMinuteEpochMs(dueAt) !== dueMinuteEpochMs
+    ) {
+      logger.warn('[reminderNotification] due minute mismatch (still delivering)', {
+        reminderId: reminder.id,
+        expectedBucket: dueMinuteEpochMs,
+        actualBucket: utcDueMinuteEpochMs(dueAt),
+      });
+    }
+    deliverable.push(reminder);
+  }
+
+  if (deliverable.length === 0) {
     return;
   }
 
-  if (dueAt.getTime() > now.getTime()) {
-    logger.info(`[reminderNotification] Not due yet - reminder=${reminder.id}`);
-    return;
-  }
+  deliverable.sort((a, b) => {
+    const da = reminderDueAt(a).getTime();
+    const db = reminderDueAt(b).getTime();
+    return da - db || a.title.localeCompare(b.title);
+  });
 
-  const settings = reminder.user?.settings;
+  const primary = deliverable[0];
+  const settings = primary.user?.settings;
   const targetResolution = await resolveMessagingTargets({
-    userId: reminder.userId,
+    userId,
     whatsappPhoneNumber: settings?.whatsappPhoneNumber,
     whatsappVerified: settings?.whatsappVerified,
-    notificationDeliveryChannel: settings?.notificationDeliveryChannel,
+    notificationDeliveryChannel: settings?.notificationDeliveryChannel as
+      | NotificationDeliveryChannel
+      | null
+      | undefined,
   });
   const hasWhatsApp = targetResolution.shouldSendWhatsApp;
   const telegramTarget = targetResolution.telegramTarget;
 
   if (!hasWhatsApp && !telegramTarget) {
-    logger.info(`[reminderNotification] Skipping - no messaging channels configured for user ${reminder.userId}`);
-    await markReminderMissed({
-      reminderId: reminder.id,
-      userId: reminder.userId,
-      reason: targetResolution.skipReason ?? 'messaging-not-configured',
-    });
+    logger.info(`[reminderNotification] Skipping batch - no messaging channels configured for user ${userId}`);
+    for (const r of deliverable) {
+      await markReminderMissed({
+        reminderId: r.id,
+        userId,
+        reason: targetResolution.skipReason ?? 'messaging-not-configured',
+      });
+    }
     return;
   }
 
@@ -273,29 +371,32 @@ export async function triggerReminderNotification(input: ReminderNotificationInp
   const telegramConversationManager = getTelegramConversationManager();
   const waId = settings?.whatsappPhoneNumber?.replace(/^\+/, '') ?? '';
   const whatsappConversation = hasWhatsApp
-    ? await whatsappConversationManager.getOrCreateConversation(reminder.userId, waId)
+    ? await whatsappConversationManager.getOrCreateConversation(userId, waId)
     : null;
   const telegramConversation = telegramTarget
     ? await telegramConversationManager.getOrCreateConversation(
-        reminder.userId,
+        userId,
         telegramTarget.chatId,
         telegramTarget.telegramUserId,
       )
     : null;
 
   const agent = getExecutiveAgent();
-  const systemMessage =
-    `REMINDER DELIVERY\n` +
-    `Title: "${reminder.title}"\n` +
-    (reminder.context ? `Context: ${reminder.context}\n` : '') +
-    `Scheduled for: ${dueAt.toISOString()}`;
+  const systemMessage = buildBatchReminderSystemMessage(deliverable);
+  const reminderIds = deliverable.map((r) => r.id);
+
+  const inboundMetadataBase = {
+    source: 'reminder_notification',
+    reminderIds,
+    batch: deliverable.length > 1,
+  };
 
   if (whatsappConversation) {
     await whatsappConversationManager.addMessage(whatsappConversation.id, {
       content: systemMessage,
       role: 'USER',
       direction: 'INBOUND',
-      metadata: { source: 'reminder_notification', reminderId: reminder.id, channel: 'whatsapp' },
+      metadata: { ...inboundMetadataBase, channel: 'whatsapp' } as Prisma.InputJsonObject,
     });
   }
   if (telegramConversation) {
@@ -303,7 +404,7 @@ export async function triggerReminderNotification(input: ReminderNotificationInp
       content: systemMessage,
       role: 'USER',
       direction: 'INBOUND',
-      metadata: { source: 'reminder_notification', reminderId: reminder.id, channel: 'telegram' },
+      metadata: { ...inboundMetadataBase, channel: 'telegram' } as Prisma.InputJsonObject,
     });
   }
 
@@ -330,21 +431,21 @@ export async function triggerReminderNotification(input: ReminderNotificationInp
   try {
     traceContext = await createAiTraceRoot({
       pipeline: 'reminder-notification',
-      userId: reminder.userId,
+      userId,
       channel: primaryChannel,
       conversationId: primaryConversationId,
       label: 'reminder-notification',
-      inputPreview: systemMessage,
+      inputPreview: systemMessage.slice(0, 2000),
       metadata: {
-        reminderId: reminder.id,
-        title: reminder.title,
-        dueAt: dueAt.toISOString(),
+        reminderIds,
+        batchSize: deliverable.length,
+        dueMinuteEpochMs,
       },
     });
 
     const result = await agent.process({
-      userId: reminder.userId,
-      userEmail: reminder.user?.email ?? input.userEmail,
+      userId,
+      userEmail: primary.user?.email ?? userEmail,
       userRequest: systemMessage,
       conversationId: primaryConversationId,
       channel: primaryChannel,
@@ -356,66 +457,68 @@ export async function triggerReminderNotification(input: ReminderNotificationInp
     const deliveredChannels: Array<'whatsapp' | 'telegram'> = [];
 
     if (whatsappConversation && settings?.whatsappPhoneNumber) {
-    try {
-      const client = getWhatsAppClient();
-      const { messageId: waResponseId } = await client.sendMessage(settings.whatsappPhoneNumber, result.response);
-      const outboundMetadata =
-        result.metadata != null && typeof result.metadata === 'object' && !Array.isArray(result.metadata)
-          ? { ...(result.metadata as Record<string, unknown>) }
-          : {};
-      outboundMetadata.source = 'reminder_notification';
-      outboundMetadata.reminderId = reminder.id;
-      outboundMetadata.dueAt = dueAt.toISOString();
-      outboundMetadata.channel = 'whatsapp';
+      try {
+        const client = getWhatsAppClient();
+        const { messageId: waResponseId } = await client.sendMessage(settings.whatsappPhoneNumber, result.response);
+        const outboundMetadata =
+          result.metadata != null && typeof result.metadata === 'object' && !Array.isArray(result.metadata)
+            ? { ...(result.metadata as Record<string, unknown>) }
+            : {};
+        outboundMetadata.source = 'reminder_notification';
+        outboundMetadata.reminderIds = reminderIds;
+        outboundMetadata.batch = deliverable.length > 1;
+        outboundMetadata.dueMinuteEpochMs = dueMinuteEpochMs;
+        outboundMetadata.channel = 'whatsapp';
 
-      await whatsappConversationManager.addMessage(whatsappConversation.id, {
-        content: result.response,
-        role: 'ASSISTANT',
-        direction: 'OUTBOUND',
-        waMessageId: waResponseId,
-        metadata: outboundMetadata as Prisma.InputJsonObject,
-      });
-      deliveredChannels.push('whatsapp');
-    } catch (error) {
-      logger.error('[reminderNotification] WhatsApp delivery failed', {
-        reminderId: reminder.id,
-        userId: reminder.userId,
-        userEmail: reminder.user?.email ?? input.userEmail,
-        error,
-      });
+        await whatsappConversationManager.addMessage(whatsappConversation.id, {
+          content: result.response,
+          role: 'ASSISTANT',
+          direction: 'OUTBOUND',
+          waMessageId: waResponseId,
+          metadata: outboundMetadata as Prisma.InputJsonObject,
+        });
+        deliveredChannels.push('whatsapp');
+      } catch (error) {
+        logger.error('[reminderNotification] WhatsApp delivery failed', {
+          reminderIds,
+          userId,
+          userEmail,
+          error,
+        });
+      }
     }
-  }
 
     if (telegramConversation && telegramTarget) {
-    try {
-      const client = getTelegramClient();
-      const { messageId: telegramResponseId } = await client.sendMessage(telegramTarget.chatId, result.response);
-      const outboundMetadata =
-        result.metadata != null && typeof result.metadata === 'object' && !Array.isArray(result.metadata)
-          ? { ...(result.metadata as Record<string, unknown>) }
-          : {};
-      outboundMetadata.source = 'reminder_notification';
-      outboundMetadata.reminderId = reminder.id;
-      outboundMetadata.dueAt = dueAt.toISOString();
-      outboundMetadata.channel = 'telegram';
+      try {
+        const client = getTelegramClient();
+        const { messageId: telegramResponseId } = await client.sendMessage(telegramTarget.chatId, result.response);
+        const outboundMetadata =
+          result.metadata != null && typeof result.metadata === 'object' && !Array.isArray(result.metadata)
+            ? { ...(result.metadata as Record<string, unknown>) }
+            : {};
+        outboundMetadata.source = 'reminder_notification';
+        outboundMetadata.reminderIds = reminderIds;
+        outboundMetadata.batch = deliverable.length > 1;
+        outboundMetadata.dueMinuteEpochMs = dueMinuteEpochMs;
+        outboundMetadata.channel = 'telegram';
 
-      await telegramConversationManager.addMessage(telegramConversation.id, {
-        content: result.response,
-        role: 'ASSISTANT',
-        direction: 'OUTBOUND',
-        telegramMessageId: telegramResponseId,
-        metadata: outboundMetadata as Prisma.InputJsonObject,
-      });
-      deliveredChannels.push('telegram');
-    } catch (error) {
-      logger.error('[reminderNotification] Telegram delivery failed', {
-        reminderId: reminder.id,
-        userId: reminder.userId,
-        userEmail: reminder.user?.email ?? input.userEmail,
-        error,
-      });
+        await telegramConversationManager.addMessage(telegramConversation.id, {
+          content: result.response,
+          role: 'ASSISTANT',
+          direction: 'OUTBOUND',
+          telegramMessageId: telegramResponseId,
+          metadata: outboundMetadata as Prisma.InputJsonObject,
+        });
+        deliveredChannels.push('telegram');
+      } catch (error) {
+        logger.error('[reminderNotification] Telegram delivery failed', {
+          reminderIds,
+          userId,
+          userEmail,
+          error,
+        });
+      }
     }
-  }
 
     if (deliveredChannels.length === 0) {
       if (traceContext) {
@@ -424,45 +527,72 @@ export async function triggerReminderNotification(input: ReminderNotificationInp
           outputPreview: deriveOutputPreview(result.response),
           errorMessage: 'messaging-delivery-failed',
           metadata: {
-            reminderId: reminder.id,
+            reminderIds,
             channelsTried: deliveredChannels,
           },
         });
       }
-      await markReminderMissed({
-        reminderId: reminder.id,
-        userId: reminder.userId,
-        reason: 'messaging-delivery-failed',
-      });
+      for (const r of deliverable) {
+        await markReminderMissed({
+          reminderId: r.id,
+          userId,
+          reason: 'messaging-delivery-failed',
+        });
+      }
       return;
     }
 
-    await prisma.reminder.update({
-      where: { id: reminder.id },
-      data: {
-        status: 'DELIVERED',
-        deliveredAt: now,
-        snoozedUntil: null,
-      },
-    });
-
-    await prisma.actionHistory.create({
-      data: {
-        userId: reminder.userId,
-        actionType: 'REMINDER_DELIVERED',
-        actionSummary: `Reminder delivered: ${reminder.title}`,
-        actionDetails: {
-          reminderId: reminder.id,
-          scheduledAt: reminder.scheduledAt.toISOString(),
-          dueAt: dueAt.toISOString(),
-          deliveredAt: now.toISOString(),
-          linkedEmailId: reminder.linkedEmailId,
-          linkedEventId: reminder.linkedEventId,
-          channels: deliveredChannels,
+    for (const reminder of deliverable) {
+      const dueAt = reminderDueAt(reminder);
+      await prisma.reminder.update({
+        where: { id: reminder.id },
+        data: {
+          status: 'DELIVERED',
+          deliveredAt: now,
+          snoozedUntil: null,
         },
-        undoable: false,
-      },
-    });
+      });
+
+      await prisma.actionHistory.create({
+        data: {
+          userId: reminder.userId,
+          actionType: 'REMINDER_DELIVERED',
+          actionSummary: `Reminder delivered: ${reminder.title}`,
+          actionDetails: {
+            reminderId: reminder.id,
+            scheduledAt: reminder.scheduledAt.toISOString(),
+            dueAt: dueAt.toISOString(),
+            deliveredAt: now.toISOString(),
+            linkedEmailId: reminder.linkedEmailId,
+            linkedEventId: reminder.linkedEventId,
+            channels: deliveredChannels,
+            batchReminderIds: reminderIds,
+          },
+          undoable: false,
+        },
+      });
+
+      const recurrence = normalizeRecurrence(reminder.recurrence);
+      if (recurrence) {
+        const timeZone = settings?.calendarTimezone ?? DEFAULT_CALENDAR_TIMEZONE;
+        const nextScheduledAt = calculateNextOccurrence(reminder.scheduledAt, recurrence, timeZone);
+
+        if (nextScheduledAt) {
+          await prisma.reminder.create({
+            data: {
+              userId: reminder.userId,
+              title: reminder.title,
+              description: reminder.description,
+              context: reminder.context,
+              scheduledAt: nextScheduledAt,
+              recurrence: reminder.recurrence ?? undefined,
+              linkedEmailId: reminder.linkedEmailId,
+              linkedEventId: reminder.linkedEventId,
+            },
+          });
+        }
+      }
+    }
 
     if (traceContext) {
       await finalizeAiTraceRun(traceContext, {
@@ -470,37 +600,16 @@ export async function triggerReminderNotification(input: ReminderNotificationInp
         outputPreview: deriveOutputPreview(result.response),
         errorMessage: result.status === 'ok' ? null : result.error ?? 'Executive Agent fallback',
         metadata: {
-          reminderId: reminder.id,
+          reminderIds,
           channels: deliveredChannels,
           agentStatus: result.status,
         },
       });
     }
-
-    const recurrence = normalizeRecurrence(reminder.recurrence);
-    if (recurrence) {
-      const timeZone = settings?.calendarTimezone ?? DEFAULT_CALENDAR_TIMEZONE;
-      const nextScheduledAt = calculateNextOccurrence(reminder.scheduledAt, recurrence, timeZone);
-
-      if (nextScheduledAt) {
-        await prisma.reminder.create({
-          data: {
-            userId: reminder.userId,
-            title: reminder.title,
-            description: reminder.description,
-            context: reminder.context,
-            scheduledAt: nextScheduledAt,
-            recurrence: reminder.recurrence ?? undefined,
-            linkedEmailId: reminder.linkedEmailId,
-            linkedEventId: reminder.linkedEventId,
-          },
-        });
-      }
-    }
   } catch (error) {
     logger.error('[reminderNotification] Failed during delivery pipeline', {
-      reminderId: reminder.id,
-      userId: reminder.userId,
+      reminderIds,
+      userId,
       error,
     });
     if (traceContext) {
@@ -509,7 +618,7 @@ export async function triggerReminderNotification(input: ReminderNotificationInp
         outputPreview: null,
         errorMessage: error instanceof Error ? error.message : String(error),
         metadata: {
-          reminderId: reminder.id,
+          reminderIds,
         },
       });
     }
