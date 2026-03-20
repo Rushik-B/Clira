@@ -3,7 +3,9 @@
     "allow": [
       "Bash(git add:*)",
       "Bash(git commit:*)",
-      "Bash(file\" instruction with snippets-first guidance: only call:*)"
+      "Bash(file\" instruction with snippets-first guidance: only call:*)",
+      "WebFetch(domain:github.com)",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); [print\\(k\\) for k in d.get\\(''''matches'''',{}\\)]\")"
     ]
   }
 }

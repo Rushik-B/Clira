@@ -1,6 +1,7 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
 import {
   AlertCircle,
   Ban,
@@ -28,128 +29,354 @@ import {
 } from '@/lib/services/mcp/ui';
 import { Button } from '@/components/ui/sidebar/button';
 import { Input } from '@/components/ui/sidebar/input';
-import { SettingsShell, SettingsSectionCard } from './SettingsShell';
+import { SettingsShell } from './SettingsShell';
+import { cn } from '@/lib/utils';
 
 // ---------------------------------------------------------------------------
-// Constants
+// Design tokens
 // ---------------------------------------------------------------------------
 
-const STATUS_STYLES: Record<ConnectionStatus, { dot: string; label: string; text: string }> = {
-  synced: { dot: 'bg-emerald-400', label: 'Synced', text: 'text-emerald-400' },
-  pending: { dot: 'bg-amber-400', label: 'Pending', text: 'text-amber-400' },
-  degraded: { dot: 'bg-red-400', label: 'Degraded', text: 'text-red-400' },
-  disabled: { dot: 'bg-gray-500', label: 'Disabled', text: 'text-gray-500' },
+const STATUS_CONFIG: Record<
+  ConnectionStatus,
+  { dot: string; label: string; text: string; ring: string }
+> = {
+  synced: {
+    dot: 'bg-emerald-400',
+    label: 'Synced',
+    text: 'text-emerald-400',
+    ring: 'ring-emerald-500/20',
+  },
+  pending: {
+    dot: 'bg-amber-400 animate-pulse',
+    label: 'Pending',
+    text: 'text-amber-400',
+    ring: 'ring-amber-500/20',
+  },
+  degraded: {
+    dot: 'bg-red-400',
+    label: 'Degraded',
+    text: 'text-red-400',
+    ring: 'ring-red-500/20',
+  },
+  disabled: {
+    dot: 'bg-gray-500',
+    label: 'Disabled',
+    text: 'text-gray-500',
+    ring: 'ring-gray-500/20',
+  },
 };
 
-const ACTION_CLASS_STYLES: Record<string, string> = {
-  read: 'bg-sky-500/15 text-sky-300 border-sky-500/20',
-  write: 'bg-amber-500/15 text-amber-300 border-amber-500/20',
-  delete: 'bg-red-500/15 text-red-300 border-red-500/20',
-  side_effectful: 'bg-purple-500/15 text-purple-300 border-purple-500/20',
+const ACTION_STYLES: Record<string, string> = {
+  read: 'bg-sky-500/10 text-sky-400 ring-sky-500/15',
+  write: 'bg-amber-500/10 text-amber-400 ring-amber-500/15',
+  delete: 'bg-red-500/10 text-red-400 ring-red-500/15',
+  side_effectful: 'bg-purple-500/10 text-purple-400 ring-purple-500/15',
 };
 
 // ---------------------------------------------------------------------------
-// Skeleton / Empty / Error states
+// Shared UI pieces
 // ---------------------------------------------------------------------------
 
-const ConnectionSkeleton: React.FC = () => (
-  <div className="rounded-xl border border-gray-800/60 bg-gray-950/60 p-4 animate-pulse">
-    <div className="flex items-center gap-4">
-      <div className="w-10 h-10 rounded-xl bg-gray-800/60" />
-      <div className="flex-1 space-y-2">
-        <div className="h-4 w-44 rounded bg-gray-800/60" />
-        <div className="h-3 w-28 rounded bg-gray-800/40" />
-      </div>
-      <div className="w-8 h-8 rounded-lg bg-gray-800/40" />
-    </div>
-  </div>
-);
-
-const EmptyState: React.FC = () => (
-  <div className="text-center py-12 px-6">
-    <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-gradient-to-br from-gray-800/60 to-gray-900/60 border border-gray-700/40 flex items-center justify-center">
-      <Plug2 className="w-8 h-8 text-gray-500" />
-    </div>
-    <h3 className="text-lg font-semibold text-white mb-2">No servers connected</h3>
-    <p className="text-sm text-gray-400 max-w-sm mx-auto">
-      Connect an MCP server to extend Clira with external tools like Notion, Linear, or any MCP-compatible service.
-    </p>
-  </div>
-);
-
-const ErrorBanner: React.FC<{ message: string; onRetry: () => void }> = ({ message, onRetry }) => (
-  <div className="text-center py-8 px-6">
-    <div className="w-12 h-12 mx-auto mb-3 rounded-xl bg-red-900/30 border border-red-800/40 flex items-center justify-center">
-      <AlertCircle className="w-6 h-6 text-red-400" />
-    </div>
-    <p className="text-sm text-red-300 mb-4">{message}</p>
-    <button
-      onClick={onRetry}
-      className="inline-flex items-center gap-2 text-sm text-gray-300 hover:text-white transition-colors cursor-pointer"
+function GradientSectionCard({
+  title,
+  subtitle,
+  icon,
+  accentFrom = 'from-violet-500/25',
+  accentVia = 'via-violet-400/8',
+  accentTo = 'to-transparent',
+  children,
+}: {
+  title: string;
+  subtitle?: string;
+  icon: React.ReactNode;
+  accentFrom?: string;
+  accentVia?: string;
+  accentTo?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <motion.section
+      initial={{ opacity: 0, y: 16 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.4, ease: [0.25, 0.46, 0.45, 0.94] }}
+      className="relative"
     >
-      <RefreshCw className="w-4 h-4" />
-      Try again
+      <div
+        className={cn(
+          'rounded-2xl p-px bg-gradient-to-b',
+          accentFrom,
+          accentVia,
+          accentTo,
+        )}
+      >
+        <div className="rounded-[15px] bg-gray-950/90 backdrop-blur-sm">
+          <header className="flex items-center gap-4 px-6 pt-6 pb-4">
+            <div className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-white/[0.07] to-white/[0.02] ring-1 ring-white/[0.06]">
+              {icon}
+            </div>
+            <div className="min-w-0">
+              <h3 className="text-[17px] font-semibold tracking-[-0.01em] text-white">
+                {title}
+              </h3>
+              {subtitle && (
+                <p className="mt-0.5 text-[13px] leading-relaxed text-gray-400">
+                  {subtitle}
+                </p>
+              )}
+            </div>
+          </header>
+          <div className="px-6 pb-6">{children}</div>
+        </div>
+      </div>
+    </motion.section>
+  );
+}
+
+function FieldLabel({
+  children,
+  hint,
+}: {
+  children: React.ReactNode;
+  hint?: string;
+}) {
+  return (
+    <span className="mb-2 flex items-baseline gap-2">
+      <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">
+        {children}
+      </span>
+      {hint && (
+        <span className="text-[10px] text-gray-600 normal-case tracking-normal">
+          {hint}
+        </span>
+      )}
+    </span>
+  );
+}
+
+function StyledInput({
+  className,
+  ...props
+}: React.ComponentProps<typeof Input>) {
+  return (
+    <Input
+      className={cn(
+        'h-10 rounded-xl bg-black dark:bg-black border-white/[0.08] shadow-none text-[13px] text-white',
+        'placeholder:text-gray-500 transition-all duration-200',
+        'focus:border-white/20 focus:ring-2 focus:ring-white/[0.06]',
+        'hover:border-white/15',
+        className,
+      )}
+      {...props}
+    />
+  );
+}
+
+function StyledTextarea({
+  className,
+  ...props
+}: React.ComponentProps<'textarea'>) {
+  return (
+    <textarea
+      className={cn(
+        'w-full rounded-xl border border-white/[0.08] bg-black px-3.5 py-3 shadow-none text-[13px] text-white',
+        'placeholder:text-gray-500 transition-all duration-200 outline-none resize-none',
+        'focus:border-white/20 focus:ring-2 focus:ring-white/[0.06]',
+        'hover:border-white/15',
+        'leading-relaxed',
+        className,
+      )}
+      {...props}
+    />
+  );
+}
+
+function SegmentedControl<T extends string>({
+  options,
+  value,
+  onChange,
+}: {
+  options: { value: T; label: string }[];
+  value: T;
+  onChange: (v: T) => void;
+}) {
+  return (
+    <div className="inline-flex rounded-xl bg-white/[0.03] p-1 ring-1 ring-white/[0.06]">
+      {options.map((opt) => (
+        <button
+          key={opt.value}
+          type="button"
+          onClick={() => onChange(opt.value)}
+          className={cn(
+            'relative rounded-lg px-4 py-1.5 text-[12px] font-medium transition-all duration-200 cursor-pointer',
+            value === opt.value
+              ? 'bg-white/[0.08] text-white ring-1 ring-white/[0.1] shadow-sm'
+              : 'text-gray-500 hover:text-gray-300',
+          )}
+        >
+          {opt.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function IconButton({
+  onClick,
+  disabled,
+  title,
+  className,
+  children,
+}: {
+  onClick: () => void;
+  disabled?: boolean;
+  title: string;
+  className?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      className={cn(
+        'flex size-8 items-center justify-center rounded-lg transition-all duration-200 disabled:opacity-40 cursor-pointer',
+        className,
+      )}
+    >
+      {children}
     </button>
-  </div>
-);
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Status badge
 // ---------------------------------------------------------------------------
 
-const StatusBadge: React.FC<{ status: ConnectionStatus }> = ({ status }) => {
-  const s = STATUS_STYLES[status];
+function StatusBadge({ status }: { status: ConnectionStatus }) {
+  const s = STATUS_CONFIG[status];
   return (
-    <span className="inline-flex items-center gap-1.5 text-xs font-medium">
-      <span className={`w-1.5 h-1.5 rounded-full ${s.dot}`} />
-      <span className={s.text}>{s.label}</span>
+    <span
+      className={cn(
+        'inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-semibold ring-1 ring-inset',
+        s.text,
+        s.ring,
+      )}
+    >
+      <span className={cn('size-1.5 rounded-full', s.dot)} />
+      {s.label}
     </span>
   );
-};
+}
 
 // ---------------------------------------------------------------------------
-// Pack description
+// Skeleton / Empty / Error
 // ---------------------------------------------------------------------------
 
-const PackDescription: React.FC<{ description: string | null }> = ({ description }) => (
-  <p className="max-w-sm text-[11px] leading-5 text-gray-400 line-clamp-2">
-    {description ?? 'Pack description will appear after the next successful sync.'}
-  </p>
-);
+function ConnectionSkeleton() {
+  return (
+    <div className="animate-pulse rounded-xl border border-gray-800/40 bg-gray-950/50 p-4">
+      <div className="flex items-center gap-4">
+        <div className="size-10 rounded-xl bg-gray-800/40" />
+        <div className="flex flex-col gap-2 flex-1">
+          <div className="h-4 w-40 rounded-lg bg-gray-800/40" />
+          <div className="h-3 w-28 rounded-lg bg-gray-800/25" />
+        </div>
+        <div className="size-8 rounded-lg bg-gray-800/25" />
+      </div>
+    </div>
+  );
+}
+
+function EmptyState() {
+  return (
+    <div className="py-14 px-6 text-center">
+      <div className="mx-auto mb-5 flex size-16 items-center justify-center rounded-2xl bg-gradient-to-br from-violet-500/10 to-indigo-500/5 ring-1 ring-violet-500/15">
+        <Plug2 className="size-7 text-violet-400/60" />
+      </div>
+      <h3 className="text-[15px] font-semibold text-white mb-1.5">
+        No servers connected
+      </h3>
+      <p className="text-[13px] text-gray-500 max-w-sm mx-auto leading-relaxed">
+        Connect an MCP server to extend Clira with external tools — Notion,
+        Linear, or any MCP-compatible service.
+      </p>
+    </div>
+  );
+}
+
+function ErrorBanner({
+  message,
+  onRetry,
+}: {
+  message: string;
+  onRetry: () => void;
+}) {
+  return (
+    <div className="py-10 px-6 text-center">
+      <div className="mx-auto mb-4 flex size-12 items-center justify-center rounded-xl bg-red-500/[0.06] ring-1 ring-red-500/20">
+        <AlertCircle className="size-5 text-red-400" />
+      </div>
+      <p className="text-[13px] text-red-300 mb-4">{message}</p>
+      <button
+        onClick={onRetry}
+        className="inline-flex items-center gap-2 text-[13px] text-gray-400 hover:text-white transition-colors cursor-pointer"
+      >
+        <RefreshCw className="size-3.5" />
+        Try again
+      </button>
+    </div>
+  );
+}
 
 // ---------------------------------------------------------------------------
-// Tool row (inside expanded connection)
+// Tool row
 // ---------------------------------------------------------------------------
 
-const ToolRow: React.FC<{
+function ToolRow({
+  tool,
+  onToggleDisabled,
+  saving,
+}: {
   tool: McpToolSummary;
   onToggleDisabled: (tool: McpToolSummary) => Promise<void>;
   saving: boolean;
-}> = ({ tool, onToggleDisabled, saving }) => {
-  const actionStyle = ACTION_CLASS_STYLES[tool.actionClass] ?? 'bg-gray-500/15 text-gray-300 border-gray-500/20';
+}) {
+  const style =
+    ACTION_STYLES[tool.actionClass] ??
+    'bg-gray-500/10 text-gray-400 ring-gray-500/15';
+
   return (
-    <div className="flex items-start gap-3 py-2.5 px-3 rounded-lg hover:bg-white/[0.02] transition-colors">
-      <Wrench className="w-3.5 h-3.5 text-gray-500 mt-0.5 shrink-0" />
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 flex-wrap">
+    <div className="flex items-start gap-3 rounded-lg px-3 py-2.5 transition-colors hover:bg-white/[0.015]">
+      <Wrench className="mt-0.5 size-3.5 shrink-0 text-gray-600" />
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-2">
           <span
-            className={`text-sm font-medium truncate ${
-              tool.disabled ? 'text-gray-500 line-through' : 'text-gray-200'
-            }`}
+            className={cn(
+              'truncate text-[13px] font-medium',
+              tool.disabled ? 'text-gray-600 line-through' : 'text-gray-200',
+            )}
           >
             {tool.displayTitle}
           </span>
-          <span className={`text-[10px] px-1.5 py-px rounded border font-medium ${actionStyle}`}>
+          <span
+            className={cn(
+              'rounded-md px-1.5 py-px text-[9px] font-semibold uppercase tracking-wider ring-1 ring-inset',
+              style,
+            )}
+          >
             {tool.actionClass}
           </span>
           {tool.safeForAutoUse && (
-            <span className="text-[10px] px-1.5 py-px rounded border bg-emerald-500/10 text-emerald-400 border-emerald-500/20 font-medium">
+            <span className="rounded-md bg-emerald-500/8 px-1.5 py-px text-[9px] font-semibold uppercase tracking-wider text-emerald-400 ring-1 ring-inset ring-emerald-500/15">
               auto
             </span>
           )}
         </div>
         {tool.description && (
-          <p className="text-xs text-gray-500 mt-0.5 line-clamp-1">{tool.description}</p>
+          <p className="mt-0.5 text-[11px] leading-relaxed text-gray-600 line-clamp-1">
+            {tool.description}
+          </p>
         )}
       </div>
       <button
@@ -158,39 +385,54 @@ const ToolRow: React.FC<{
           void onToggleDisabled(tool);
         }}
         disabled={saving}
-        className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] font-medium transition-colors disabled:opacity-50 ${
+        className={cn(
+          'inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1 text-[11px] font-medium ring-1 ring-inset transition-all duration-200 disabled:opacity-40 cursor-pointer',
           tool.disabled
-            ? 'border-gray-700 bg-gray-900/80 text-gray-300 hover:border-emerald-500/30 hover:text-emerald-300'
-            : 'border-red-500/20 bg-red-500/10 text-red-300 hover:border-red-500/40 hover:text-red-200'
-        }`}
+            ? 'text-gray-400 ring-gray-700/60 hover:text-emerald-300 hover:ring-emerald-500/25'
+            : 'text-red-400 ring-red-500/15 bg-red-500/[0.04] hover:ring-red-500/30',
+        )}
       >
-        {saving ? <Loader2 className="h-3 w-3 animate-spin" /> : <Ban className="h-3 w-3" />}
+        {saving ? (
+          <Loader2 className="size-3 animate-spin" />
+        ) : (
+          <Ban className="size-3" />
+        )}
         {tool.disabled ? 'Enable' : 'Disable'}
       </button>
     </div>
   );
-};
+}
 
 // ---------------------------------------------------------------------------
 // Connection card
 // ---------------------------------------------------------------------------
 
-const ConnectionCard: React.FC<{
+function ConnectionCard({
+  conn,
+  onSync,
+  onDelete,
+  syncing,
+  index,
+}: {
   conn: McpConnectionSummary;
   onSync: (id: string) => Promise<void>;
   onDelete: (id: string) => void;
   syncing: boolean;
-}> = ({ conn, onSync, onDelete, syncing }) => {
+  index: number;
+}) {
   const [expanded, setExpanded] = useState(false);
   const [tools, setTools] = useState<McpToolSummary[] | null>(null);
   const [loadingTools, setLoadingTools] = useState(false);
   const [savingToolName, setSavingToolName] = useState<string | null>(null);
   const [toolError, setToolError] = useState('');
-  const snapshotVersion = buildConnectionSnapshotVersion(conn);
-  const disabledToolNames = useMemo(() => new Set(conn.disabledToolNames), [conn.disabledToolNames]);
+  const disabledToolNames = useMemo(
+    () => new Set(conn.disabledToolNames),
+    [conn.disabledToolNames],
+  );
 
   const loadTools = useCallback(async () => {
     setLoadingTools(true);
+    setToolError('');
     try {
       const res = await fetch(`/api/mcp/connections/${conn.id}`, {
         cache: 'no-store',
@@ -203,7 +445,9 @@ const ConnectionCard: React.FC<{
             disabled: tool.disabled || disabledToolNames.has(tool.toolName),
           })),
         );
-        setToolError('');
+      } else {
+        setTools([]);
+        setToolError('Failed to load tools.');
       }
     } catch {
       setTools([]);
@@ -213,37 +457,34 @@ const ConnectionCard: React.FC<{
     }
   }, [conn.id, disabledToolNames]);
 
-  useEffect(() => {
-    setTools(null);
-  }, [snapshotVersion]);
-
-  useEffect(() => {
-    if (expanded && tools === null && !loadingTools) {
-      void loadTools();
-    }
-  }, [expanded, loadingTools, loadTools, tools]);
-
   const toggleExpand = useCallback(() => {
-    setExpanded((currentExpanded) => !currentExpanded);
-  }, []);
+    setExpanded((prev) => {
+      const expanding = !prev;
+      if (expanding) {
+        void loadTools();
+      }
+      return expanding;
+    });
+  }, [loadTools]);
 
   const handleToggleDisabled = useCallback(
     async (tool: McpToolSummary) => {
       const currentTools = tools ?? [];
       const nextDisabledToolNames = currentTools
-        .filter((candidate) =>
-          candidate.toolName === tool.toolName ? !candidate.disabled : candidate.disabled,
+        .filter((c) =>
+          c.toolName === tool.toolName ? !c.disabled : c.disabled,
         )
-        .map((candidate) => candidate.toolName);
+        .map((c) => c.toolName);
 
       setSavingToolName(tool.toolName);
       setToolError('');
-      setTools((current) =>
-        current?.map((candidate) =>
-          candidate.toolName === tool.toolName
-            ? { ...candidate, disabled: !candidate.disabled }
-            : candidate,
-        ) ?? current,
+      setTools(
+        (current) =>
+          current?.map((c) =>
+            c.toolName === tool.toolName
+              ? { ...c, disabled: !c.disabled }
+              : c,
+          ) ?? current,
       );
 
       try {
@@ -256,15 +497,18 @@ const ConnectionCard: React.FC<{
         if (!res.ok || !data.success) {
           throw new Error(data.error ?? 'Failed to update tool access.');
         }
-      } catch (error) {
-        setTools((current) =>
-          current?.map((candidate) =>
-            candidate.toolName === tool.toolName
-              ? { ...candidate, disabled: tool.disabled }
-              : candidate,
-          ) ?? current,
+      } catch (err) {
+        setTools(
+          (current) =>
+            current?.map((c) =>
+              c.toolName === tool.toolName
+                ? { ...c, disabled: tool.disabled }
+                : c,
+            ) ?? current,
         );
-        setToolError(error instanceof Error ? error.message : 'Failed to update tool access.');
+        setToolError(
+          err instanceof Error ? err.message : 'Failed to update tool access.',
+        );
       } finally {
         setSavingToolName(null);
       }
@@ -281,101 +525,144 @@ const ConnectionCard: React.FC<{
       })
     : 'Never';
 
+  const statusAccent: Record<ConnectionStatus, string> = {
+    synced: 'from-emerald-500/40 to-emerald-500/5',
+    pending: 'from-amber-500/40 to-amber-500/5',
+    degraded: 'from-red-500/40 to-red-500/5',
+    disabled: 'from-gray-600/40 to-gray-600/5',
+  };
+
   return (
-    <div className="rounded-xl border border-gray-800/60 bg-gray-950/60 overflow-hidden transition-all duration-200 hover:border-gray-700/60">
+    <motion.div
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.35, delay: index * 0.06, ease: 'easeOut' }}
+      className="group/card relative overflow-hidden rounded-xl border border-gray-800/40 bg-gray-950/60 transition-all duration-300 hover:border-gray-700/50"
+    >
+      {/* Left accent bar */}
+      <div
+        className={cn(
+          'absolute inset-y-0 left-0 w-[3px] bg-gradient-to-b',
+          statusAccent[conn.status],
+        )}
+      />
+
       {/* Main row */}
-      <div className="flex items-center gap-3 p-4">
-        {/* Icon */}
-        <div className="w-10 h-10 rounded-xl bg-white/5 border border-white/5 flex items-center justify-center shrink-0">
-          <Plug2 className="w-5 h-5 text-gray-400" />
+      <div className="flex items-center gap-3 p-4 pl-5">
+        <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-white/[0.04] ring-1 ring-white/[0.05]">
+          <Plug2 className="size-4.5 text-gray-400" />
         </div>
 
-        {/* Info */}
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-sm font-semibold text-white truncate">{conn.displayName}</span>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="truncate text-[13px] font-semibold text-white">
+              {conn.displayName}
+            </span>
             <StatusBadge status={conn.status} />
           </div>
-          <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-            <span className="text-xs text-gray-500 font-mono">{conn.serverKey}</span>
-            <span className="text-gray-700 text-xs">·</span>
-            <span className="text-xs text-gray-500">
+          <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-gray-500">
+            <span className="font-mono">{conn.serverKey}</span>
+            <span className="text-gray-700">·</span>
+            <span>
               {conn.toolCount} tool{conn.toolCount !== 1 ? 's' : ''}
             </span>
-            <span className="text-gray-700 text-xs">·</span>
-            <span className="text-xs text-gray-500">synced {lastSynced}</span>
+            <span className="text-gray-700">·</span>
+            <span>synced {lastSynced}</span>
           </div>
           {conn.degradedReason && (
-            <p className="text-xs text-red-400/80 mt-1">{conn.degradedReason}</p>
+            <p className="mt-1 text-[11px] text-red-400/70">
+              {conn.degradedReason}
+            </p>
           )}
         </div>
 
-        {/* Pack description */}
-        <div className="hidden max-w-sm shrink-0 sm:block">
-          <PackDescription description={conn.packDescription} />
+        <div className="hidden max-w-xs shrink-0 sm:block">
+          <p className="text-[11px] leading-relaxed text-gray-500 line-clamp-2">
+            {conn.packDescription ??
+              'Pack description will appear after the next sync.'}
+          </p>
         </div>
 
-        {/* Actions */}
-        <div className="flex items-center gap-1 shrink-0">
-          <button
+        <div className="flex shrink-0 items-center gap-0.5">
+          <IconButton
             onClick={() => {
               void onSync(conn.id);
             }}
             disabled={syncing}
-            className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-400 hover:text-white hover:bg-white/5 transition-all disabled:opacity-40 cursor-pointer"
             title="Sync manifest"
+            className="text-gray-500 hover:text-white hover:bg-white/[0.05]"
           >
-            <RefreshCw className={`w-4 h-4 ${syncing ? 'animate-spin' : ''}`} />
-          </button>
-          <button
+            <RefreshCw
+              className={cn('size-3.5', syncing && 'animate-spin')}
+            />
+          </IconButton>
+          <IconButton
             onClick={() => onDelete(conn.id)}
-            className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-400 hover:text-red-400 hover:bg-red-500/10 transition-all cursor-pointer"
             title="Remove connection"
+            className="text-gray-500 hover:text-red-400 hover:bg-red-500/[0.06]"
           >
-            <Trash2 className="w-4 h-4" />
-          </button>
-          <button
+            <Trash2 className="size-3.5" />
+          </IconButton>
+          <IconButton
             onClick={toggleExpand}
-            className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-400 hover:text-white hover:bg-white/5 transition-all cursor-pointer"
-            title={expanded ? 'Collapse tools' : 'Show tools'}
+            title={expanded ? 'Collapse' : 'Show tools'}
+            className="text-gray-500 hover:text-white hover:bg-white/[0.05]"
           >
-            {expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-          </button>
+            {expanded ? (
+              <ChevronDown className="size-3.5" />
+            ) : (
+              <ChevronRight className="size-3.5" />
+            )}
+          </IconButton>
         </div>
       </div>
 
-      {/* Expanded tools panel */}
-      {expanded && (
-        <div className="border-t border-gray-800/40 bg-gray-950/40 px-4 py-3">
-          {toolError && <p className="mb-2 text-xs text-red-400/80">{toolError}</p>}
-          {loadingTools ? (
-            <div className="flex items-center gap-2 py-3 justify-center">
-              <Loader2 className="w-4 h-4 text-gray-500 animate-spin" />
-              <span className="text-xs text-gray-500">Loading tools...</span>
+      {/* Expanded tools */}
+      <AnimatePresence>
+        {expanded && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.25, ease: 'easeInOut' }}
+            className="overflow-hidden"
+          >
+            <div className="border-t border-gray-800/30 bg-gray-950/30 px-4 py-3 pl-5">
+              {toolError && (
+                <p className="mb-2 text-[11px] text-red-400/80">{toolError}</p>
+              )}
+              {loadingTools ? (
+                <div className="flex items-center justify-center gap-2 py-4">
+                  <Loader2 className="size-3.5 animate-spin text-gray-600" />
+                  <span className="text-[12px] text-gray-500">
+                    Loading tools…
+                  </span>
+                </div>
+              ) : tools && tools.length > 0 ? (
+                <div className="flex flex-col gap-px">
+                  {tools.map((tool) => (
+                    <ToolRow
+                      key={tool.id}
+                      tool={tool}
+                      onToggleDisabled={handleToggleDisabled}
+                      saving={savingToolName === tool.toolName}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <p className="py-4 text-center text-[12px] text-gray-600">
+                  {conn.status === 'pending'
+                    ? 'Sync in progress — tools will appear after completion.'
+                    : 'No tools discovered. Try syncing the connection.'}
+                </p>
+              )}
             </div>
-          ) : tools && tools.length > 0 ? (
-            <div className="space-y-0.5">
-              {tools.map((tool) => (
-                <ToolRow
-                  key={tool.id}
-                  tool={tool}
-                  onToggleDisabled={handleToggleDisabled}
-                  saving={savingToolName === tool.toolName}
-                />
-              ))}
-            </div>
-          ) : (
-            <p className="text-xs text-gray-500 text-center py-3">
-              {conn.status === 'pending'
-                ? 'Sync in progress — tools will appear after sync completes.'
-                : 'No tools discovered. Try syncing the connection.'}
-            </p>
-          )}
-        </div>
-      )}
-    </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </motion.div>
   );
-};
+}
 
 // ---------------------------------------------------------------------------
 // Add connection form
@@ -424,10 +711,14 @@ function createInitialFormState(): AddFormState {
   };
 }
 
-const AddConnectionForm: React.FC<{
+function AddConnectionForm({
+  onCreated,
+}: {
   onCreated: () => Promise<void>;
-}> = ({ onCreated }) => {
-  const [form, setForm] = useState<AddFormState>(() => createInitialFormState());
+}) {
+  const [form, setForm] = useState<AddFormState>(() =>
+    createInitialFormState(),
+  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
@@ -439,11 +730,14 @@ const AddConnectionForm: React.FC<{
   );
 
   const updateTransportHeader = useCallback(
-    (headerId: string, next: Partial<Pick<McpHeaderEntry, 'name' | 'value'>>) => {
+    (
+      headerId: string,
+      next: Partial<Pick<McpHeaderEntry, 'name' | 'value'>>,
+    ) => {
       setForm((prev) => ({
         ...prev,
-        transportHeaders: prev.transportHeaders.map((header) =>
-          header.id === headerId ? { ...header, ...next } : header,
+        transportHeaders: prev.transportHeaders.map((h) =>
+          h.id === headerId ? { ...h, ...next } : h,
         ),
       }));
     },
@@ -459,11 +753,13 @@ const AddConnectionForm: React.FC<{
 
   const removeTransportHeader = useCallback((headerId: string) => {
     setForm((prev) => {
-      const remainingHeaders = prev.transportHeaders.filter((header) => header.id !== headerId);
+      const remaining = prev.transportHeaders.filter(
+        (h) => h.id !== headerId,
+      );
       return {
         ...prev,
         transportHeaders:
-          remainingHeaders.length > 0 ? remainingHeaders : [createTransportHeader()],
+          remaining.length > 0 ? remaining : [createTransportHeader()],
       };
     });
   }, []);
@@ -474,7 +770,6 @@ const AddConnectionForm: React.FC<{
       setError('');
       setSuccess('');
 
-      // Basic client-side validation
       if (!form.displayName.trim()) {
         setError('Display name is required.');
         return;
@@ -502,19 +797,22 @@ const AddConnectionForm: React.FC<{
         }
       }
 
-      const { env, error: envError } = parseEnvironmentVariables(form.envVars);
+      const { env, error: envError } = parseEnvironmentVariables(
+        form.envVars,
+      );
       if (envError) {
         setError(envError);
         return;
       }
 
-      const { headers, error: headersError } = parseTransportHeaders(form.transportHeaders);
+      const { headers, error: headersError } = parseTransportHeaders(
+        form.transportHeaders,
+      );
       if (headersError) {
         setError(headersError);
         return;
       }
 
-      // Build payload
       const transport =
         form.transportType === 'stdio'
           ? {
@@ -533,7 +831,11 @@ const AddConnectionForm: React.FC<{
 
       let secrets: Record<string, unknown>;
       if (form.authMode === 'bearer_token') {
-        secrets = { authMode: 'bearer_token', bearerToken: form.bearerToken.trim(), env };
+        secrets = {
+          authMode: 'bearer_token',
+          bearerToken: form.bearerToken.trim(),
+          env,
+        };
       } else if (form.authMode === 'static_header') {
         secrets = {
           authMode: 'static_header',
@@ -577,129 +879,132 @@ const AddConnectionForm: React.FC<{
   );
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-5">
+    <form onSubmit={handleSubmit} className="flex flex-col gap-5">
       {/* Name + key */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <div>
-          <label className="block text-xs font-medium text-gray-400 mb-1.5">Display Name</label>
-          <Input
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <label className="block">
+          <FieldLabel>Display Name</FieldLabel>
+          <StyledInput
             value={form.displayName}
             onChange={(e) => set('displayName', e.target.value)}
             placeholder="e.g. Notion"
-            className="bg-gray-900/70 border-gray-800 text-white placeholder:text-gray-600"
           />
-        </div>
-        <div>
-          <label className="block text-xs font-medium text-gray-400 mb-1.5">
-            Server Key <span className="text-gray-600">(optional)</span>
-          </label>
-          <Input
+        </label>
+        <label className="block">
+          <FieldLabel hint="optional">Server Key</FieldLabel>
+          <StyledInput
             value={form.serverKey}
             onChange={(e) => set('serverKey', e.target.value)}
             placeholder="e.g. notion"
-            className="bg-gray-900/70 border-gray-800 text-white placeholder:text-gray-600 font-mono text-sm"
           />
-          <p className="text-[11px] text-gray-600 mt-1">Alphanumeric, hyphens, underscores. Auto-generated if empty.</p>
-        </div>
+          <p className="mt-1.5 text-[10px] text-gray-600">
+            Alphanumeric, hyphens, underscores. Auto-generated if empty.
+          </p>
+        </label>
       </div>
 
-      {/* Transport type toggle */}
+      {/* Transport type */}
       <div>
-        <label className="block text-xs font-medium text-gray-400 mb-2">Transport</label>
-        <div className="flex gap-2">
-          {(['stdio', 'streamable_http'] as const).map((t) => (
-            <button
-              key={t}
-              type="button"
-              onClick={() => set('transportType', t)}
-              className={`px-3.5 py-1.5 rounded-lg text-xs font-medium border transition-all cursor-pointer ${
-                form.transportType === t
-                  ? 'bg-white/10 border-white/15 text-white'
-                  : 'bg-transparent border-gray-800 text-gray-500 hover:border-gray-700 hover:text-gray-300'
-              }`}
-            >
-              {t === 'stdio' ? 'stdio (local)' : 'HTTP (remote)'}
-            </button>
-          ))}
-        </div>
+        <FieldLabel>Transport</FieldLabel>
+        <SegmentedControl
+          options={[
+            { value: 'stdio' as TransportType, label: 'stdio (local)' },
+            {
+              value: 'streamable_http' as TransportType,
+              label: 'HTTP (remote)',
+            },
+          ]}
+          value={form.transportType}
+          onChange={(v) => set('transportType', v)}
+        />
       </div>
 
       {/* Transport config */}
       {form.transportType === 'stdio' ? (
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <div>
-            <label className="block text-xs font-medium text-gray-400 mb-1.5">Command</label>
-            <Input
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <label className="block">
+            <FieldLabel>Command</FieldLabel>
+            <StyledInput
               value={form.command}
               onChange={(e) => set('command', e.target.value)}
               placeholder="e.g. npx"
-              className="bg-gray-900/70 border-gray-800 text-white placeholder:text-gray-600 font-mono text-sm"
             />
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-gray-400 mb-1.5">Arguments</label>
-            <Input
+          </label>
+          <label className="block">
+            <FieldLabel>Arguments</FieldLabel>
+            <StyledInput
               value={form.args}
               onChange={(e) => set('args', e.target.value)}
               placeholder="e.g. -y @notionhq/notion-mcp-server"
-              className="bg-gray-900/70 border-gray-800 text-white placeholder:text-gray-600 font-mono text-sm"
             />
-            <p className="text-[11px] text-gray-600 mt-1">Space-separated.</p>
-          </div>
+            <p className="mt-1.5 text-[10px] text-gray-600">
+              Space-separated.
+            </p>
+          </label>
         </div>
       ) : (
-        <div className="space-y-4">
-          <div>
-            <label className="block text-xs font-medium text-gray-400 mb-1.5">Endpoint URL</label>
-            <Input
+        <div className="flex flex-col gap-4">
+          <label className="block">
+            <FieldLabel>Endpoint URL</FieldLabel>
+            <StyledInput
               value={form.endpoint}
               onChange={(e) => set('endpoint', e.target.value)}
               placeholder="https://your-server.com/mcp"
-              className="bg-gray-900/70 border-gray-800 text-white placeholder:text-gray-600 font-mono text-sm"
             />
-          </div>
+          </label>
 
-          <div className="rounded-xl border border-gray-800/70 bg-black/20 p-4">
+          {/* Transport Headers */}
+          <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-4">
             <div className="flex items-start justify-between gap-4">
               <div>
-                <label className="block text-xs font-medium text-gray-400">Transport Headers</label>
-                <p className="text-[11px] text-gray-600 mt-1">
-                  Send multiple non-secret HTTP headers with the transport. Use secret auth below for
-                  sensitive values.
+                <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">
+                  Transport Headers
+                </span>
+                <p className="mt-1 text-[10px] text-gray-600">
+                  Non-secret HTTP headers. Use auth below for sensitive values.
                 </p>
               </div>
               <button
                 type="button"
                 onClick={addTransportHeader}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-gray-800 px-3 py-1.5 text-xs font-medium text-gray-300 transition-colors hover:border-gray-700 hover:text-white"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-white/[0.08] px-3 py-1.5 text-[11px] font-medium text-gray-400 transition-colors hover:border-white/15 hover:text-white hover:bg-white/[0.05] cursor-pointer"
               >
-                <Plus className="w-3.5 h-3.5" />
-                Add Header
+                <Plus className="size-3" />
+                Add
               </button>
             </div>
 
-            <div className="mt-4 space-y-3">
-              {form.transportHeaders.map((header, index) => (
-                <div key={header.id} className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
-                  <Input
+            <div className="mt-4 flex flex-col gap-2.5">
+              {form.transportHeaders.map((header, idx) => (
+                <div
+                  key={header.id}
+                  className="grid grid-cols-1 gap-2.5 sm:grid-cols-[1fr_1fr_auto]"
+                >
+                  <StyledInput
                     value={header.name}
-                    onChange={(e) => updateTransportHeader(header.id, { name: e.target.value })}
-                    placeholder={index === 0 ? 'X-Workspace' : 'Header name'}
-                    className="bg-gray-900/70 border-gray-800 text-white placeholder:text-gray-600 font-mono text-sm"
+                    onChange={(e) =>
+                      updateTransportHeader(header.id, {
+                        name: e.target.value,
+                      })
+                    }
+                    placeholder={idx === 0 ? 'X-Workspace' : 'Header name'}
                   />
-                  <Input
+                  <StyledInput
                     value={header.value}
-                    onChange={(e) => updateTransportHeader(header.id, { value: e.target.value })}
-                    placeholder={index === 0 ? 'production' : 'Header value'}
-                    className="bg-gray-900/70 border-gray-800 text-white placeholder:text-gray-600 font-mono text-sm"
+                    onChange={(e) =>
+                      updateTransportHeader(header.id, {
+                        value: e.target.value,
+                      })
+                    }
+                    placeholder={idx === 0 ? 'production' : 'Header value'}
                   />
                   <button
                     type="button"
                     onClick={() => removeTransportHeader(header.id)}
-                    className="inline-flex h-10 items-center justify-center rounded-lg border border-gray-800 px-3 text-xs font-medium text-gray-400 transition-colors hover:border-red-500/40 hover:text-red-300"
+                    className="flex h-10 items-center justify-center rounded-xl border border-white/[0.08] px-3 text-gray-500 transition-all hover:border-red-500/20 hover:text-red-400 hover:bg-red-500/[0.04] cursor-pointer"
                     title="Remove header"
                   >
-                    <Trash2 className="w-3.5 h-3.5" />
+                    <Trash2 className="size-3.5" />
                   </button>
                 </div>
               ))}
@@ -710,167 +1015,176 @@ const AddConnectionForm: React.FC<{
 
       {/* Auth mode */}
       <div>
-        <label className="block text-xs font-medium text-gray-400 mb-2">Authentication</label>
-        <div className="flex gap-2 flex-wrap">
-          {([
-            ['none', 'None'],
-            ['bearer_token', 'Bearer Token'],
-            ['static_header', 'Secret Header'],
-          ] as const).map(([mode, label]) => (
-            <button
-              key={mode}
-              type="button"
-              onClick={() => set('authMode', mode)}
-              className={`px-3.5 py-1.5 rounded-lg text-xs font-medium border transition-all cursor-pointer ${
-                form.authMode === mode
-                  ? 'bg-white/10 border-white/15 text-white'
-                  : 'bg-transparent border-gray-800 text-gray-500 hover:border-gray-700 hover:text-gray-300'
-              }`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
+        <FieldLabel>Authentication</FieldLabel>
+        <SegmentedControl
+          options={[
+            { value: 'none' as AuthMode, label: 'None' },
+            { value: 'bearer_token' as AuthMode, label: 'Bearer Token' },
+            { value: 'static_header' as AuthMode, label: 'Secret Header' },
+          ]}
+          value={form.authMode}
+          onChange={(v) => set('authMode', v)}
+        />
       </div>
 
       {/* Auth fields */}
       {form.authMode === 'bearer_token' && (
-        <div>
-          <label className="block text-xs font-medium text-gray-400 mb-1.5">Token</label>
-          <Input
+        <label className="block">
+          <FieldLabel>Token</FieldLabel>
+          <StyledInput
             type="password"
             value={form.bearerToken}
             onChange={(e) => set('bearerToken', e.target.value)}
             placeholder="sk-..."
-            className="bg-gray-900/70 border-gray-800 text-white placeholder:text-gray-600 font-mono text-sm"
           />
-        </div>
+        </label>
       )}
 
       {form.authMode === 'static_header' && (
-        <div className="space-y-2">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-xs font-medium text-gray-400 mb-1.5">Header Name</label>
-              <Input
+        <div className="flex flex-col gap-3">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <label className="block">
+              <FieldLabel>Header Name</FieldLabel>
+              <StyledInput
                 value={form.headerName}
                 onChange={(e) => set('headerName', e.target.value)}
                 placeholder="X-API-Key"
-                className="bg-gray-900/70 border-gray-800 text-white placeholder:text-gray-600 font-mono text-sm"
               />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-400 mb-1.5">Header Value</label>
-              <Input
+            </label>
+            <label className="block">
+              <FieldLabel>Header Value</FieldLabel>
+              <StyledInput
                 type="password"
                 value={form.headerValue}
                 onChange={(e) => set('headerValue', e.target.value)}
                 placeholder="your-api-key"
-                className="bg-gray-900/70 border-gray-800 text-white placeholder:text-gray-600 font-mono text-sm"
               />
-            </div>
+            </label>
           </div>
-          <p className="text-[11px] text-gray-600">
-            Use this for a single sensitive header value. For multiple non-secret transport headers, use
-            the HTTP transport header list above.
+          <p className="text-[10px] text-gray-600">
+            Use for a single sensitive header. For multiple non-secret
+            transport headers, use the list above.
           </p>
         </div>
       )}
 
-      {/* Env vars (applicable to stdio with auth=none too, e.g. NOTION_API_KEY) */}
+      {/* Env vars */}
       {form.transportType === 'stdio' && (
-        <div>
-          <label className="block text-xs font-medium text-gray-400 mb-1.5">
-            Environment Variables <span className="text-gray-600">(optional)</span>
-          </label>
-          <textarea
+        <label className="block">
+          <FieldLabel hint="optional">Environment Variables</FieldLabel>
+          <StyledTextarea
             value={form.envVars}
             onChange={(e) => set('envVars', e.target.value)}
             placeholder={'NOTION_API_KEY=ntn_...\nANOTHER_VAR=value'}
             rows={3}
-            className="w-full rounded-lg bg-gray-900/70 border border-gray-800 text-white placeholder:text-gray-600 font-mono text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-sky-500/40 focus:border-sky-500/40 resize-none"
           />
-          <p className="text-[11px] text-gray-600 mt-1">One KEY=VALUE per line. Passed to the spawned process.</p>
-        </div>
+          <p className="mt-1.5 text-[10px] text-gray-600">
+            One KEY=VALUE per line. Passed to the spawned process.
+          </p>
+        </label>
       )}
 
       {/* Messages */}
-      {error && (
-        <div className="bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3 flex items-start gap-2">
-          <AlertCircle className="w-4 h-4 text-red-400 mt-0.5 shrink-0" />
-          <p className="text-sm text-red-300">{error}</p>
-        </div>
-      )}
-      {success && (
-        <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl px-4 py-3 flex items-start gap-2">
-          <Check className="w-4 h-4 text-emerald-400 mt-0.5 shrink-0" />
-          <p className="text-sm text-emerald-300">{success}</p>
-        </div>
-      )}
+      <AnimatePresence>
+        {error && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            className="overflow-hidden"
+          >
+            <div className="flex items-start gap-2.5 rounded-xl border border-red-500/15 bg-red-500/[0.04] px-4 py-3">
+              <AlertCircle className="mt-0.5 size-4 shrink-0 text-red-400" />
+              <p className="text-[13px] text-red-300">{error}</p>
+            </div>
+          </motion.div>
+        )}
+        {success && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            className="overflow-hidden"
+          >
+            <div className="flex items-start gap-2.5 rounded-xl border border-emerald-500/15 bg-emerald-500/[0.04] px-4 py-3">
+              <Check className="mt-0.5 size-4 shrink-0 text-emerald-400" />
+              <p className="text-[13px] text-emerald-300">{success}</p>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Submit */}
-      <div className="flex justify-end">
+      <div className="flex justify-end pt-1">
         <Button
           type="submit"
           disabled={saving}
-          className="bg-white/10 hover:bg-white/15 text-white border border-white/10 rounded-xl px-5 py-2 text-sm font-medium transition-all disabled:opacity-40 cursor-pointer"
+          className="rounded-xl bg-white px-6 text-[13px] font-semibold text-gray-950 shadow-lg shadow-white/[0.06] transition-all duration-200 hover:bg-gray-100 disabled:opacity-50 cursor-pointer"
         >
           {saving ? (
-            <span className="inline-flex items-center gap-2">
-              <Loader2 className="w-4 h-4 animate-spin" />
-              Connecting...
-            </span>
+            <Loader2 className="size-4 animate-spin" />
           ) : (
-            <span className="inline-flex items-center gap-2">
-              <Plus className="w-4 h-4" />
-              Connect Server
-            </span>
+            <Plus className="size-4" />
           )}
+          {saving ? 'Connecting…' : 'Connect Server'}
         </Button>
       </div>
     </form>
   );
-};
+}
 
 // ---------------------------------------------------------------------------
-// Delete confirmation inline
+// Delete confirmation
 // ---------------------------------------------------------------------------
 
-const DeleteConfirmation: React.FC<{
+function DeleteConfirmation({
+  name,
+  onConfirm,
+  onCancel,
+  deleting,
+}: {
   name: string;
   onConfirm: () => void;
   onCancel: () => void;
   deleting: boolean;
-}> = ({ name, onConfirm, onCancel, deleting }) => (
-  <div className="bg-red-500/5 border border-red-500/15 rounded-xl px-4 py-3 flex items-center justify-between gap-4">
-    <p className="text-sm text-gray-300">
-      Remove <span className="font-medium text-white">{name}</span> and all its synced tools?
-    </p>
-    <div className="flex items-center gap-2 shrink-0">
-      <button
-        onClick={onCancel}
-        disabled={deleting}
-        className="px-3 py-1.5 rounded-lg text-xs font-medium text-gray-400 hover:text-white border border-gray-800 hover:border-gray-700 transition-all cursor-pointer"
-      >
-        Cancel
-      </button>
-      <button
-        onClick={onConfirm}
-        disabled={deleting}
-        className="px-3 py-1.5 rounded-lg text-xs font-medium text-red-300 bg-red-500/15 hover:bg-red-500/25 border border-red-500/20 transition-all disabled:opacity-40 cursor-pointer"
-      >
-        {deleting ? (
-          <span className="inline-flex items-center gap-1.5">
-            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-            Removing...
-          </span>
-        ) : (
-          'Remove'
-        )}
-      </button>
-    </div>
-  </div>
-);
+}) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: -8 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -8 }}
+      className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-red-500/10 bg-red-500/[0.03] px-5 py-3"
+    >
+      <p className="text-[13px] text-gray-300">
+        Remove <span className="font-semibold text-white">{name}</span> and
+        all its synced tools?
+      </p>
+      <div className="flex items-center gap-2">
+        <button
+          onClick={onCancel}
+          disabled={deleting}
+          className="rounded-lg border border-white/[0.08] px-3.5 py-1.5 text-[12px] font-medium text-gray-400 transition-colors hover:text-white hover:border-white/15 hover:bg-white/[0.05] cursor-pointer"
+        >
+          Cancel
+        </button>
+        <button
+          onClick={onConfirm}
+          disabled={deleting}
+          className="rounded-lg border border-red-500/20 bg-red-500/10 px-3.5 py-1.5 text-[12px] font-medium text-red-300 transition-all hover:bg-red-500/20 disabled:opacity-40 cursor-pointer"
+        >
+          {deleting ? (
+            <span className="inline-flex items-center gap-1.5">
+              <Loader2 className="size-3 animate-spin" />
+              Removing…
+            </span>
+          ) : (
+            'Remove'
+          )}
+        </button>
+      </div>
+    </motion.div>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Main page
@@ -886,7 +1200,9 @@ export const McpConnectionsPage: React.FC = () => {
     refreshConnections,
     requestSync,
   } = useMcpConnections();
-  const [deleteTarget, setDeleteTarget] = useState<McpConnectionSummary | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<McpConnectionSummary | null>(
+    null,
+  );
   const [deleting, setDeleting] = useState(false);
 
   const handleDelete = useCallback(async () => {
@@ -902,29 +1218,33 @@ export const McpConnectionsPage: React.FC = () => {
         await refreshConnections();
       }
     } catch {
-      // silent — user can retry
+      // user can retry
     } finally {
       setDeleting(false);
     }
   }, [deleteTarget, refreshConnections]);
 
-  const handleSync = useCallback(async (connectionId: string) => {
-    await requestSync(connectionId);
-  }, [requestSync]);
+  const handleSync = useCallback(
+    async (connectionId: string) => {
+      await requestSync(connectionId);
+    },
+    [requestSync],
+  );
 
-  const renderRefreshButton = () => (
+  const refreshButton = (
     <Button
       type="button"
+      variant="outline"
       onClick={() => {
         void refreshConnections({ manual: true });
       }}
       disabled={loading || manualRefreshing}
-      className="bg-white/10 hover:bg-white/15 text-white border border-white/10 rounded-xl px-4 py-2 text-sm font-medium transition-all disabled:opacity-40 cursor-pointer"
+      className="rounded-xl border-white/[0.08] bg-transparent px-4 text-[13px] font-medium text-gray-300 transition-all hover:bg-white/[0.05] hover:text-white hover:border-white/15 disabled:opacity-40 cursor-pointer"
     >
-      <span className="inline-flex items-center gap-2">
-        <RefreshCw className={`w-4 h-4 ${manualRefreshing ? 'animate-spin' : ''}`} />
-        Refresh
-      </span>
+      <RefreshCw
+        className={cn('size-3.5', manualRefreshing && 'animate-spin')}
+      />
+      Refresh
     </Button>
   );
 
@@ -934,34 +1254,37 @@ export const McpConnectionsPage: React.FC = () => {
       subtitle="Connect external tools and services via Model Context Protocol"
       icon={Plug2}
       iconColor="text-violet-400"
-      mobileActions={renderRefreshButton()}
+      mobileActions={refreshButton}
     >
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <p className="text-sm text-gray-500">
-          Auto-refresh stays active while syncs are in flight and revalidates again when the tab regains
-          focus.
+        <p className="text-[13px] text-gray-500">
+          Auto-refresh while syncs are in flight · revalidates on tab focus
         </p>
-        {renderRefreshButton()}
+        {refreshButton}
       </div>
 
-      {/* Delete confirmation banner */}
-      {deleteTarget && (
-        <DeleteConfirmation
-          name={deleteTarget.displayName}
-          onConfirm={handleDelete}
-          onCancel={() => setDeleteTarget(null)}
-          deleting={deleting}
-        />
-      )}
+      {/* Delete confirmation */}
+      <AnimatePresence>
+        {deleteTarget && (
+          <DeleteConfirmation
+            name={deleteTarget.displayName}
+            onConfirm={() => {
+              void handleDelete();
+            }}
+            onCancel={() => setDeleteTarget(null)}
+            deleting={deleting}
+          />
+        )}
+      </AnimatePresence>
 
-      {/* Connected servers */}
-      <SettingsSectionCard
+      {/* Connected Servers */}
+      <GradientSectionCard
         title="Connected Servers"
-        description="MCP servers synced with your Clira agent"
-        icon={<Plug2 className="w-5 h-5" />}
+        subtitle="MCP servers synced with your Clira agent"
+        icon={<Plug2 className="size-5 text-violet-400" />}
       >
         {loading ? (
-          <div className="space-y-3">
+          <div className="flex flex-col gap-3">
             <ConnectionSkeleton />
             <ConnectionSkeleton />
           </div>
@@ -975,8 +1298,8 @@ export const McpConnectionsPage: React.FC = () => {
         ) : connections.length === 0 ? (
           <EmptyState />
         ) : (
-          <div className="space-y-3">
-            {connections.map((conn) => (
+          <div className="flex flex-col gap-3">
+            {connections.map((conn, index) => (
               <ConnectionCard
                 key={conn.id}
                 conn={conn}
@@ -986,20 +1309,24 @@ export const McpConnectionsPage: React.FC = () => {
                   if (target) setDeleteTarget(target);
                 }}
                 syncing={syncingIds.has(conn.id)}
+                index={index}
               />
             ))}
           </div>
         )}
-      </SettingsSectionCard>
+      </GradientSectionCard>
 
-      {/* Add new connection */}
-      <SettingsSectionCard
+      {/* Add Server */}
+      <GradientSectionCard
         title="Add Server"
-        description="Connect a new MCP-compatible server"
-        icon={<Plus className="w-5 h-5" />}
+        subtitle="Connect a new MCP-compatible server"
+        icon={<Plus className="size-5 text-violet-400/70" />}
+        accentFrom="from-indigo-500/20"
+        accentVia="via-indigo-400/6"
+        accentTo="to-transparent"
       >
         <AddConnectionForm onCreated={refreshConnections} />
-      </SettingsSectionCard>
+      </GradientSectionCard>
     </SettingsShell>
   );
 };
