@@ -96,6 +96,59 @@ describe('Executive agent exposure planner', () => {
     listSelectableMcpServerPacksMock.mockResolvedValue([]);
   });
 
+  test('draft without recognized approval adds a harness reminder to coach the user', async () => {
+    const input = buildInput({
+      userRequest: 'can u shoot that over to him',
+      history: [
+        buildAssistantMessage({
+          createdAt: '2026-03-02T17:00:00.000Z',
+          content: `Draft ready:\nTo: jake@acme.com\nSub: Quick update\n\nHey Jake,\nAll set.\n`,
+        }),
+      ],
+    });
+
+    const features = extractExecutiveTurnFeatures({
+      input,
+      pendingCalendarChangePresent: false,
+    });
+    expect(features.draftCandidatePresent).toBe(true);
+    expect(features.explicitSendApproval).toBe(false);
+
+    const selection = await selectExecutiveToolPackForTurn({
+      input,
+      features,
+    });
+
+    expect(
+      selection.reminders.some((line) =>
+        line.includes('not recognized as explicit send approval'),
+      ),
+    ).toBe(true);
+  });
+
+  test('explicit send approval recognizes standalone send and yes send it', () => {
+    expect(
+      extractExecutiveTurnFeatures({
+        input: buildInput({ userRequest: 'send' }),
+        pendingCalendarChangePresent: false,
+      }).explicitSendApproval,
+    ).toBe(true);
+
+    expect(
+      extractExecutiveTurnFeatures({
+        input: buildInput({ userRequest: 'yes send it' }),
+        pendingCalendarChangePresent: false,
+      }).explicitSendApproval,
+    ).toBe(true);
+
+    expect(
+      extractExecutiveTurnFeatures({
+        input: buildInput({ userRequest: 'send me the full thread' }),
+        pendingCalendarChangePresent: false,
+      }).explicitSendApproval,
+    ).toBe(false);
+  });
+
   test('explicit send approval with an unsent draft stays in safe context until requested', async () => {
     const input = buildInput({
       userRequest: 'send it',

@@ -175,8 +175,14 @@ export function extractExecutiveTurnFeatures(params: {
       'yep',
       'yup',
       'sure',
+      'send',
       'ok send',
       'okay send',
+      'ok send it',
+      'okay send it',
+      'yes send it',
+      'yeah send it',
+      'yep send it',
       'confirm',
       'approved',
       'approve',
@@ -473,6 +479,12 @@ export async function selectExecutiveToolPackForTurn(params: {
 
   if (params.features.explicitSendApproval && params.features.draftCandidatePresent) {
     reminders.push('An approved draft candidate exists; request the email send pack only if you truly intend to send it.');
+  }
+
+  if (params.features.draftCandidatePresent && !params.features.explicitSendApproval) {
+    reminders.push(
+      'A draft email is present in recent assistant turns, but the user\'s latest message is not recognized as explicit send approval. If they asked to send, ship, or go ahead in free-form wording, briefly tell them to send a short approval message by itself (examples: yes, yep, sure, send, send it, yes send it, go ahead, ship it, or a thumbs-up). After that, request the email send pack and use send_email. Do not say you lack email forever; explain that the system needs that short confirmation first.',
+    );
   }
 
   return buildSelection({
