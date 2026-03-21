@@ -10,7 +10,7 @@ export function resolveExecAgentThinkingLevel(): ExecAgentThinkingLevel {
   return 'high';
 }
 
-export const MESSAGING_DEADLINE_MS = 180_000;
+export const MESSAGING_DEADLINE_MS = 220_000;
 export const MESSAGING_TOOL_RESPONSE_BUFFER_MS = 3_500;
 export const MESSAGING_FIRST_TOOL_MAX_BUDGET_MS = 30_000;
 export const MESSAGING_SUBSEQUENT_TOOL_RESERVE_MS = 15_000;
@@ -50,7 +50,7 @@ export const MESSAGING_TOOL_BUDGETS_BASE: Record<string, number> = {
   cancel_reminder: 50,
   deliver_content_reference: 4,
   send_email: 1,
-  send_progress_update: 3,
+  send_progress_update: 1,
   read_email_attachment_content: 10,
   read_email_pdf_attachment: 10,
 };
