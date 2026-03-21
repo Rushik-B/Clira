@@ -19,7 +19,12 @@ export type SteerRunContext = {
 
 export type ProgressCheckpoint = {
   emitter: ProgressEmitter;
-  describeLastTool: (toolName: string, variationIndex: number) => string | null;
+  describeLastTool: (params: {
+    toolName: string;
+    variationIndex: number;
+    sentCount: number;
+    elapsedMs: number;
+  }) => string | null;
 };
 
 function hasNonEmptyMessageContent(
@@ -250,12 +255,15 @@ export async function runSteerableTextWithTools(params: {
           toolResults: result.toolResults,
         });
 
-        const variationIndex = params.progressCheckpoint.emitter.state().sentCount;
+        const emitterState = params.progressCheckpoint.emitter.state();
+        const variationIndex = emitterState.sentCount;
         for (let i = stepToolNames.length - 1; i >= 0; i -= 1) {
-          const description = params.progressCheckpoint.describeLastTool(
-            stepToolNames[i]!,
+          const description = params.progressCheckpoint.describeLastTool({
+            toolName: stepToolNames[i]!,
             variationIndex,
-          );
+            sentCount: emitterState.sentCount,
+            elapsedMs: emitterState.elapsedMs,
+          });
           if (!description) {
             continue;
           }

@@ -28,11 +28,11 @@ export type ProgressEmitterResult = Omit<SendProgressUpdateResult, 'droppedReaso
 type ProgressEmitterSource = 'harness' | 'model';
 
 const DEFAULT_PROGRESS_EMITTER_CONFIG: Required<ProgressEmitterConfig> = {
-  maxEmissions: 3,
-  minIntervalMs: 5_000,
-  longTaskBonusAfterMs: 8_000,
+  maxEmissions: 2,
+  minIntervalMs: 12_000,
+  longTaskBonusAfterMs: 45_000,
   maxTextLength: 200,
-  harnessFirstDelayMs: 4_500,
+  harnessFirstDelayMs: 8_000,
   harnessMinToolCalls: 1,
 };
 

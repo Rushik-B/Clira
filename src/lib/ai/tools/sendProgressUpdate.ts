@@ -55,8 +55,8 @@ type ProgressUpdateLimits = {
 
 export const sendProgressUpdateDescription =
   'Send a short, human progress update only when the user would otherwise be left waiting. ' +
-  'Use for genuinely long-running or multi-step work, or when escalating after a weak first result. ' +
-  'Do not use for quick single-lookups. Keep it to one sentence and never mention tool names.';
+  'Automatic wait notes may already be sent for long-running work, so use this only when you have genuinely helpful extra context. ' +
+  'Do not use it just to narrate another lookup. Keep it to one sentence and never mention tool names.';
 
 export const sendProgressUpdateInputSchema = z.object({
   kind: z.enum(progressUpdateKinds).describe('Progress update category'),
@@ -114,8 +114,8 @@ export function createSendProgressUpdateTool(
   limits?: ProgressUpdateLimits,
 ) {
   const baseMaxPerRequest = limits?.baseMaxPerRequest ?? 2;
-  const longTaskAfterMs = limits?.longTaskAfterMs ?? 6000;
-  const minIntervalMs = limits?.minIntervalMs ?? 1500;
+  const longTaskAfterMs = limits?.longTaskAfterMs ?? 45_000;
+  const minIntervalMs = limits?.minIntervalMs ?? 12_000;
   const maxTextLength = limits?.maxTextLength ?? 200;
   const emitter = new ProgressEmitter(context, {
     maxEmissions: baseMaxPerRequest,

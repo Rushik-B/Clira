@@ -314,11 +314,11 @@ export class ExecutiveAgent {
                 (() => isBurstStable()),
             },
             {
-              maxEmissions: 3,
-              minIntervalMs: 5_000,
-              longTaskBonusAfterMs: 8_000,
+              maxEmissions: 2,
+              minIntervalMs: 12_000,
+              longTaskBonusAfterMs: 45_000,
               maxTextLength: 200,
-              harnessFirstDelayMs: 4_500,
+              harnessFirstDelayMs: 8_000,
               harnessMinToolCalls: 1,
             },
           )
@@ -585,10 +585,13 @@ export class ExecutiveAgent {
               progressCheckpoint: progressEmitter
                 ? {
                     emitter: progressEmitter,
-                    describeLastTool: (toolName, variationIndex) =>
+                    describeLastTool: ({ toolName, variationIndex, sentCount, elapsedMs }) =>
                       getToolProgressDescription(toolName, {
                         mcpTools: mcpProgressTools,
                         variationIndex,
+                        sentCount,
+                        elapsedMs,
+                        requestSeed: input.progressContext?.requestId ?? input.runContext?.runId,
                       }),
                   }
                 : undefined,

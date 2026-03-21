@@ -1,7 +1,19 @@
 type ProgressPhraseOptions = {
   mcpTools?: ReadonlyMap<string, { displayTitle: string; actionClass: string }>;
   variationIndex?: number;
+  requestSeed?: string;
+  sentCount?: number;
+  elapsedMs?: number;
 };
+
+type ProgressActionClass = 'read' | 'write' | 'delete' | 'generic';
+
+type ToolProgressDescriptor = {
+  topic: string;
+  actionClass: ProgressActionClass;
+};
+
+type ProgressStage = 'initial' | 'follow_up' | 'extended';
 
 const TOOL_PROGRESS_PHRASES: Record<string, readonly string[]> = {
   search_inbox_context: [
@@ -195,6 +207,36 @@ const TOOL_PROGRESS_PHRASES: Record<string, readonly string[]> = {
   ],
 };
 
+const TOOL_PROGRESS_DESCRIPTORS: Record<string, ToolProgressDescriptor> = {
+  search_inbox_context: { topic: 'your inbox', actionClass: 'read' },
+  list_inbox_emails: { topic: 'your emails', actionClass: 'read' },
+  search_calendar: { topic: 'your calendar', actionClass: 'read' },
+  check_calendar: { topic: 'your schedule', actionClass: 'read' },
+  search_memory: { topic: 'my notes on that', actionClass: 'read' },
+  get_reply_preferences: { topic: 'your reply settings', actionClass: 'read' },
+  manage_reply_preferences: { topic: 'your reply settings', actionClass: 'write' },
+  plan_calendar_change: { topic: 'that calendar change', actionClass: 'write' },
+  commit_calendar_change: { topic: 'that calendar change', actionClass: 'write' },
+  add_email_alert: { topic: 'that alert', actionClass: 'write' },
+  remove_email_alert: { topic: 'that alert', actionClass: 'delete' },
+  list_email_alerts: { topic: 'your alerts', actionClass: 'read' },
+  add_reminder: { topic: 'that reminder', actionClass: 'write' },
+  list_reminders: { topic: 'your reminders', actionClass: 'read' },
+  snooze_reminder: { topic: 'that reminder', actionClass: 'write' },
+  dismiss_reminder: { topic: 'that reminder', actionClass: 'delete' },
+  cancel_reminder: { topic: 'that reminder', actionClass: 'delete' },
+  read_email_attachment_content: { topic: 'that attachment', actionClass: 'read' },
+  read_email_pdf_attachment: { topic: 'that pdf', actionClass: 'read' },
+  read_content_reference: { topic: 'that file', actionClass: 'read' },
+  deliver_content_reference: { topic: 'that file', actionClass: 'read' },
+  append_to_supermemory: { topic: 'my notes on that', actionClass: 'write' },
+  send_email: { topic: 'that email', actionClass: 'write' },
+  submit_draft: { topic: 'that draft', actionClass: 'write' },
+  plan_mcp_action: { topic: 'that change', actionClass: 'write' },
+  commit_mcp_action: { topic: 'that change', actionClass: 'write' },
+  cancel_mcp_action: { topic: 'that change', actionClass: 'delete' },
+};
+
 const SUPPRESSED_TOOLS = new Set([
   'send_progress_update',
   'request_tool_pack_exposure',
@@ -268,8 +310,9 @@ function pickVariant(
   toolName: string,
   variants: readonly string[],
   variationIndex = 0,
+  requestSeed?: string,
 ): string {
-  const offset = hashSeed(toolName) % variants.length;
+  const offset = hashSeed(`${toolName}:${requestSeed ?? 'default'}`) % variants.length;
   return variants[(offset + variationIndex) % variants.length]!;
 }
 
@@ -277,6 +320,7 @@ function buildMcpProgressDescription(
   toolName: string,
   descriptor: { displayTitle: string; actionClass: string },
   variationIndex = 0,
+  requestSeed?: string,
 ): string {
   const topic = normalizeTopic(descriptor.displayTitle || toolName);
   if (!topic) {
@@ -286,7 +330,7 @@ function buildMcpProgressDescription(
       'pulling that up now',
       'gimme a sec to check',
       'working on that now',
-    ], variationIndex);
+    ], variationIndex, requestSeed);
   }
 
   if (descriptor.actionClass === 'read') {
@@ -296,7 +340,7 @@ function buildMcpProgressDescription(
       `pulling up ${topic}`,
       `checking ${topic} rn`,
       `digging into ${topic}`,
-    ], variationIndex);
+    ], variationIndex, requestSeed);
   }
 
   if (descriptor.actionClass === 'delete') {
@@ -306,7 +350,7 @@ function buildMcpProgressDescription(
       `removing ${topic} rn`,
       `one sec, canceling ${topic}`,
       `working on removing ${topic}`,
-    ], variationIndex);
+    ], variationIndex, requestSeed);
   }
 
   if (descriptor.actionClass === 'write') {
@@ -316,7 +360,7 @@ function buildMcpProgressDescription(
       `one sec, setting up ${topic}`,
       `taking care of ${topic}`,
       `getting ${topic} sorted`,
-    ], variationIndex);
+    ], variationIndex, requestSeed);
   }
 
   return pickVariant(toolName, [
@@ -325,7 +369,152 @@ function buildMcpProgressDescription(
     `one sec, handling ${topic}`,
     `getting ${topic} sorted`,
     `on it, doing ${topic} now`,
-  ], variationIndex);
+  ], variationIndex, requestSeed);
+}
+
+function resolveProgressStage(options?: ProgressPhraseOptions): ProgressStage {
+  const nextSequence = (options?.sentCount ?? 0) + 1;
+  const elapsedMs = options?.elapsedMs ?? 0;
+
+  if (nextSequence >= 3 || elapsedMs >= 45_000) {
+    return 'extended';
+  }
+
+  if (nextSequence >= 2 || elapsedMs >= 20_000) {
+    return 'follow_up';
+  }
+
+  return 'initial';
+}
+
+function inferActionClass(toolName: string): ProgressActionClass {
+  const normalized = toWords(toolName);
+
+  if (/^(get|list|search|find|lookup|fetch|query|read|check)\b/.test(normalized)) {
+    return 'read';
+  }
+
+  if (/^(delete|remove|cancel|dismiss|clear)\b/.test(normalized)) {
+    return 'delete';
+  }
+
+  if (/^(create|update|set|book|schedule|add|append|upsert|send|run|execute|trigger|publish|commit|plan|manage)\b/.test(normalized)) {
+    return 'write';
+  }
+
+  return 'generic';
+}
+
+function inferNativeDescriptor(toolName: string): ToolProgressDescriptor {
+  const known = TOOL_PROGRESS_DESCRIPTORS[toolName];
+  if (known) {
+    return known;
+  }
+
+  return {
+    topic: normalizeTopic(toolName) || 'that',
+    actionClass: inferActionClass(toolName),
+  };
+}
+
+function buildStageVariants(
+  topic: string,
+  actionClass: ProgressActionClass,
+  stage: Exclude<ProgressStage, 'initial'>,
+): readonly string[] {
+  if (stage === 'follow_up') {
+    if (actionClass === 'delete') {
+      return [
+        `still removing ${topic}`,
+        `still taking care of ${topic}`,
+        `still working on canceling ${topic}`,
+        `still getting ${topic} cleared out`,
+        `still wrapping up ${topic}`,
+      ];
+    }
+
+    if (actionClass === 'write') {
+      return [
+        `still working on ${topic}`,
+        `still getting ${topic} sorted`,
+        `still taking care of ${topic}`,
+        `still finishing up ${topic}`,
+        `still on ${topic}`,
+      ];
+    }
+
+    if (actionClass === 'read') {
+      return [
+        `still checking ${topic}`,
+        `still going through ${topic}`,
+        `still looking through ${topic}`,
+        `still on ${topic}`,
+        `still pulling details from ${topic}`,
+      ];
+    }
+
+    return [
+      `still on ${topic}`,
+      `still working through ${topic}`,
+      `still checking ${topic}`,
+      `still taking care of ${topic}`,
+      `still sorting through ${topic}`,
+    ];
+  }
+
+  if (actionClass === 'delete') {
+    return [
+      `still on ${topic}, just making sure it clears cleanly`,
+      `this is taking a sec, still removing ${topic}`,
+      `still wrapping up ${topic}`,
+      `still working through ${topic}`,
+      `taking a bit, still clearing ${topic}`,
+    ];
+  }
+
+  if (actionClass === 'write') {
+    return [
+      `still on ${topic}, just making sure it goes through cleanly`,
+      `this is taking a sec, still working on ${topic}`,
+      `still wrapping up ${topic}`,
+      `taking a bit, still getting ${topic} sorted`,
+      `still at it with ${topic}`,
+    ];
+  }
+
+  if (actionClass === 'read') {
+    return [
+      `still on this, going through ${topic}`,
+      `this is taking a sec, still checking ${topic}`,
+      `taking a bit, still going through ${topic}`,
+      `still working through ${topic}, wanna make sure i get it right`,
+      `still at it with ${topic}`,
+    ];
+  }
+
+  return [
+    `still on this, working through ${topic}`,
+    `this is taking a sec, still checking ${topic}`,
+    `taking a bit, still sorting through ${topic}`,
+    `still at it with ${topic}`,
+    `still working on ${topic}`,
+  ];
+}
+
+function buildSequenceAwareProgressDescription(params: {
+  toolName: string;
+  topic: string;
+  actionClass: ProgressActionClass;
+  stage: Exclude<ProgressStage, 'initial'>;
+  variationIndex: number;
+  requestSeed?: string;
+}): string {
+  return pickVariant(
+    params.toolName,
+    buildStageVariants(params.topic, params.actionClass, params.stage),
+    params.variationIndex,
+    params.requestSeed,
+  );
 }
 
 export function getToolProgressDescription(
@@ -337,9 +526,25 @@ export function getToolProgressDescription(
   }
 
   const variationIndex = options?.variationIndex ?? 0;
+  const requestSeed = options?.requestSeed;
+  const stage = resolveProgressStage(options);
   const mcpTool = options?.mcpTools?.get(toolName);
   if (mcpTool) {
-    return buildMcpProgressDescription(toolName, mcpTool, variationIndex);
+    if (stage === 'initial') {
+      return buildMcpProgressDescription(toolName, mcpTool, variationIndex, requestSeed);
+    }
+
+    return buildSequenceAwareProgressDescription({
+      toolName,
+      topic: normalizeTopic(mcpTool.displayTitle || toolName) || 'that',
+      actionClass:
+        mcpTool.actionClass === 'read' || mcpTool.actionClass === 'write' || mcpTool.actionClass === 'delete'
+          ? mcpTool.actionClass
+          : 'generic',
+      stage,
+      variationIndex,
+      requestSeed,
+    });
   }
 
   const phrases = TOOL_PROGRESS_PHRASES[toolName];
@@ -347,5 +552,17 @@ export function getToolProgressDescription(
     return null;
   }
 
-  return pickVariant(toolName, phrases, variationIndex);
+  if (stage === 'initial') {
+    return pickVariant(toolName, phrases, variationIndex, requestSeed);
+  }
+
+  const descriptor = inferNativeDescriptor(toolName);
+  return buildSequenceAwareProgressDescription({
+    toolName,
+    topic: descriptor.topic,
+    actionClass: descriptor.actionClass,
+    stage,
+    variationIndex,
+    requestSeed,
+  });
 }

@@ -20,6 +20,45 @@ describe('tool progress descriptions', () => {
     expect(first).not.toBe(second);
   });
 
+  test('varies the first auto-update across requests for the same tool', () => {
+    const variants = new Set(
+      Array.from({ length: 8 }, (_, index) =>
+        getToolProgressDescription('search_inbox_context', {
+          variationIndex: 0,
+          requestSeed: `req-${index}`,
+        }),
+      ),
+    );
+
+    expect(variants.size).toBeGreaterThan(1);
+  });
+
+  test('follow-up updates acknowledge the ongoing wait', () => {
+    const description = getToolProgressDescription('search_inbox_context', {
+      variationIndex: 1,
+      sentCount: 1,
+      elapsedMs: 24_000,
+      requestSeed: 'req-follow-up',
+    });
+
+    expect(description).toBeTruthy();
+    expect(description).toMatch(/still/);
+    expect(description).toContain('your inbox');
+  });
+
+  test('extended waits use longer-running language instead of another opener', () => {
+    const description = getToolProgressDescription('search_calendar', {
+      variationIndex: 2,
+      sentCount: 2,
+      elapsedMs: 52_000,
+      requestSeed: 'req-extended',
+    });
+
+    expect(description).toBeTruthy();
+    expect(description).toMatch(/still|taking a bit|taking a sec/);
+    expect(description).not.toMatch(/^one sec|^pulling up|^looking at/);
+  });
+
   test('humanizes sluggy MCP read titles without leaking tool names', () => {
     const description = getToolProgressDescription(
       'mcp__canvas__get_my_upcoming_assignments',

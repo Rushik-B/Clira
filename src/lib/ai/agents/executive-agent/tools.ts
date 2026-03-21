@@ -28,8 +28,8 @@ function buildUnavailableProgressUpdateTool(context: ExecutiveRuntimeContext) {
   return {
     description:
       'Send a short, human progress update only when the user would otherwise be left waiting. ' +
-      'Use for genuinely long-running or multi-step work, or when escalating after a weak first result. ' +
-      'Do not use for quick single-lookups.',
+      'Automatic wait notes may already be sent for long-running work, so use this only when you have genuinely helpful extra context. ' +
+      'Do not use it just to narrate another lookup.',
     inputSchema: progressUpdateInputSchema,
     execute: async () => ({
       sent: false,
