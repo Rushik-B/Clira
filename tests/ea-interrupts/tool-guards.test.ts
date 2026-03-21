@@ -1,6 +1,10 @@
 import { describe, expect, test } from 'vitest';
+import { ProgressEmitter } from '@/lib/ai/progressEmitter';
 import { wrapToolsWithTimingMetadata } from '@/lib/ai/agents/executive-agent/helpers';
-import { createSendProgressUpdateTool } from '@/lib/ai/tools/sendProgressUpdate';
+import {
+  createSendProgressUpdateTool,
+  createSendProgressUpdateToolFromEmitter,
+} from '@/lib/ai/tools/sendProgressUpdate';
 
 type DeferredToolResult = {
   success?: boolean;
@@ -17,6 +21,29 @@ function getExecutableTool<TArgs, TResult>(tool: unknown): ExecutableTool<TArgs,
   expect(tool).toBeTruthy();
   expect(typeof (tool as { execute?: unknown }).execute).toBe('function');
   return tool as ExecutableTool<TArgs, TResult>;
+}
+
+function buildProgressContext(params?: { canEmitProgress?: () => boolean }) {
+  const sentTexts: string[] = [];
+  const persistedTexts: string[] = [];
+
+  return {
+    context: {
+      channel: 'twilio' as const,
+      requestId: 'req-progress',
+      conversationId: 'conv-progress',
+      canEmitProgress: params?.canEmitProgress,
+      sendMessage: async (text: string) => {
+        sentTexts.push(text);
+        return { externalId: `msg-${sentTexts.length}` };
+      },
+      persistMessage: async ({ content }: { content: string }) => {
+        persistedTexts.push(content);
+      },
+    },
+    sentTexts,
+    persistedTexts,
+  };
 }
 
 describe('Side-effect tool guards', () => {
@@ -145,5 +172,55 @@ describe('Progress update tool', () => {
     expect(result.droppedReason).toBeUndefined();
     expect(sentCalls).toBe(1);
     expect(persistedCalls).toBe(1);
+  });
+
+  test('emitter-backed progress tool preserves standalone semantics', async () => {
+    const standaloneState = buildProgressContext({ canEmitProgress: () => true });
+    const delegatedState = buildProgressContext({ canEmitProgress: () => true });
+
+    const standalone = createSendProgressUpdateTool(standaloneState.context);
+    const delegated = createSendProgressUpdateToolFromEmitter(
+      new ProgressEmitter(delegatedState.context, {
+        maxEmissions: 2,
+        minIntervalMs: 1_500,
+        longTaskBonusAfterMs: 6_000,
+        maxTextLength: 200,
+        harnessFirstDelayMs: 4_500,
+        harnessMinToolCalls: 1,
+      }),
+      delegatedState.context.channel,
+      delegatedState.context.requestId,
+    );
+
+    const args = { kind: 'ack' as const, text: 'Still working on this' };
+    const standaloneResult = await standalone.execute(args);
+    const delegatedResult = await delegated.execute(args);
+
+    expect(delegated.description).toBe(standalone.description);
+    expect(delegated.inputSchema.safeParse(args).success).toBe(true);
+    expect(delegatedResult).toEqual(standaloneResult);
+    expect(delegatedState.sentTexts).toEqual(standaloneState.sentTexts);
+    expect(delegatedState.persistedTexts).toEqual(standaloneState.persistedTexts);
+  });
+
+  test('emitter-backed progress tool still respects burst stability', async () => {
+    const state = buildProgressContext({ canEmitProgress: () => false });
+    const delegated = createSendProgressUpdateToolFromEmitter(
+      new ProgressEmitter(state.context, {
+        maxEmissions: 2,
+        minIntervalMs: 1_500,
+        longTaskBonusAfterMs: 6_000,
+        maxTextLength: 200,
+      }),
+      state.context.channel,
+      state.context.requestId,
+    );
+
+    const result = await delegated.execute({ kind: 'ack', text: 'Checking now' });
+
+    expect(result.sent).toBe(false);
+    expect(result.droppedReason).toBe('unstable_burst');
+    expect(state.sentTexts).toEqual([]);
+    expect(state.persistedTexts).toEqual([]);
   });
 });
