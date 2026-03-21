@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { progressUpdateKinds } from '@/lib/ai/progressTypes';
 import {
+  createSendProgressUpdateToolFromEmitter,
   createSendProgressUpdateTool,
 } from '@/lib/ai/tools/sendProgressUpdate';
 import type {
@@ -311,12 +312,18 @@ export function buildExecutiveAgentTools(context: ExecutiveRuntimeContext): Reco
   }
 
   allTools.send_progress_update = context.input.progressContext
-    ? createSendProgressUpdateTool({
-        ...context.input.progressContext,
-        canEmitProgress:
-          context.input.progressContext.canEmitProgress ??
-          (() => context.isBurstStable()),
-      })
+    ? context.progressEmitter
+      ? createSendProgressUpdateToolFromEmitter(
+          context.progressEmitter,
+          context.channel,
+          context.input.progressContext.requestId,
+        )
+      : createSendProgressUpdateTool({
+          ...context.input.progressContext,
+          canEmitProgress:
+            context.input.progressContext.canEmitProgress ??
+            (() => context.isBurstStable()),
+        })
     : buildUnavailableProgressUpdateTool(context);
 
   const orderedToolNames = buildOrderedToolNames(context);

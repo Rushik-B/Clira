@@ -1,4 +1,5 @@
 import type { ProgressUpdateChannel } from '@/lib/ai/progressTypes';
+import type { ProgressEmitter } from '@/lib/ai/progressEmitter';
 import type {
   ProgressUpdateContext,
 } from '@/lib/ai/tools/sendProgressUpdate';
@@ -193,6 +194,7 @@ export type ExecutiveRuntimeContext = {
   currentTimeUtc: string;
   currentTimeUserTz: string;
   dayOfWeek: string;
+  progressEmitter?: ProgressEmitter | null;
   toolAbort: {
     deadlineAt?: number;
     signal?: AbortSignal;

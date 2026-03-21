@@ -5,6 +5,7 @@ import {
 } from '@/lib/ai/callLlm';
 import { LlmError } from '@/lib/ai/errors';
 import { getGoogleThinkingProviderOptions, models } from '@/lib/ai/models';
+import { ProgressEmitter } from '@/lib/ai/progressEmitter';
 import {
   isNativeSteeringEnabled,
   requireNativeSteeringRuntime,
@@ -47,6 +48,7 @@ import {
   stopWhenToolCalled,
   wrapToolsWithTimingMetadata,
 } from './helpers';
+import { getToolProgressDescription } from './toolDescriptions';
 import {
   buildExecutiveAgentPrompt,
   EXECUTIVE_AGENT_PROMPT_VERSION,
@@ -303,6 +305,24 @@ export class ExecutiveAgent {
 
       const startTime = Date.now();
       let lastProgressSentAt = 0;
+      const progressEmitter = input.progressContext
+        ? new ProgressEmitter(
+            {
+              ...input.progressContext,
+              canEmitProgress:
+                input.progressContext.canEmitProgress ??
+                (() => isBurstStable()),
+            },
+            {
+              maxEmissions: 3,
+              minIntervalMs: 5_000,
+              longTaskBonusAfterMs: 8_000,
+              maxTextLength: 200,
+              harnessFirstDelayMs: 4_500,
+              harnessMinToolCalls: 1,
+            },
+          )
+        : null;
 
       const hasPendingSteer = async () => {
         if (typeof input.runContext?.hasPendingSteer !== 'function') return false;
@@ -354,6 +374,13 @@ export class ExecutiveAgent {
           selectedConnectionIds: plan.mcpConnectionIds,
         });
         mcpToolExposure = activeMcpToolExposure;
+        const mcpProgressTools = new Map<string, { displayTitle: string; actionClass: string }>();
+        for (const candidate of activeMcpToolExposure.approvedTools) {
+          mcpProgressTools.set(candidate.tool.modelToolName, {
+            displayTitle: candidate.tool.displayTitle,
+            actionClass: candidate.tool.actionClass,
+          });
+        }
         const activeSkillExposure = await resolveSkillExposure({
           userId: input.userId,
           selectedSkillIds: plan.skillIds,
@@ -440,6 +467,7 @@ export class ExecutiveAgent {
           currentTimeUtc,
           currentTimeUserTz,
           dayOfWeek,
+          progressEmitter,
           toolAbort: toolAbort!,
           toolAbortSignal,
           isRunCurrent,
@@ -483,7 +511,7 @@ export class ExecutiveAgent {
           tools,
           agentStartedAt: startTime,
           timeLeftMs: () => toolAbort!.timeLeftMs(),
-          getLastProgressSentAt: () => lastProgressSentAt,
+          getLastProgressSentAt: () => progressEmitter?.getLastSentAt() ?? lastProgressSentAt,
           setLastProgressSentAt: (sentAt: number) => {
             lastProgressSentAt = sentAt;
           },
@@ -491,6 +519,7 @@ export class ExecutiveAgent {
           hasPendingSteer,
           onToolResult: (toolName, args, result, observedAtMs) => {
             workingStateController?.updateFromToolResult(toolName, result);
+            progressEmitter?.noteToolCallCompleted(toolName, result);
             partialToolExecutions.push({
               passIndex,
               toolName,
@@ -553,6 +582,16 @@ export class ExecutiveAgent {
               providerOptions,
               runContext: input.runContext as unknown as SteerRunContext,
               traceContext: input.traceContext,
+              progressCheckpoint: progressEmitter
+                ? {
+                    emitter: progressEmitter,
+                    describeLastTool: (toolName, variationIndex) =>
+                      getToolProgressDescription(toolName, {
+                        mcpTools: mcpProgressTools,
+                        variationIndex,
+                      }),
+                  }
+                : undefined,
             })
           : await callTextWithTools({
               model: models.execAgent(),

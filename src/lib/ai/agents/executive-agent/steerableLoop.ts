@@ -4,6 +4,7 @@ import {
   createToolBudgetController,
   type ToolBudgetReport,
 } from '@/lib/ai/callLlm';
+import type { ProgressEmitter } from '@/lib/ai/progressEmitter';
 import { logger } from '@/lib/logger';
 import type { AiTraceContext } from '@/lib/ai/tracing';
 import type {
@@ -14,6 +15,11 @@ import type {
 export type SteerRunContext = {
   consumeSteerEvents: (afterSeq: number) => Promise<ConsumeSteerEventsResult>;
   markRunPhase: (phase: RunPhase) => Promise<void>;
+};
+
+export type ProgressCheckpoint = {
+  emitter: ProgressEmitter;
+  describeLastTool: (toolName: string, variationIndex: number) => string | null;
 };
 
 function hasNonEmptyMessageContent(
@@ -71,6 +77,46 @@ function buildSteerInjection(params: {
   return lines.join('\n');
 }
 
+function extractToolName(item: unknown): string | null {
+  if (!item || typeof item !== 'object') return null;
+
+  const record = item as Record<string, unknown>;
+  const candidate =
+    record.toolName ??
+    record.name ??
+    record.tool ??
+    (record.function &&
+    typeof record.function === 'object' &&
+    (record.function as Record<string, unknown>).name) ??
+    record.functionName;
+
+  return typeof candidate === 'string' && candidate.length > 0 ? candidate : null;
+}
+
+function collectOrderedToolNamesForStep(result: {
+  toolResults?: unknown;
+  toolCalls?: unknown;
+}): string[] {
+  const names: string[] = [];
+
+  const collect = (items: unknown) => {
+    if (!Array.isArray(items)) return;
+    for (const item of items) {
+      const toolName = extractToolName(item);
+      if (toolName) {
+        names.push(toolName);
+      }
+    }
+  };
+
+  collect(result.toolResults);
+  if (names.length === 0) {
+    collect(result.toolCalls);
+  }
+
+  return names;
+}
+
 export async function runSteerableTextWithTools(params: {
   model: LanguageModel | string;
   system?: string;
@@ -91,6 +137,7 @@ export async function runSteerableTextWithTools(params: {
   providerOptions?: any;
   runContext?: SteerRunContext;
   traceContext?: AiTraceContext;
+  progressCheckpoint?: ProgressCheckpoint;
 }): Promise<{
   text: string;
   toolCalls: unknown[];
@@ -191,6 +238,37 @@ export async function runSteerableTextWithTools(params: {
       }
 
       const candidateText = (result.text || '').trim();
+      const terminalToolStep = isTerminalToolStep({ steps: result.steps });
+
+      if (
+        params.progressCheckpoint &&
+        !candidateText &&
+        !terminalToolStep
+      ) {
+        const stepToolNames = collectOrderedToolNamesForStep({
+          toolCalls: result.toolCalls,
+          toolResults: result.toolResults,
+        });
+
+        const variationIndex = params.progressCheckpoint.emitter.state().sentCount;
+        for (let i = stepToolNames.length - 1; i >= 0; i -= 1) {
+          const description = params.progressCheckpoint.describeLastTool(
+            stepToolNames[i]!,
+            variationIndex,
+          );
+          if (!description) {
+            continue;
+          }
+
+          await params.progressCheckpoint.emitter.emit({
+            text: description,
+            kind: 'long_task',
+            source: 'harness',
+          });
+          break;
+        }
+      }
+
       if (candidateText) {
         const injected = await consumeAndInjectSteer();
         if (!injected) {
@@ -199,7 +277,7 @@ export async function runSteerableTextWithTools(params: {
         }
       }
 
-      if (isTerminalToolStep({ steps: result.steps })) {
+      if (terminalToolStep) {
         logger.info(`[steerableLoop] terminal tool stop op=${params.op} step=${stepIndex + 1}`);
         break;
       }
