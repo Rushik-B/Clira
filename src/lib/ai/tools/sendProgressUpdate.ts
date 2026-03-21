@@ -1,11 +1,11 @@
 import { z } from 'zod';
-import { logger } from '@/lib/logger';
 import {
   progressUpdateKinds,
-  type ProgressUpdateChannel,
   type ProgressUpdateEvent,
+  type ProgressUpdateChannel,
   type ProgressUpdateKind,
 } from '@/lib/ai/progressTypes';
+import { ProgressEmitter } from '@/lib/ai/progressEmitter';
 
 export type ProgressUpdateMetadata = {
   type: 'progress';
@@ -53,129 +53,80 @@ type ProgressUpdateLimits = {
   maxTextLength?: number;
 };
 
+export const sendProgressUpdateDescription =
+  'Send a short, human progress update only when the user would otherwise be left waiting. ' +
+  'Use for genuinely long-running or multi-step work, or when escalating after a weak first result. ' +
+  'Do not use for quick single-lookups. Keep it to one sentence and never mention tool names.';
+
+export const sendProgressUpdateInputSchema = z.object({
+  kind: z.enum(progressUpdateKinds).describe('Progress update category'),
+  text: z
+    .string()
+    .min(1)
+    .max(200)
+    .describe('Short, one-sentence update in natural Clira voice, only when the wait is noticeable'),
+});
+
+function buildSendProgressUpdateTool(params: {
+  execute: (
+    args: z.infer<typeof sendProgressUpdateInputSchema>,
+  ) => Promise<SendProgressUpdateResult>;
+}) {
+  return {
+    description: sendProgressUpdateDescription,
+    inputSchema: sendProgressUpdateInputSchema,
+    execute: params.execute,
+  };
+}
+
+export function createSendProgressUpdateToolFromEmitter(
+  emitter: ProgressEmitter,
+  channel: ProgressUpdateChannel,
+  requestId: string,
+) {
+  return buildSendProgressUpdateTool({
+    execute: async (
+      args: z.infer<typeof sendProgressUpdateInputSchema>,
+    ): Promise<SendProgressUpdateResult> => {
+      const result = await emitter.emit({
+        text: args.text,
+        kind: args.kind,
+        source: 'model',
+      });
+      const droppedReason =
+        result.droppedReason === 'harness_delay' ||
+        result.droppedReason === 'insufficient_tool_calls'
+          ? undefined
+          : result.droppedReason;
+
+      return {
+        ...result,
+        channel,
+        requestId,
+        droppedReason,
+      };
+    },
+  });
+}
+
 export function createSendProgressUpdateTool(
   context: ProgressUpdateContext,
   limits?: ProgressUpdateLimits,
 ) {
-  const createdAt = Date.now();
-  const seenTexts = new Set<string>();
-  let sentCount = 0;
-  let lastSentAt = 0;
-
   const baseMaxPerRequest = limits?.baseMaxPerRequest ?? 2;
   const longTaskAfterMs = limits?.longTaskAfterMs ?? 6000;
   const minIntervalMs = limits?.minIntervalMs ?? 1500;
   const maxTextLength = limits?.maxTextLength ?? 200;
-
-  const inputSchema = z.object({
-    kind: z.enum(progressUpdateKinds).describe('Progress update category'),
-    text: z
-      .string()
-      .min(1)
-      .max(maxTextLength)
-      .describe('Short, one-sentence update in natural Clira voice, only when the wait is noticeable'),
+  const emitter = new ProgressEmitter(context, {
+    maxEmissions: baseMaxPerRequest,
+    minIntervalMs,
+    longTaskBonusAfterMs: longTaskAfterMs,
+    maxTextLength,
   });
 
-  const shouldAllowExtra = () => Date.now() - createdAt >= longTaskAfterMs;
-
-  const buildResult = (overrides: Partial<SendProgressUpdateResult>): SendProgressUpdateResult => ({
-    sent: false,
-    persisted: false,
-    requestId: context.requestId,
-    channel: context.channel,
-    ...overrides,
-  });
-
-  return {
-    description:
-      'Send a short, human progress update only when the user would otherwise be left waiting. ' +
-      'Use for genuinely long-running or multi-step work, or when escalating after a weak first result. ' +
-      'Do not use for quick single-lookups. Keep it to one sentence and never mention tool names.',
-    inputSchema,
-    execute: async (args: z.infer<typeof inputSchema>): Promise<SendProgressUpdateResult> => {
-      const text = args.text.trim();
-      if (!text) {
-        return buildResult({ droppedReason: 'invalid' });
-      }
-
-      const normalizedText = text.toLowerCase();
-      const maxPerRequest = baseMaxPerRequest + (shouldAllowExtra() ? 1 : 0);
-
-      if (sentCount >= maxPerRequest) {
-        return buildResult({ droppedReason: 'quota' });
-      }
-
-      const now = Date.now();
-      if (lastSentAt && now - lastSentAt < minIntervalMs) {
-        return buildResult({ droppedReason: 'rate_limit' });
-      }
-
-      if (seenTexts.has(normalizedText)) {
-        return buildResult({ droppedReason: 'duplicate' });
-      }
-
-      if (!context.sendMessage && !context.emitWebProgress) {
-        return buildResult({ droppedReason: 'no_channel' });
-      }
-
-      if (context.canEmitProgress && !context.canEmitProgress()) {
-        return buildResult({ droppedReason: 'unstable_burst' });
-      }
-
-      const sequence = sentCount + 1;
-      const progressId = `${context.requestId}-${sequence}`;
-      const metadata: ProgressUpdateMetadata = {
-        type: 'progress',
-        kind: args.kind,
-        sequence,
-        requestId: context.requestId,
-        channel: context.channel,
-      };
-
-      const event: ProgressUpdateEvent = {
-        id: progressId,
-        text,
-        kind: args.kind,
-        sequence,
-        requestId: context.requestId,
-        channel: context.channel,
-      };
-
-      try {
-        let externalId: string | undefined;
-
-        if (context.sendMessage) {
-          const result = await context.sendMessage(text);
-          externalId = result?.externalId;
-        }
-
-        if (context.emitWebProgress) {
-          await context.emitWebProgress(event);
-        }
-
-        sentCount += 1;
-        lastSentAt = now;
-        seenTexts.add(normalizedText);
-
-        try {
-          await context.persistMessage({ content: text, metadata, externalId });
-          return buildResult({ sent: true, persisted: true, sequence });
-        } catch (error) {
-          const message = error instanceof Error ? error.message : 'Unknown error';
-          logger.error(`[sendProgressUpdate] Persist failed: ${message}`);
-          return buildResult({
-            sent: true,
-            persisted: false,
-            sequence,
-            droppedReason: 'error',
-            error: message,
-          });
-        }
-      } catch (error) {
-        const message = error instanceof Error ? error.message : 'Unknown error';
-        logger.error(`[sendProgressUpdate] Delivery failed: ${message}`);
-        return buildResult({ droppedReason: 'error', error: message });
-      }
-    },
-  };
+  return createSendProgressUpdateToolFromEmitter(
+    emitter,
+    context.channel,
+    context.requestId,
+  );
 }
