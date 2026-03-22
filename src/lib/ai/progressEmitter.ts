@@ -41,6 +41,8 @@ export class ProgressEmitter {
 
   private readonly seenTexts = new Set<string>();
 
+  private emitQueue: Promise<void> = Promise.resolve();
+
   private sentCount = 0;
 
   private lastSentAt = 0;
@@ -60,6 +62,51 @@ export class ProgressEmitter {
   }
 
   async emit(params: {
+    text: string;
+    kind: ProgressUpdateKind;
+    source: ProgressEmitterSource;
+  }): Promise<ProgressEmitterResult> {
+    return this.withEmitLock(() => this.emitUnlocked(params));
+  }
+
+  noteToolCallCompleted(toolName: string, result?: unknown): void {
+    if (!toolName || toolName === 'send_progress_update') {
+      return;
+    }
+
+    if (result && typeof result === 'object') {
+      const record = result as Record<string, unknown>;
+      if (
+        record.status === 'deferred' ||
+        record.error === 'tool_budget_exceeded' ||
+        record.error === 'deadline_exceeded'
+      ) {
+        return;
+      }
+    }
+
+    this.toolCallsCompleted += 1;
+  }
+
+  getLastSentAt(): number {
+    return this.lastSentAt;
+  }
+
+  state(): {
+    sentCount: number;
+    toolCallsCompleted: number;
+    elapsedMs: number;
+    lastSentAt: number;
+  } {
+    return {
+      sentCount: this.sentCount,
+      toolCallsCompleted: this.toolCallsCompleted,
+      elapsedMs: this.elapsedMs(),
+      lastSentAt: this.lastSentAt,
+    };
+  }
+
+  private async emitUnlocked(params: {
     text: string;
     kind: ProgressUpdateKind;
     source: ProgressEmitterSource;
@@ -125,82 +172,77 @@ export class ProgressEmitter {
       channel: this.context.channel,
     };
 
-    try {
-      let externalId: string | undefined;
+    let externalId: string | undefined;
+    let persistError: string | undefined;
 
+    try {
       if (this.context.sendMessage) {
         const result = await this.context.sendMessage(text);
         externalId = result?.externalId;
-      }
-
-      if (this.context.emitWebProgress) {
+      } else if (this.context.emitWebProgress) {
         await this.context.emitWebProgress(event);
-      }
-
-      this.sentCount += 1;
-      this.lastSentAt = now;
-      this.seenTexts.add(normalizedText);
-
-      try {
-        await this.context.persistMessage({ content: text, metadata, externalId });
-        return this.buildResult({
-          sent: true,
-          persisted: true,
-          sequence,
-        });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : 'Unknown error';
-        logger.error(`[progressEmitter] Persist failed: ${message}`);
-        return this.buildResult({
-          sent: true,
-          persisted: false,
-          sequence,
-          droppedReason: 'error',
-          error: message,
-        });
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       logger.error(`[progressEmitter] Delivery failed: ${message}`);
       return this.buildResult({ droppedReason: 'error', error: message });
     }
-  }
 
-  noteToolCallCompleted(toolName: string, result?: unknown): void {
-    if (!toolName || toolName === 'send_progress_update') {
-      return;
+    this.commitEmission(now, normalizedText);
+
+    try {
+      await this.context.persistMessage({ content: text, metadata, externalId });
+    } catch (error) {
+      persistError = error instanceof Error ? error.message : 'Unknown error';
+      logger.error(`[progressEmitter] Persist failed: ${persistError}`);
     }
 
-    if (result && typeof result === 'object') {
-      const record = result as Record<string, unknown>;
-      if (
-        record.status === 'deferred' ||
-        record.error === 'tool_budget_exceeded' ||
-        record.error === 'deadline_exceeded'
-      ) {
-        return;
+    if (this.context.sendMessage && this.context.emitWebProgress) {
+      try {
+        await this.context.emitWebProgress(event);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        logger.error(`[progressEmitter] Web progress emit failed: ${message}`);
       }
     }
 
-    this.toolCallsCompleted += 1;
+    if (persistError) {
+      return this.buildResult({
+        sent: true,
+        persisted: false,
+        sequence,
+        droppedReason: 'error',
+        error: persistError,
+      });
+    }
+
+    return this.buildResult({
+      sent: true,
+      persisted: true,
+      sequence,
+    });
   }
 
-  getLastSentAt(): number {
-    return this.lastSentAt;
+  private async withEmitLock<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.emitQueue;
+    let release!: () => void;
+    this.emitQueue = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    await previous;
+
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
   }
 
-  state(): {
-    sentCount: number;
-    toolCallsCompleted: number;
-    elapsedMs: number;
-    lastSentAt: number;
-  } {
-    return {
-      sentCount: this.sentCount,
-      toolCallsCompleted: this.toolCallsCompleted,
-      elapsedMs: this.elapsedMs(),
-      lastSentAt: this.lastSentAt,
-    };
+  private commitEmission(now: number, normalizedText: string): void {
+    this.sentCount += 1;
+    this.lastSentAt = now;
+    this.seenTexts.add(normalizedText);
   }
 
   private elapsedMs(): number {

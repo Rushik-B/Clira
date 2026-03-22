@@ -113,6 +113,137 @@ describe('ProgressEmitter', () => {
     ]);
   });
 
+  test('serializes concurrent emits before delivery so only one can consume quota', async () => {
+    const { context, sentTexts } = buildProgressContext();
+    let sendCalls = 0;
+    let releaseFirstSend!: () => void;
+    const firstSendPending = new Promise<void>((resolve) => {
+      releaseFirstSend = resolve;
+    });
+
+    context.sendMessage = async (text) => {
+      sendCalls += 1;
+      if (sendCalls === 1) {
+        await firstSendPending;
+      }
+      sentTexts.push(text);
+      return { externalId: `msg-${sendCalls}` };
+    };
+
+    const emitter = createEmitter(context, { maxEmissions: 1 });
+    const first = emitter.emit({ text: 'First', kind: 'ack', source: 'model' });
+    const second = emitter.emit({ text: 'Second', kind: 'ack', source: 'model' });
+
+    await Promise.resolve();
+    expect(sendCalls).toBe(1);
+
+    releaseFirstSend();
+
+    await expect(first).resolves.toMatchObject({
+      sent: true,
+      persisted: true,
+      sequence: 1,
+    });
+    await expect(second).resolves.toMatchObject({
+      sent: false,
+      persisted: false,
+      droppedReason: 'quota',
+    });
+    expect(sendCalls).toBe(1);
+    expect(sentTexts).toEqual(['First']);
+  });
+
+  test('treats web progress emit as best effort after sendMessage succeeds', async () => {
+    const { context, sentTexts, persistedMessages } = buildProgressContext({
+      includeWebProgress: true,
+    });
+    context.emitWebProgress = async () => {
+      throw new Error('web emit failed');
+    };
+    const emitter = createEmitter(context);
+
+    const result = await emitter.emit({
+      text: 'Still on it',
+      kind: 'ack',
+      source: 'model',
+    });
+
+    expect(result).toMatchObject({
+      sent: true,
+      persisted: true,
+      sequence: 1,
+    });
+    expect(sentTexts).toEqual(['Still on it']);
+    expect(persistedMessages).toHaveLength(1);
+    expect(emitter.state()).toMatchObject({
+      sentCount: 1,
+    });
+  });
+
+  test('keeps persist failures separate from best-effort web progress failures', async () => {
+    const { context, sentTexts } = buildProgressContext({
+      includeWebProgress: true,
+    });
+    context.persistMessage = async () => {
+      throw new Error('persist failed');
+    };
+    const emitWebProgress = vi.fn(async () => {
+      throw new Error('web emit failed');
+    });
+    context.emitWebProgress = emitWebProgress;
+    const emitter = createEmitter(context);
+
+    const result = await emitter.emit({
+      text: 'Still on it',
+      kind: 'ack',
+      source: 'model',
+    });
+
+    expect(result).toMatchObject({
+      sent: true,
+      persisted: false,
+      sequence: 1,
+      droppedReason: 'error',
+      error: 'persist failed',
+    });
+    expect(sentTexts).toEqual(['Still on it']);
+    expect(emitWebProgress).toHaveBeenCalledTimes(1);
+    expect(emitter.state()).toMatchObject({
+      sentCount: 1,
+    });
+  });
+
+  test('uses web progress as the primary delivery channel when sendMessage is absent', async () => {
+    const { context, persistedMessages, emittedEvents } = buildProgressContext({
+      includeSendMessage: false,
+      includeWebProgress: true,
+    });
+    const emitter = createEmitter(context);
+
+    const result = await emitter.emit({
+      text: 'Still on it',
+      kind: 'ack',
+      source: 'model',
+    });
+
+    expect(result).toMatchObject({
+      sent: true,
+      persisted: true,
+      sequence: 1,
+    });
+    expect(persistedMessages).toHaveLength(1);
+    expect(emittedEvents).toEqual([
+      {
+        id: 'req-progress-1',
+        text: 'Still on it',
+        kind: 'ack',
+        sequence: 1,
+        requestId: 'req-progress',
+        channel: 'whatsapp',
+      },
+    ]);
+  });
+
   test('enforces shared quota', async () => {
     const { context } = buildProgressContext();
     const emitter = createEmitter(context, { maxEmissions: 3 });
