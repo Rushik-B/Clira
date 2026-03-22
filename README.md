@@ -119,6 +119,7 @@ If you want unauthenticated users redirected to a separate landing page, also se
 | `AI_PROVIDER` | Language-model provider selector (`google` default, `openrouter` optional) |
 | `GOOGLE_GENERATIVE_AI_API_KEY` / `GOOGLE_API_KEY` | Gemini auth when `AI_PROVIDER=google` |
 | `OPENROUTER_API_KEY` | OpenRouter auth when `AI_PROVIDER=openrouter` |
+| `EXA_API_KEY` | Enables executive-agent public web search via the `search_web` tool |
 | `GMAIL_INGESTION_MODE` | `pull` (default) or `push` |
 | `GMAIL_PUBSUB_TOPIC` | Gmail watch Pub/Sub topic (source of truth) |
 | `GMAIL_PUBSUB_PULL_SUBSCRIPTION` | Required when `GMAIL_INGESTION_MODE=pull` |
@@ -129,6 +130,7 @@ If you want unauthenticated users redirected to a separate landing page, also se
 - WhatsApp Cloud API: `WHATSAPP_*`
 - Telegram Bot API: `TELEGRAM_*`
 - Supermemory: `SUPERMEMORY_*`
+- Executive-agent public web search: `EXA_API_KEY` (optional, only needed for `search_web`)
 - KMS encryption toggles: `ENABLE_KMS_OAUTH_ENCRYPTION`, `ENABLE_KMS_EMAIL_ENCRYPTION`, `KMS_KEY_ID`
 - Always-on sorting toggles: `FEATURE_FLAG_ALWAYS_ON_SORTING`, `ALWAYS_ON_SORT_*`, `MAPPING_*`
 - Model routing overrides: see `docs/ai-providers.md`

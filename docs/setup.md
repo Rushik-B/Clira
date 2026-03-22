@@ -34,6 +34,16 @@ If you want to use OpenRouter, set `AI_PROVIDER=openrouter`, `OPENROUTER_API_KEY
 
 Per-model provider overrides take precedence over the global provider if you need a mixed setup.
 
+### Executive-agent public web search
+
+If you want the executive agent to look up current public information on the internet, set:
+
+```env
+EXA_API_KEY=your_exa_api_key
+```
+
+This enables the executive agent's `search_web` tool. It is optional. Without it, inbox, calendar, memory, and other agent features still work, but public web search degrades cleanly as unavailable.
+
 ## 2) Start infra
 
 ```bash
