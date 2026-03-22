@@ -275,6 +275,7 @@ model Reminder {
 
   // Delivery tracking
   deliveredAt  DateTime?
+  deliveryClaimId String?
   dismissedAt  DateTime?
   snoozedUntil DateTime?
   snoozeCount  Int       @default(0)
@@ -289,6 +290,7 @@ model Reminder {
 
   @@index([userId])
   @@index([userId, status])
+  @@index([deliveryClaimId])
   @@index([scheduledAt, status])
 }
 
@@ -886,6 +888,7 @@ enum ActionHistoryType {
 
 enum ReminderStatus {
   PENDING
+  DELIVERING
   DELIVERED
   DISMISSED
   SNOOZED

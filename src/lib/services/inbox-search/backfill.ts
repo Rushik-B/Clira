@@ -84,6 +84,32 @@ export function isGmailRateLimitError(error: unknown): boolean {
   return extractHttpStatus(error) === 429;
 }
 
+export function isInboxSearchRepairAuthOrOwnershipError(error: unknown): boolean {
+  if (error == null || typeof error !== 'object') {
+    return false;
+  }
+
+  const record = error as Record<string, unknown>;
+  const name = typeof record.name === 'string' ? record.name.toLowerCase() : '';
+  const code = typeof record.code === 'string' ? record.code.toLowerCase() : '';
+  const message = typeof record.message === 'string' ? record.message.toLowerCase() : '';
+
+  return (
+    name.includes('forbidden') ||
+    name.includes('unauthorized') ||
+    name.includes('ownership') ||
+    code.includes('forbidden') ||
+    code.includes('unauthorized') ||
+    code.includes('ownership') ||
+    message.includes('another user') ||
+    message.includes("another user's thread") ||
+    message.includes('does not belong to user') ||
+    message.includes('ownership mismatch') ||
+    message.includes('forbidden') ||
+    message.includes('unauthorized')
+  );
+}
+
 async function runBackfillPhase(params: {
   userId: string;
   mailboxId: string;
@@ -190,6 +216,10 @@ async function runBackfillPhase(params: {
             email,
           });
         } catch (error) {
+          if (isInboxSearchRepairAuthOrOwnershipError(error)) {
+            throw error;
+          }
+
           logger.warn('[InboxSearchBackfill] failed to repair stored email body before indexing', {
             userId,
             mailboxId,

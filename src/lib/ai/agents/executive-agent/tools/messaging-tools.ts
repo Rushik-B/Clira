@@ -135,8 +135,8 @@ export function buildMessagingTools({
     dayOfMonth: z.number().int().min(1).max(31).optional(),
     until: z.string().optional(),
   });
-  const reminderClosedStatuses = new Set(['DISMISSED', 'COMPLETED', 'MISSED', 'CANCELLED']);
-  const reminderNonCancelableStatuses = new Set(['DELIVERED', 'DISMISSED', 'COMPLETED', 'MISSED', 'CANCELLED']);
+  const reminderClosedStatuses = new Set(['DISMISSED', 'COMPLETED', 'MISSED', 'CANCELLED', 'DELIVERING']);
+  const reminderNonCancelableStatuses = new Set(['DELIVERED', 'DISMISSED', 'COMPLETED', 'MISSED', 'CANCELLED', 'DELIVERING']);
   const ensureCurrentRun = async (toolName: string) => {
     if (await context.isRunCurrent()) {
       return null;
@@ -664,7 +664,7 @@ export function buildMessagingTools({
           if (!reminder) {
             return { success: false, message: 'Reminder not found.' };
           }
-          if (['CANCELLED', 'MISSED', 'COMPLETED', 'DISMISSED'].includes(reminder.status)) {
+          if (['CANCELLED', 'MISSED', 'COMPLETED', 'DISMISSED', 'DELIVERING'].includes(reminder.status)) {
             return { success: false, message: 'That reminder is already closed.' };
           }
 

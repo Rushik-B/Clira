@@ -38,7 +38,11 @@ export function utcDueMinuteEpochMs(d: Date): number {
 
 const REMINDER_CLAIMED_STATUS: ReminderStatus = 'DELIVERING';
 const REMINDER_DELIVERABLE_STATUS_LIST: ReminderStatus[] = ['PENDING', 'SNOOZED'];
-export const REMINDER_PRE_DELIVERY_MISSABLE_STATUS_LIST: readonly ReminderStatus[] = ['PENDING', 'SNOOZED'];
+export const REMINDER_PRE_DELIVERY_MISSABLE_STATUS_LIST: readonly ReminderStatus[] = [
+  'PENDING',
+  'SNOOZED',
+  REMINDER_CLAIMED_STATUS,
+];
 const REMINDER_MISSABLE_STATUS_LIST: ReminderStatus[] = [
   ...REMINDER_PRE_DELIVERY_MISSABLE_STATUS_LIST,
   REMINDER_CLAIMED_STATUS,
@@ -252,6 +256,15 @@ type ReminderDeliveryRow = {
   } | null;
 };
 
+type ReminderClaimRow = {
+  id: string;
+  userId: string;
+  title: string;
+  status: ReminderStatus;
+  scheduledAt: Date;
+  snoozedUntil: Date | null;
+};
+
 const REMINDER_DELIVERY_SELECT = {
   id: true,
   userId: true,
@@ -279,8 +292,207 @@ const REMINDER_DELIVERY_SELECT = {
   },
 } satisfies Prisma.ReminderSelect;
 
-function reminderDueAt(r: ReminderDeliveryRow): Date {
+const REMINDER_CLAIM_SELECT = {
+  id: true,
+  userId: true,
+  title: true,
+  status: true,
+  scheduledAt: true,
+  snoozedUntil: true,
+} satisfies Prisma.ReminderSelect;
+
+function reminderDueAt(
+  r: Pick<ReminderDeliveryRow, 'status' | 'snoozedUntil' | 'scheduledAt'>,
+): Date {
   return r.status === 'SNOOZED' && r.snoozedUntil ? r.snoozedUntil : r.scheduledAt;
+}
+
+export async function claimReminderBatchForDelivery(params: {
+  userId: string;
+  dueMinuteEpochMs: number;
+  uniqueIds: string[];
+  now?: Date;
+  db?: Pick<typeof prisma, 'reminder' | '$transaction'>;
+  markMissed?: typeof markReminderMissed;
+}): Promise<{
+  claimId: string | null;
+  claimed: ReminderDeliveryRow[];
+  candidateIds: string[];
+  originalStatuses: Map<string, ReminderStatus>;
+}> {
+  const {
+    userId,
+    dueMinuteEpochMs,
+    uniqueIds,
+    now = new Date(),
+    db = prisma,
+    markMissed = markReminderMissed,
+  } = params;
+  const loaded = await db.reminder.findMany({
+    where: { id: { in: uniqueIds }, userId },
+    select: REMINDER_CLAIM_SELECT,
+  });
+
+  const byId = new Map(loaded.map((reminder) => [reminder.id, reminder as ReminderClaimRow]));
+  const staleCutoff = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  const candidateIds: string[] = [];
+  const originalStatuses = new Map<string, ReminderStatus>();
+
+  for (const id of uniqueIds) {
+    const reminder = byId.get(id);
+    if (!reminder) {
+      logger.warn(`[reminderNotification] Reminder not found: ${id}`);
+      continue;
+    }
+    if (!REMINDER_DELIVERABLE_STATUS_LIST.includes(reminder.status)) {
+      logger.info(`[reminderNotification] Skipping - status=${reminder.status} reminder=${reminder.id}`);
+      continue;
+    }
+
+    const dueAt = reminderDueAt(reminder);
+    if (dueAt.getTime() < staleCutoff.getTime()) {
+      await markMissed({
+        reminderId: reminder.id,
+        userId: reminder.userId,
+        reason: 'stale',
+      });
+      continue;
+    }
+    if (dueAt.getTime() > now.getTime()) {
+      logger.info(`[reminderNotification] Not due yet - reminder=${reminder.id}`);
+      continue;
+    }
+    if (dueMinuteEpochMs !== 0 && utcDueMinuteEpochMs(dueAt) !== dueMinuteEpochMs) {
+      logger.warn('[reminderNotification] due minute mismatch (still delivering)', {
+        reminderId: reminder.id,
+        expectedBucket: dueMinuteEpochMs,
+        actualBucket: utcDueMinuteEpochMs(dueAt),
+      });
+    }
+
+    candidateIds.push(reminder.id);
+    originalStatuses.set(reminder.id, reminder.status);
+  }
+
+  if (candidateIds.length === 0) {
+    return {
+      claimId: null,
+      claimed: [],
+      candidateIds,
+      originalStatuses,
+    };
+  }
+
+  const claimId = randomUUID();
+  const { claimCount, claimed } = await db.$transaction(async (tx) => {
+    const claim = await tx.reminder.updateMany({
+      where: {
+        id: { in: candidateIds },
+        userId,
+        status: { in: REMINDER_DELIVERABLE_STATUS_LIST },
+      },
+      data: {
+        status: REMINDER_CLAIMED_STATUS,
+        deliveryClaimId: claimId,
+      },
+    });
+
+    const claimedRows = await tx.reminder.findMany({
+      where: {
+        id: { in: candidateIds },
+        userId,
+        status: REMINDER_CLAIMED_STATUS,
+        deliveryClaimId: claimId,
+      },
+      select: REMINDER_DELIVERY_SELECT,
+    });
+
+    return {
+      claimCount: claim.count,
+      claimed: claimedRows as ReminderDeliveryRow[],
+    };
+  });
+
+  if (claimCount < candidateIds.length || claimed.length < candidateIds.length) {
+    logger.warn('[reminderNotification] Partial reminder claim before delivery', {
+      userId,
+      expectedClaimCount: candidateIds.length,
+      claimCount,
+      claimedRowCount: claimed.length,
+      reminderIds: candidateIds,
+    });
+  }
+
+  return {
+    claimId,
+    claimed,
+    candidateIds,
+    originalStatuses,
+  };
+}
+
+async function releaseClaimedReminderBatch(params: {
+  userId: string;
+  claimId: string;
+  claimed: Array<Pick<ReminderDeliveryRow, 'id'>>;
+  originalStatuses: Map<string, ReminderStatus>;
+}): Promise<void> {
+  const { userId, claimId, claimed, originalStatuses } = params;
+  const idsByStatus = new Map<ReminderStatus, string[]>();
+
+  for (const reminder of claimed) {
+    const originalStatus = originalStatuses.get(reminder.id);
+    if (!originalStatus || !REMINDER_DELIVERABLE_STATUS_LIST.includes(originalStatus)) {
+      continue;
+    }
+
+    const list = idsByStatus.get(originalStatus);
+    if (list) {
+      list.push(reminder.id);
+    } else {
+      idsByStatus.set(originalStatus, [reminder.id]);
+    }
+  }
+
+  const updates: Prisma.PrismaPromise<Prisma.BatchPayload>[] = [];
+  for (const status of REMINDER_DELIVERABLE_STATUS_LIST) {
+    const ids = idsByStatus.get(status);
+    if (!ids || ids.length === 0) {
+      continue;
+    }
+
+    updates.push(
+      prisma.reminder.updateMany({
+        where: {
+          id: { in: ids },
+          userId,
+          status: REMINDER_CLAIMED_STATUS,
+          deliveryClaimId: claimId,
+        },
+        data: {
+          status,
+          deliveryClaimId: null,
+        },
+      }),
+    );
+  }
+
+  if (updates.length === 0) {
+    return;
+  }
+
+  const results = await prisma.$transaction(updates);
+  const releasedCount = results.reduce((sum, result) => sum + result.count, 0);
+
+  if (releasedCount < claimed.length) {
+    logger.warn('[reminderNotification] Partial reminder claim release after pre-send failure', {
+      userId,
+      claimId,
+      expectedReleaseCount: claimed.length,
+      releasedCount,
+      reminderIds: claimed.map((reminder) => reminder.id),
+    });
+  }
 }
 
 function buildBatchReminderSystemMessage(reminders: ReminderDeliveryRow[]): string {
@@ -329,54 +541,24 @@ export async function triggerReminderNotifications(data: ReminderNotificationJob
   }
 
   const uniqueIds = [...new Set(items.map((i) => i.reminderId))];
-  const loaded = await prisma.reminder.findMany({
-    where: { id: { in: uniqueIds }, userId },
-    select: REMINDER_DELIVERY_SELECT,
-  });
-
-  const byId = new Map(loaded.map((r) => [r.id, r as ReminderDeliveryRow]));
   const now = new Date();
-  const staleCutoff = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-  const deliverable: ReminderDeliveryRow[] = [];
-
-  for (const id of uniqueIds) {
-    const reminder = byId.get(id);
-    if (!reminder) {
-      logger.warn(`[reminderNotification] Reminder not found: ${id}`);
-      continue;
-    }
-    if (!REMINDER_DELIVERABLE_STATUS_LIST.includes(reminder.status)) {
-      logger.info(`[reminderNotification] Skipping - status=${reminder.status} reminder=${reminder.id}`);
-      continue;
-    }
-
-    const dueAt = reminderDueAt(reminder);
-    if (dueAt.getTime() < staleCutoff.getTime()) {
-      await markReminderMissed({
-        reminderId: reminder.id,
-        userId: reminder.userId,
-        reason: 'stale',
-      });
-      continue;
-    }
-    if (dueAt.getTime() > now.getTime()) {
-      logger.info(`[reminderNotification] Not due yet - reminder=${reminder.id}`);
-      continue;
-    }
-    if (
-      dueMinuteEpochMs !== 0 &&
-      utcDueMinuteEpochMs(dueAt) !== dueMinuteEpochMs
-    ) {
-      logger.warn('[reminderNotification] due minute mismatch (still delivering)', {
-        reminderId: reminder.id,
-        expectedBucket: dueMinuteEpochMs,
-        actualBucket: utcDueMinuteEpochMs(dueAt),
-      });
-    }
-    deliverable.push(reminder);
-  }
+  const { claimId, claimed, candidateIds, originalStatuses } = await claimReminderBatchForDelivery({
+    userId,
+    dueMinuteEpochMs,
+    uniqueIds,
+    now,
+  });
+  const deliverable = [...claimed];
 
   if (deliverable.length === 0) {
+    return;
+  }
+
+  if (!claimId) {
+    logger.warn('[reminderNotification] Deliverable reminders missing claim id, skipping batch', {
+      userId,
+      reminderIds: deliverable.map((reminder) => reminder.id),
+    });
     return;
   }
 
@@ -472,6 +654,7 @@ export async function triggerReminderNotifications(data: ReminderNotificationJob
   }));
 
   let traceContext: AiTraceContext | undefined;
+  let deliveredChannels: Array<'whatsapp' | 'telegram'> = [];
 
   try {
     traceContext = await createAiTraceRoot({
@@ -498,8 +681,6 @@ export async function triggerReminderNotifications(data: ReminderNotificationJob
       progressContext: buildNotificationProgressContext(primaryChannel, primaryConversationId),
       traceContext,
     });
-
-    const deliveredChannels: Array<'whatsapp' | 'telegram'> = [];
 
     if (whatsappConversation && settings?.whatsappPhoneNumber) {
       try {
@@ -589,33 +770,57 @@ export async function triggerReminderNotifications(data: ReminderNotificationJob
 
     for (const reminder of deliverable) {
       const dueAt = reminderDueAt(reminder);
-      await prisma.reminder.update({
-        where: { id: reminder.id },
+      const deliveryUpdate = await prisma.reminder.updateMany({
+        where: {
+          id: reminder.id,
+          userId: reminder.userId,
+          status: REMINDER_CLAIMED_STATUS,
+          deliveryClaimId: claimId,
+        },
         data: {
           status: 'DELIVERED',
           deliveredAt: now,
           snoozedUntil: null,
+          deliveryClaimId: null,
         },
       });
 
-      await prisma.actionHistory.create({
-        data: {
-          userId: reminder.userId,
-          actionType: 'REMINDER_DELIVERED',
-          actionSummary: `Reminder delivered: ${reminder.title}`,
-          actionDetails: {
-            reminderId: reminder.id,
-            scheduledAt: reminder.scheduledAt.toISOString(),
-            dueAt: dueAt.toISOString(),
-            deliveredAt: now.toISOString(),
-            linkedEmailId: reminder.linkedEmailId,
-            linkedEventId: reminder.linkedEventId,
-            channels: deliveredChannels,
-            batchReminderIds: reminderIds,
+      if (deliveryUpdate.count === 0) {
+        logger.warn('[reminderNotification] Reminder delivery finalization lost claim ownership', {
+          userId,
+          claimId,
+          reminderId: reminder.id,
+        });
+        continue;
+      }
+
+      try {
+        await prisma.actionHistory.create({
+          data: {
+            userId: reminder.userId,
+            actionType: 'REMINDER_DELIVERED',
+            actionSummary: `Reminder delivered: ${reminder.title}`,
+            actionDetails: {
+              reminderId: reminder.id,
+              scheduledAt: reminder.scheduledAt.toISOString(),
+              dueAt: dueAt.toISOString(),
+              deliveredAt: now.toISOString(),
+              linkedEmailId: reminder.linkedEmailId,
+              linkedEventId: reminder.linkedEventId,
+              channels: deliveredChannels,
+              batchReminderIds: reminderIds,
+            },
+            undoable: false,
           },
-          undoable: false,
-        },
-      });
+        });
+      } catch (error) {
+        logger.error('[reminderNotification] Failed to persist delivery history', {
+          reminderId: reminder.id,
+          reminderIds,
+          userId,
+          error,
+        });
+      }
 
       const recurrence = normalizeRecurrence(reminder.recurrence);
       if (recurrence) {
@@ -623,18 +828,27 @@ export async function triggerReminderNotifications(data: ReminderNotificationJob
         const nextScheduledAt = calculateNextOccurrence(reminder.scheduledAt, recurrence, timeZone);
 
         if (nextScheduledAt) {
-          await prisma.reminder.create({
-            data: {
-              userId: reminder.userId,
-              title: reminder.title,
-              description: reminder.description,
-              context: reminder.context,
-              scheduledAt: nextScheduledAt,
-              recurrence: reminder.recurrence ?? undefined,
-              linkedEmailId: reminder.linkedEmailId,
-              linkedEventId: reminder.linkedEventId,
-            },
-          });
+          try {
+            await prisma.reminder.create({
+              data: {
+                userId: reminder.userId,
+                title: reminder.title,
+                description: reminder.description,
+                context: reminder.context,
+                scheduledAt: nextScheduledAt,
+                recurrence: reminder.recurrence ?? undefined,
+                linkedEmailId: reminder.linkedEmailId,
+                linkedEventId: reminder.linkedEventId,
+              },
+            });
+          } catch (error) {
+            logger.error('[reminderNotification] Failed to create recurring reminder after delivery', {
+              reminderId: reminder.id,
+              reminderIds,
+              userId,
+              error,
+            });
+          }
         }
       }
     }
@@ -652,9 +866,20 @@ export async function triggerReminderNotifications(data: ReminderNotificationJob
       });
     }
   } catch (error) {
+    if (claimId && deliveredChannels.length === 0) {
+      await releaseClaimedReminderBatch({
+        userId,
+        claimId,
+        claimed: deliverable,
+        originalStatuses,
+      });
+    }
+
     logger.error('[reminderNotification] Failed during delivery pipeline', {
       reminderIds,
       userId,
+      claimId,
+      candidateIds,
       error,
     });
     if (traceContext) {
@@ -666,6 +891,10 @@ export async function triggerReminderNotifications(data: ReminderNotificationJob
           reminderIds,
         },
       });
+    }
+
+    if (deliveredChannels.length === 0) {
+      throw error;
     }
   }
 }
