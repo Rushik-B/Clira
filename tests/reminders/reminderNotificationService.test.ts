@@ -110,7 +110,7 @@ describe('reminder notification failure handling', () => {
         userId: 'user-1',
         status: { in: ['PENDING', 'SNOOZED', 'DELIVERED'] },
       },
-      data: { status: 'MISSED' },
+      data: { status: 'MISSED', deliveryClaimId: null },
     });
     expect(prisma.actionHistory.create).toHaveBeenCalledTimes(1);
   });
