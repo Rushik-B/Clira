@@ -63,14 +63,21 @@ vi.mock('@/lib/services/whatsapp', () => ({
   getWhatsAppClient: () => mockWhatsAppClient,
 }));
 
-vi.mock('@/lib/services/messaging-orchestration', () => ({
-  buildOrchestrationMessageMetadata: vi.fn(),
-  emitOrchestratorEvent: vi.fn(),
-  getMessagingOrchestrator: () => ({
-    prepareRunWithAdapter: mockPrepareRunWithAdapter,
-  }),
-  getDuplicateInboundMessageIdFromAdapter: vi.fn(async () => null),
-}));
+vi.mock('@/lib/services/messaging-orchestration', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/services/messaging-orchestration')>(
+    '@/lib/services/messaging-orchestration',
+  );
+
+  return {
+    ...actual,
+    buildOrchestrationMessageMetadata: vi.fn(),
+    emitOrchestratorEvent: vi.fn(),
+    getMessagingOrchestrator: () => ({
+      prepareRunWithAdapter: mockPrepareRunWithAdapter,
+    }),
+    getDuplicateInboundMessageIdFromAdapter: vi.fn(async () => null),
+  };
+});
 
 import { prisma } from '@/lib/prisma';
 import { extractContentFromBuffer } from '@/lib/services/content-ingestion';
