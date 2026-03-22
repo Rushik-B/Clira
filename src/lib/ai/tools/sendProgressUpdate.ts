@@ -113,9 +113,9 @@ export function createSendProgressUpdateTool(
   context: ProgressUpdateContext,
   limits?: ProgressUpdateLimits,
 ) {
-  const baseMaxPerRequest = limits?.baseMaxPerRequest ?? 2;
-  const longTaskAfterMs = limits?.longTaskAfterMs ?? 45_000;
-  const minIntervalMs = limits?.minIntervalMs ?? 12_000;
+  const baseMaxPerRequest = limits?.baseMaxPerRequest ?? 1;
+  const longTaskAfterMs = limits?.longTaskAfterMs ?? 75_000;
+  const minIntervalMs = limits?.minIntervalMs ?? 20_000;
   const maxTextLength = limits?.maxTextLength ?? 200;
   const emitter = new ProgressEmitter(context, {
     maxEmissions: baseMaxPerRequest,

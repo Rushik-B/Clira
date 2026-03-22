@@ -290,44 +290,36 @@ describe('ProgressEmitter', () => {
     expect(emitter.getLastSentAt()).toBe(Date.now());
   });
 
-  test('default cadence only allows a third update on genuinely long runs', async () => {
+  test('default cadence only allows a second update on genuinely long runs', async () => {
     const { context } = buildProgressContext();
     const emitter = new ProgressEmitter(context);
 
     emitter.noteToolCallCompleted('search_inbox_context', { ok: true });
 
-    vi.advanceTimersByTime(8_000);
+    vi.advanceTimersByTime(12_000);
     const first = await emitter.emit({
       text: 'checking your inbox now',
       kind: 'long_task',
       source: 'harness',
     });
 
-    vi.advanceTimersByTime(12_000);
-    const second = await emitter.emit({
+    vi.advanceTimersByTime(20_000);
+    const secondTooSoon = await emitter.emit({
       text: 'still checking your inbox',
       kind: 'long_task',
       source: 'harness',
     });
 
-    vi.advanceTimersByTime(12_000);
-    const thirdTooSoon = await emitter.emit({
-      text: 'still on this, going through your inbox',
-      kind: 'long_task',
-      source: 'harness',
-    });
-
-    vi.advanceTimersByTime(13_000);
-    const thirdLongRun = await emitter.emit({
-      text: 'taking a bit, still going through your inbox',
+    vi.advanceTimersByTime(43_000);
+    const secondLongRun = await emitter.emit({
+      text: 'this is taking a sec, still checking your inbox',
       kind: 'long_task',
       source: 'harness',
     });
 
     expect(first.sent).toBe(true);
-    expect(second.sent).toBe(true);
-    expect(thirdTooSoon.sent).toBe(false);
-    expect(thirdTooSoon.droppedReason).toBe('quota');
-    expect(thirdLongRun.sent).toBe(true);
+    expect(secondTooSoon.sent).toBe(false);
+    expect(secondTooSoon.droppedReason).toBe('quota');
+    expect(secondLongRun.sent).toBe(true);
   });
 });

@@ -314,11 +314,11 @@ export class ExecutiveAgent {
                 (() => isBurstStable()),
             },
             {
-              maxEmissions: 2,
-              minIntervalMs: 12_000,
-              longTaskBonusAfterMs: 45_000,
+              maxEmissions: 1,
+              minIntervalMs: 20_000,
+              longTaskBonusAfterMs: 75_000,
               maxTextLength: 200,
-              harnessFirstDelayMs: 8_000,
+              harnessFirstDelayMs: 12_000,
               harnessMinToolCalls: 1,
             },
           )
