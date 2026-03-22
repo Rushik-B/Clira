@@ -15,6 +15,7 @@ export const EXECUTIVE_TOOL_NAMES = [
   'read_email_pdf_attachment',
   'search_calendar',
   'check_calendar',
+  'search_web',
   'get_reply_preferences',
   'plan_calendar_change',
   'commit_calendar_change',
@@ -43,6 +44,7 @@ export const SAFE_CONTEXT_PACK_TOOLS = [
   'read_email_pdf_attachment',
   'search_calendar',
   'check_calendar',
+  'search_web',
   'get_reply_preferences',
 ] as const satisfies readonly ExecutiveToolName[];
 

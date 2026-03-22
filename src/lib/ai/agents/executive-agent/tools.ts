@@ -8,6 +8,7 @@ import type {
   ExecutiveRuntimeContext,
 } from './types';
 import { buildContextTools } from './tools/context-tools';
+import { buildWebSearchTools } from './tools/web-search-tool';
 import { buildCalendarMutationTools } from './tools/calendar-mutation-tools';
 import { buildMessagingTools } from './tools/messaging-tools';
 import {
@@ -294,6 +295,7 @@ export function buildExecutiveAgentTools(context: ExecutiveRuntimeContext): Reco
 
   const allTools: Record<string, unknown> = {
     ...buildContextTools({ context, nextSubagentCallIndex }),
+    ...buildWebSearchTools({ context }),
     ...buildCalendarMutationTools({ context, nextSubagentCallIndex }),
     ...buildMessagingTools({ context }),
     ...buildExecutiveMcpTools({

@@ -429,6 +429,11 @@ function summarizeWorkingStateCoverage(
       continue;
     }
 
+    if (step === 'search_web') {
+      coverage.add('web');
+      continue;
+    }
+
     if (step === 'search_memory' || step === 'append_to_supermemory') {
       coverage.add('memory');
       continue;

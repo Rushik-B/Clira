@@ -44,6 +44,13 @@ const TOOL_PROGRESS_PHRASES: Record<string, readonly string[]> = {
     'checking what u have going on',
     'glancing at your schedule',
   ],
+  search_web: [
+    'checking the web rn',
+    'pulling up current sources',
+    'looking that up online',
+    'checking public sources',
+    'searching the web real quick',
+  ],
   search_memory: [
     'checking my notes real quick',
     'pulling up my notes on that',
@@ -212,6 +219,7 @@ const TOOL_PROGRESS_DESCRIPTORS: Record<string, ToolProgressDescriptor> = {
   list_inbox_emails: { topic: 'your emails', actionClass: 'read' },
   search_calendar: { topic: 'your calendar', actionClass: 'read' },
   check_calendar: { topic: 'your schedule', actionClass: 'read' },
+  search_web: { topic: 'public web sources', actionClass: 'read' },
   search_memory: { topic: 'my notes on that', actionClass: 'read' },
   get_reply_preferences: { topic: 'your reply settings', actionClass: 'read' },
   manage_reply_preferences: { topic: 'your reply settings', actionClass: 'write' },

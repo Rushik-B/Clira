@@ -22,7 +22,7 @@ import {
   formatReplyPipelineInstruction,
 } from './replyPipelineContext';
 
-export const EXECUTIVE_AGENT_PROMPT_VERSION = 'ea-prompt-v15';
+export const EXECUTIVE_AGENT_PROMPT_VERSION = 'ea-prompt-v16';
 
 // Injected only when the exec agent is activated by a system trigger (alert or reminder),
 // not by a user message. Tells the agent to reason with full context but output selectively.
@@ -94,7 +94,7 @@ function buildCurrentTurnMessage(params: {
     params.runContextFragment,
     '',
     '## Capability Model This Turn',
-    '- Safe context tools for memory, inbox, calendar, PDF reads, progress updates, and reply preference reads are available every turn.',
+    '- Safe context tools for memory, inbox, calendar, public web search, PDF reads, progress updates, and reply preference reads are available every turn.',
     '- Only action tools already exposed this turn are callable right now.',
     '- "Available Action Packs" are candidates you may request with request_tool_pack_exposure when safe context is not enough.',
     '- "Available Skills" are user-authored guidance candidates you may request with request_skill_exposure when that guidance would materially help.',

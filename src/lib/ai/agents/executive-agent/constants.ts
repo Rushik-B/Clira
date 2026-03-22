@@ -53,6 +53,7 @@ export const MESSAGING_TOOL_BUDGETS_BASE: Record<string, number> = {
   send_progress_update: 1,
   read_email_attachment_content: 10,
   read_email_pdf_attachment: 10,
+  search_web: 4,
 };
 
 export const MESSAGING_INBOX_CALL_LIMITS: Record<'quick' | 'deep', number> = {

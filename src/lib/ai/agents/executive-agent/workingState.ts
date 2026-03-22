@@ -113,6 +113,11 @@ function summarizeToolResult(toolName: string, result: unknown): string | null {
     return 'calendar availability checked';
   }
 
+  if (toolName === 'search_web') {
+    const sources = Array.isArray(record.sources) ? record.sources.length : null;
+    return sources !== null ? `web results=${sources}` : 'public web searched';
+  }
+
   if (toolName === 'plan_calendar_change') {
     const pendingChange = record.pendingChange;
     if (pendingChange && typeof pendingChange === 'object') {
@@ -188,6 +193,24 @@ function deriveFact(toolName: string, result: unknown): string | null {
 
   if (toolName === 'search_calendar' && typeof record.summary === 'string') {
     return truncateFact(record.summary);
+  }
+
+  if (toolName === 'search_web') {
+    if (typeof record.summary === 'string' && record.summary.trim()) {
+      return truncateFact(record.summary);
+    }
+
+    const sources = Array.isArray(record.sources) ? record.sources : [];
+    const firstSource =
+      sources[0] && typeof sources[0] === 'object' && !Array.isArray(sources[0])
+        ? (sources[0] as Record<string, unknown>)
+        : null;
+    const title = typeof firstSource?.title === 'string' ? firstSource.title : null;
+    const snippets = Array.isArray(firstSource?.snippets) ? firstSource.snippets : [];
+    const firstSnippet = typeof snippets[0] === 'string' ? snippets[0] : null;
+    if (title && firstSnippet) {
+      return truncateFact(`${title}: ${firstSnippet}`);
+    }
   }
 
   if (toolName === 'search_inbox_context' && typeof record.summary === 'string') {
