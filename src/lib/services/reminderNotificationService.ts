@@ -654,7 +654,7 @@ export async function triggerReminderNotifications(data: ReminderNotificationJob
   }));
 
   let traceContext: AiTraceContext | undefined;
-  let deliveredChannels: Array<'whatsapp' | 'telegram'> = [];
+  const deliveredChannels: Array<'whatsapp' | 'telegram'> = [];
 
   try {
     traceContext = await createAiTraceRoot({
