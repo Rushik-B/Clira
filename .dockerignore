@@ -12,6 +12,8 @@ next-env.d.ts
 .gitignore
 .env*
 !.env.example
+google-service-account.json
+.clira-runtime
 
 # Docs and local config (not needed in image)
 rushiks-docs

@@ -275,6 +275,7 @@ model Reminder {
 
   // Delivery tracking
   deliveredAt  DateTime?
+  deliveryClaimId String?
   dismissedAt  DateTime?
   snoozedUntil DateTime?
   snoozeCount  Int       @default(0)
@@ -289,6 +290,7 @@ model Reminder {
 
   @@index([userId])
   @@index([userId, status])
+  @@index([deliveryClaimId])
   @@index([scheduledAt, status])
 }
 
@@ -443,6 +445,25 @@ model ReplyInstructionDoc {
 
   @@index([userId, target, scope, scopeKey, isActive])
   @@index([userId, isActive])
+}
+
+model UserSkill {
+  id             String    @id @default(cuid())
+  userId         String
+  slug           String
+  name           String
+  description    String
+  body           String
+  enabled        Boolean   @default(true)
+  catalogSummary String
+  archivedAt     DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, slug], name: "UserSkill_userId_slug_key")
+  @@index([userId, archivedAt, enabled], name: "UserSkill_userId_archivedAt_enabled_idx")
+  @@index([userId, updatedAt], name: "UserSkill_userId_updatedAt_idx")
 }
 
 model OAuthAccount {
@@ -635,6 +656,7 @@ model User {
   mailboxes                          Mailbox[]
   masterPrompts                      MasterPrompt[]
   replyInstructionDocs               ReplyInstructionDoc[]
+  userSkills                         UserSkill[]
   accounts                           OAuthAccount[]
   inboxSearchDocuments               InboxSearchDocument[]
   inboxSearchCheckpoints             InboxSearchCheckpoint[]
@@ -646,10 +668,32 @@ model User {
   mcpExecutionAudits                 McpExecutionAudit[]
   threads                            Thread[]
   settings                           UserSettings?
+  storedContentReferences            StoredContentReference[]
   tokenAccessAudits                  TokenAccessAudit[]
   telegramLink                       TelegramLink?
   telegramConversations              TelegramConversation[]
   telegramPairingApprovals           TelegramPairingRequest[]   @relation("TelegramPairingRequestApprovedByUser")
+}
+
+model StoredContentReference {
+  id               String   @id @default(cuid())
+  contentRefId     String   @unique
+  ownerUserId      String
+  sourceKind       String
+  locator          String
+  displayName      String?
+  mimeHint         String?
+  trustClass       String
+  requiresApproval Boolean  @default(false)
+  capability       String
+  provenance       Json
+  data             Bytes
+  sizeBytes        Int
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  user             User     @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+
+  @@index([ownerUserId, createdAt(sort: Desc)])
 }
 
 model UserSettings {
@@ -844,6 +888,7 @@ enum ActionHistoryType {
 
 enum ReminderStatus {
   PENDING
+  DELIVERING
   DELIVERED
   DISMISSED
   SNOOZED

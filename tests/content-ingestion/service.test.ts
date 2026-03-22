@@ -19,6 +19,7 @@ vi.mock('@/lib/ai/callLlm', () => ({
 }));
 
 vi.mock('@/lib/ai/models', () => ({
+  getGoogleThinkingProviderOptions: () => undefined,
   models: {
     flash: modelMocks.flash,
   },

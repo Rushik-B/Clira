@@ -27,6 +27,8 @@ function mapPackToPrimaryDomain(packId: ToolPackId): ExecutivePrimaryDomain {
       return 'calendar';
     case 'reminder_alert_pack':
       return 'reminder';
+    case 'media_delivery_pack':
+      return 'delivery';
     case 'settings_mutation_pack':
       return 'settings';
     case 'email_send_pack':
@@ -42,6 +44,7 @@ function initialPhaseForPack(
 ): ExecutiveWorkingStatePhase {
   if (packId === 'email_send_pack') return 'act';
   if (packId === 'reminder_alert_pack') return 'act';
+  if (packId === 'media_delivery_pack') return 'act';
   if (packId === 'settings_mutation_pack') return 'act';
   if (packId === 'calendar_mutation_pack') {
     if (features.pendingCalendarChangePresent) {
@@ -61,6 +64,9 @@ function initialNextStep(
   if (packId === 'email_send_pack') return 'Send the approved draft.';
   if (packId === 'reminder_alert_pack') {
     return 'Complete the requested reminder or alert action.';
+  }
+  if (packId === 'media_delivery_pack') {
+    return 'Deliver the requested original file to the user safely.';
   }
   if (packId === 'settings_mutation_pack') {
     return 'Update the reply preference docs safely.';
@@ -105,6 +111,11 @@ function summarizeToolResult(toolName: string, result: unknown): string | null {
 
   if (toolName === 'check_calendar') {
     return 'calendar availability checked';
+  }
+
+  if (toolName === 'search_web') {
+    const sources = Array.isArray(record.sources) ? record.sources.length : null;
+    return sources !== null ? `web results=${sources}` : 'public web searched';
   }
 
   if (toolName === 'plan_calendar_change') {
@@ -182,6 +193,24 @@ function deriveFact(toolName: string, result: unknown): string | null {
 
   if (toolName === 'search_calendar' && typeof record.summary === 'string') {
     return truncateFact(record.summary);
+  }
+
+  if (toolName === 'search_web') {
+    if (typeof record.summary === 'string' && record.summary.trim()) {
+      return truncateFact(record.summary);
+    }
+
+    const sources = Array.isArray(record.sources) ? record.sources : [];
+    const firstSource =
+      sources[0] && typeof sources[0] === 'object' && !Array.isArray(sources[0])
+        ? (sources[0] as Record<string, unknown>)
+        : null;
+    const title = typeof firstSource?.title === 'string' ? firstSource.title : null;
+    const snippets = Array.isArray(firstSource?.snippets) ? firstSource.snippets : [];
+    const firstSnippet = typeof snippets[0] === 'string' ? snippets[0] : null;
+    if (title && firstSnippet) {
+      return truncateFact(`${title}: ${firstSnippet}`);
+    }
   }
 
   if (toolName === 'search_inbox_context' && typeof record.summary === 'string') {

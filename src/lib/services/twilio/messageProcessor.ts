@@ -33,11 +33,13 @@ import {
 } from '@/lib/ai/tracing';
 import {
   buildOrchestrationMessageMetadata,
+  detectMessagingCommand,
   emitOrchestratorEvent,
   getMessagingOrchestrator,
   getDuplicateInboundMessageIdFromAdapter,
   isAbortError,
   type ChannelAdapter,
+  type MessagingCommand,
   type RunContext,
 } from '@/lib/services/messaging-orchestration';
 
@@ -54,80 +56,7 @@ export interface ProcessMessageResult {
 }
 
 /** Commands that trigger special handling instead of agent invocation */
-type Command = 'send' | 'save' | 'clear' | 'cancel' | 'help' | null;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Command Detection
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Detects if a message is a command.
- * Commands are case-insensitive and can include variations.
- */
-function detectCommand(text: string): Command {
-  const normalized = text.toLowerCase().trim();
-
-  // Send command: user wants to send the current draft
-  if (
-    normalized === 'send' ||
-    normalized === 'send it' ||
-    normalized === 'send now' ||
-    normalized === 'yes send' ||
-    normalized === 'yes, send' ||
-    normalized === 'yes send it' ||
-    normalized === 'send email' ||
-    normalized === 'send the email'
-  ) {
-    return 'send';
-  }
-
-  // Save command: user wants to save the draft to Gmail drafts
-  if (
-    normalized === 'save' ||
-    normalized === 'save it' ||
-    normalized === 'save draft' ||
-    normalized === 'save as draft' ||
-    normalized === 'save to drafts'
-  ) {
-    return 'save';
-  }
-
-  // Clear command: reset the conversation
-  if (
-    normalized === 'clear' ||
-    normalized === 'reset' ||
-    normalized === 'start over' ||
-    normalized === 'new conversation' ||
-    normalized === 'clear conversation'
-  ) {
-    return 'clear';
-  }
-
-  // Cancel command: discard the current draft
-  if (
-    normalized === 'cancel' ||
-    normalized === 'cancel draft' ||
-    normalized === 'discard' ||
-    normalized === 'discard draft' ||
-    normalized === 'nevermind' ||
-    normalized === 'never mind'
-  ) {
-    return 'cancel';
-  }
-
-  // Help command: show available commands
-  if (
-    normalized === 'help' ||
-    normalized === '/help' ||
-    normalized === 'commands' ||
-    normalized === 'what can you do' ||
-    normalized === 'what can you do?'
-  ) {
-    return 'help';
-  }
-
-  return null;
-}
+type Command = MessagingCommand;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Command Handlers
@@ -366,7 +295,7 @@ export async function processTwilioMessage(
   await adapter.persistInbound();
 
   // Step 5: Detect and handle commands
-  let activeCommand: Command = detectCommand(body);
+  let activeCommand: Command = detectMessagingCommand(body);
   if (activeCommand) {
     logger.info(`[messageProcessor] Detected command: ${activeCommand}`);
   }
@@ -439,7 +368,7 @@ export async function processTwilioMessage(
 
         runContext = finalized.nextRun.runContext;
         activeRequest = finalized.nextRun.userRequest;
-        activeCommand = detectCommand(activeRequest);
+        activeCommand = detectMessagingCommand(activeRequest);
         result = { success: true, response: '' };
         continue;
       }
@@ -492,7 +421,7 @@ export async function processTwilioMessage(
 
     runContext = finalized.nextRun.runContext;
     activeRequest = finalized.nextRun.userRequest;
-    activeCommand = detectCommand(activeRequest);
+    activeCommand = detectMessagingCommand(activeRequest);
   }
 
   return result;
@@ -741,7 +670,7 @@ export async function processWebChatMessage(
   // Add user message to the conversation
   await adapter.persistInbound();
 
-  let activeCommand: Command = detectCommand(message);
+  let activeCommand: Command = detectMessagingCommand(message);
   if (activeCommand) {
     logger.info(`[messageProcessor] Detected command: ${activeCommand}`);
   }
@@ -811,7 +740,7 @@ export async function processWebChatMessage(
 
         runContext = finalized.nextRun.runContext;
         activeRequest = finalized.nextRun.userRequest;
-        activeCommand = detectCommand(activeRequest);
+        activeCommand = detectMessagingCommand(activeRequest);
         result = { success: true, response: '' };
         continue;
       }
@@ -858,7 +787,7 @@ export async function processWebChatMessage(
 
     runContext = finalized.nextRun.runContext;
     activeRequest = finalized.nextRun.userRequest;
-    activeCommand = detectCommand(activeRequest);
+    activeCommand = detectMessagingCommand(activeRequest);
   }
 
   return result;

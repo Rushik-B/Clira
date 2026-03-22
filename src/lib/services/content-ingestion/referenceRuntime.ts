@@ -4,11 +4,15 @@ import {
   sanitizeContentReferenceForModel,
 } from './referenceModeling';
 import {
+  resolveStoredContentReferenceAsset,
   resolveStoredContentReference,
   STORED_CONTENT_SOURCE_KIND,
 } from './referenceStore';
 import { readThirdPartyContentReference } from './thirdPartyReferenceRuntime';
-import type { ContentReference } from './types';
+import type {
+  ContentAssetResolution,
+  ContentReference,
+} from './types';
 
 export async function readContentReference(params: {
   userId: string;
@@ -59,5 +63,21 @@ export async function readContentReference(params: {
     error: 'unsupported_content_reference',
     message: 'That content reference type is not supported yet.',
     contentRef: sanitizeContentReferenceForModel(params.reference),
+  };
+}
+
+export async function loadContentReferenceAsset(params: {
+  userId: string;
+  reference: ContentReference;
+}): Promise<ContentAssetResolution> {
+  if (params.reference.sourceKind === STORED_CONTENT_SOURCE_KIND) {
+    return resolveStoredContentReferenceAsset(params);
+  }
+
+  return {
+    ok: false,
+    error: 'unsupported_content_reference',
+    message: 'That content reference type cannot be delivered as a raw file yet.',
+    reference: params.reference,
   };
 }

@@ -99,11 +99,15 @@ export interface EmailCategorizationJobData {
 }
 
 export interface ReminderNotificationJobData {
-  reminderId: string;
   userId: string;
   userEmail: string;
-  title: string;
-  context?: string;
+  /** UTC minute bucket (ms) shared by all reminders in this batch */
+  dueMinuteEpochMs: number;
+  items: Array<{
+    reminderId: string;
+    title: string;
+    context?: string;
+  }>;
 }
 
 export interface InboxIndexJobData {

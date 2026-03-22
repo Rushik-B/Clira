@@ -10,6 +10,7 @@ const FILENAME_MIME_HINTS: Record<string, string> = {
   '.gif': 'image/gif',
   '.htm': 'text/html',
   '.html': 'text/html',
+  '.ics': 'text/calendar',
   '.jpeg': 'image/jpeg',
   '.jpg': 'image/jpeg',
   '.json': 'application/json',

@@ -13,6 +13,18 @@ Clira can optionally expose conversational control through SMS, WhatsApp, and Te
 
 Core Gmail pipeline remains functional even if channel credentials are not configured.
 
+## Public Web Search
+
+Optional var:
+
+- `EXA_API_KEY`
+
+Behavior:
+
+- Enables the executive agent's `search_web` tool for public internet lookups.
+- This is read-only access to public web search results and snippets, not an interactive browser session.
+- If `EXA_API_KEY` is missing, the executive agent still runs normally, but `search_web` returns an explicit unavailable/degraded result.
+
 ## Twilio Configuration
 
 Required vars:

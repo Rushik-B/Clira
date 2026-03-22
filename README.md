@@ -7,6 +7,7 @@ Clira is a self-hosted AI email assistant focused on safe automation and draft-f
 - Self-hosted by default (app + worker + Postgres + Redis)
 - Draft-first pipeline with deterministic filtering before LLM generation
 - Multi-mailbox aware Gmail integration
+- Provider-aware AI model layer with Gemini defaults and OpenRouter support
 - Optional conversational channels (Twilio SMS, WhatsApp Cloud API, Telegram)
 - Optional long-term memory via Supermemory
 
@@ -96,6 +97,14 @@ docker compose up --build
 
 This starts `app`, `worker`, `cron`, `db`, and `redis` using the production image build.
 
+Before running on a VM, set `APP_PUBLIC_URL` in `.env` to the real externally reachable app URL.
+Examples:
+
+- `APP_PUBLIC_URL=http://<vm-ip>:13000`
+- `APP_PUBLIC_URL=https://app.example.com`
+
+If you want unauthenticated users redirected to a separate landing page, also set `APP_LANDING_PAGE_URL`.
+
 ## Required Environment Variables
 
 | Variable | Purpose |
@@ -105,8 +114,12 @@ This starts `app`, `worker`, `cron`, `db`, and `redis` using the production imag
 | `REDIS_URL` | Redis connection for BullMQ + runtime cache |
 | `NEXTAUTH_SECRET` | Auth/session signing secret |
 | `NEXTAUTH_URL` | Canonical app URL |
+| `APP_PUBLIC_URL` | Docker/VM public app URL used to populate `NEXTAUTH_URL` inside containers |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Google OAuth for mailbox auth |
-| `GOOGLE_GENERATIVE_AI_API_KEY` | Gemini key for AI generation |
+| `AI_PROVIDER` | Language-model provider selector (`google` default, `openrouter` optional) |
+| `GOOGLE_GENERATIVE_AI_API_KEY` / `GOOGLE_API_KEY` | Gemini auth when `AI_PROVIDER=google` |
+| `OPENROUTER_API_KEY` | OpenRouter auth when `AI_PROVIDER=openrouter` |
+| `EXA_API_KEY` | Enables executive-agent public web search via the `search_web` tool |
 | `GMAIL_INGESTION_MODE` | `pull` (default) or `push` |
 | `GMAIL_PUBSUB_TOPIC` | Gmail watch Pub/Sub topic (source of truth) |
 | `GMAIL_PUBSUB_PULL_SUBSCRIPTION` | Required when `GMAIL_INGESTION_MODE=pull` |
@@ -117,8 +130,10 @@ This starts `app`, `worker`, `cron`, `db`, and `redis` using the production imag
 - WhatsApp Cloud API: `WHATSAPP_*`
 - Telegram Bot API: `TELEGRAM_*`
 - Supermemory: `SUPERMEMORY_*`
+- Executive-agent public web search: `EXA_API_KEY` (optional, only needed for `search_web`)
 - KMS encryption toggles: `ENABLE_KMS_OAUTH_ENCRYPTION`, `ENABLE_KMS_EMAIL_ENCRYPTION`, `KMS_KEY_ID`
 - Always-on sorting toggles: `FEATURE_FLAG_ALWAYS_ON_SORTING`, `ALWAYS_ON_SORT_*`, `MAPPING_*`
+- Model routing overrides: see `docs/ai-providers.md`
 
 ## Core Commands
 
@@ -137,7 +152,7 @@ This starts `app`, `worker`, `cron`, `db`, and `redis` using the production imag
 
 ## Operational Endpoints
 
-- `GET /api/health` - app health + env validation + Gmail ingestion mode/heartbeat
+- `GET /api/health` - app health + env validation + active language-model provider config + Gmail ingestion mode/heartbeat
 - `POST /api/cron/sort` - always-on sorting trigger (requires `Authorization: Bearer $CRON_SECRET`)
 - `POST /api/cron/reminders` - enqueue due reminders (same auth)
 - `GET /api/cron/renew-gmail-watches` - renew Gmail watch subscriptions (same auth)
@@ -153,6 +168,7 @@ This starts `app`, `worker`, `cron`, `db`, and `redis` using the production imag
 - Folder And Routing System: `docs/folders.md`
 - MasterPrompt System: `docs/masterprompt.md`
 - Supermemory Integration: `docs/supermemory.md`
+- AI Providers: `docs/ai-providers.md`
 - Benchmarks: `docs/benchmarks.md`
 - Security: `docs/security.md`
 - Troubleshooting: `docs/troubleshooting.md`

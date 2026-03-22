@@ -217,6 +217,40 @@ describe('buildTerminalFallbackResponse', () => {
     );
   });
 
+  test('uses working-state progress to explain timeout fallback', () => {
+    const response = buildTerminalFallbackResponse([], [], {
+      selectedPack: 'safe_context_pack',
+      workingState: {
+        goal: 'show me the tweet',
+        selectedPack: 'safe_context_pack',
+        phase: 'failed',
+        primaryDomain: 'context',
+        completedSteps: ['search_inbox_context', 'search_memory', 'search_calendar'],
+        nextStep: 'Explain the failure briefly.',
+        factsLearned: ['Listed 1 of 1 matching inbox emails.'],
+        artifacts: {
+          lastTool: 'search_calendar',
+          lastToolSummary: 'calendar searched',
+        },
+      },
+      turnFeatures: {
+        explicitSendApproval: false,
+        draftCandidatePresent: false,
+        pendingCalendarChangePresent: false,
+        channel: 'telegram',
+        hasRecentPendingCalendarPreview: false,
+        pendingCalendarConfirmIntent: false,
+        pendingCalendarCancelIntent: false,
+        draftCandidateReason: null,
+      },
+      timedOut: true,
+    });
+
+    expect(response).toBe(
+      'I hit a time limit, but I did check your inbox, memory, and calendar. What I found so far: Listed 1 of 1 matching inbox emails. Give me one narrower clue, like the sender, exact phrase, or timeframe, and I will keep going.',
+    );
+  });
+
   test('uses calendar mutation fallback even when the selected pack stayed read-only', () => {
     const response = buildTerminalFallbackResponse([], [], {
       selectedPack: 'safe_context_pack',

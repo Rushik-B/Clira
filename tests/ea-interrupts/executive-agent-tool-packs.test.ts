@@ -24,6 +24,7 @@ import type {
   McpConnectionRecord,
   McpToolManifestRecord,
 } from '@/lib/services/mcp/types';
+import type { SelectableSkill, SkillExposure } from '@/lib/services/skills';
 
 function buildInput(params: {
   userRequest: string;
@@ -53,6 +54,8 @@ function buildContext(params: {
   pendingCalendarChangePresent: boolean;
   selectedPacks?: ToolPackId[];
   requestableActionPackIds?: Array<Exclude<ToolPackId, 'safe_context_pack'>>;
+  selectableSkills?: SelectableSkill[];
+  skillExposure?: SkillExposure | null;
 }): ExecutiveRuntimeContext {
   const turnFeatures = extractExecutiveTurnFeatures({
     input: params.input,
@@ -103,6 +106,15 @@ function buildContext(params: {
           set_ok: 0,
           set_skipped_non_cacheable: 0,
         },
+        read_email_attachment_content: {
+          history_hit: 0,
+          runtime_hit: 0,
+          miss_not_found: 0,
+          miss_expired: 0,
+          miss_invalidated: 0,
+          set_ok: 0,
+          set_skipped_non_cacheable: 0,
+        },
         read_email_pdf_attachment: {
           history_hit: 0,
           runtime_hit: 0,
@@ -122,6 +134,15 @@ function buildContext(params: {
           set_skipped_non_cacheable: 0,
         },
         check_calendar: {
+          history_hit: 0,
+          runtime_hit: 0,
+          miss_not_found: 0,
+          miss_expired: 0,
+          miss_invalidated: 0,
+          set_ok: 0,
+          set_skipped_non_cacheable: 0,
+        },
+        search_web: {
           history_hit: 0,
           runtime_hit: 0,
           miss_not_found: 0,
@@ -153,7 +174,20 @@ function buildContext(params: {
         set_skipped_non_cacheable: 0,
       }),
     },
+    selectableSkills: params.selectableSkills ?? [],
+    skillExposure: params.skillExposure ?? null,
     requestableActionPackIds: params.requestableActionPackIds ?? [],
+  };
+}
+
+function buildSelectableSkill(overrides?: Partial<SelectableSkill>): SelectableSkill {
+  return {
+    id: 'skill-1',
+    slug: 'investor-updates',
+    name: 'Investor Updates',
+    description: 'Handle investor update requests tersely.',
+    catalogSummary: 'Handle investor update requests tersely.',
+    ...overrides,
   };
 }
 
@@ -235,9 +269,11 @@ describe('Executive agent tool packs', () => {
       'send_progress_update',
       'search_inbox_context',
       'list_inbox_emails',
+      'read_email_attachment_content',
       'read_email_pdf_attachment',
       'search_calendar',
       'check_calendar',
+      'search_web',
       'get_reply_preferences',
     ]);
     expect(toolNames).not.toContain('send_email');
@@ -278,6 +314,26 @@ describe('Executive agent tool packs', () => {
 
     expect(toolNames).toContain('request_tool_pack_exposure');
     expect(toolNames).not.toContain('plan_calendar_change');
+  });
+
+  test('safe context can expose request_skill_exposure for selectable skills', () => {
+    const context = buildContext({
+      input: buildInput({
+        userRequest: 'Use the investor playbook here',
+      }),
+      pendingCalendarChangePresent: false,
+      selectableSkills: [buildSelectableSkill()],
+      skillExposure: {
+        selectedSkillIds: [],
+        selectedSkills: [],
+        availableSkills: [buildSelectableSkill()],
+        unavailableSkillIds: [],
+      },
+    });
+
+    const toolNames = Object.keys(buildExecutiveAgentTools(context));
+
+    expect(toolNames).toContain('request_skill_exposure');
   });
 
   test('pending calendar confirm turns expose commit but not plan', () => {
@@ -378,15 +434,17 @@ describe('Executive agent tool packs', () => {
 
     const toolNames = Object.keys(buildExecutiveAgentTools(context));
 
-    expect(toolNames.slice(0, 9)).toEqual([
+    expect(toolNames.slice(0, 11)).toEqual([
       'search_memory',
       'append_to_supermemory',
       'send_progress_update',
       'search_inbox_context',
       'list_inbox_emails',
+      'read_email_attachment_content',
       'read_email_pdf_attachment',
       'search_calendar',
       'check_calendar',
+      'search_web',
       'get_reply_preferences',
     ]);
     expect(toolNames.slice(-2)).toEqual([

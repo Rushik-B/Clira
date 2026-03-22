@@ -55,11 +55,8 @@ export async function POST(request: NextRequest) {
 
     for (const message of emailMessages) {
       try {
-        const headers = message.payload?.headers || [];
-        const fromHeader = headers.find(h => h.name === 'From')?.value || '';
-        const subjectHeader = headers.find(h => h.name === 'Subject')?.value || '';
-        const toHeader = headers.find(h => h.name === 'To')?.value || '';
-        const dateHeader = headers.find(h => h.name === 'Date')?.value;
+        const fromHeader = message.from || '';
+        const subjectHeader = message.subject || '';
 
         // Extract email address from "Name <email@domain.com>" format
         const emailMatch = fromHeader.match(/<([^>]+)>/) || fromHeader.match(/([^\s<>]+@[^\s<>]+)/);
@@ -67,19 +64,9 @@ export async function POST(request: NextRequest) {
         
         if (!fromEmail || !subjectHeader) continue;
 
-        // Get email body (simplified extraction)
-        let bodyText = message.snippet || '';
-        if (message.payload?.body?.data) {
-          try {
-            bodyText = Buffer.from(message.payload.body.data, 'base64').toString('utf-8');
-          } catch (e) {
-            // Use snippet as fallback
-            bodyText = message.snippet || '';
-          }
-        }
-
-        const emailDate = dateHeader ? new Date(dateHeader) : new Date();
-        const toEmails = toHeader ? toHeader.split(',').map(email => email.trim()) : [session.user.email!];
+        const bodyText = message.body || message.snippet || '';
+        const emailDate = message.date ? new Date(message.date) : new Date();
+        const toEmails = message.to?.length > 0 ? message.to : [session.user.email!];
 
         recentEmails.push({
           from: fromEmail,

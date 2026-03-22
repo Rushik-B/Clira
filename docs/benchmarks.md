@@ -10,7 +10,8 @@ npm run benchmark
 
 The runner checks for:
 
-- `GOOGLE_GENERATIVE_AI_API_KEY` (or `GOOGLE_API_KEY`)
+- The active language-model provider envs described in `docs/ai-providers.md`
+- Explicit model ids if you are benchmarking OpenRouter or a mixed-provider configuration
 
 ## Benchmark Assets
 

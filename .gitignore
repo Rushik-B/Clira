@@ -65,6 +65,9 @@ logs/
 *.tmp
 *.temp
 
+# personal deploy script (not part of OSS repo)
+/deploy.sh
+
 # personal archive docs (exclude from OSS repo)
 /rushiks-docs/
 /rushiks-docs

@@ -139,6 +139,7 @@ export const ReplyPlanSchema = z.object({
       directEmailHistoryUsed: z.boolean(),
       keywordEmailSearchUsed: z.boolean(),
       memorySearchUsed: z.boolean(),
+      labelingUsed: z.boolean().optional(),
     })
     .optional()
     .default({
@@ -147,6 +148,7 @@ export const ReplyPlanSchema = z.object({
       directEmailHistoryUsed: false,
       keywordEmailSearchUsed: false,
       memorySearchUsed: false,
+      labelingUsed: false,
     })
     .describe('Telemetry: which tools were actually used during planning.'),
 });

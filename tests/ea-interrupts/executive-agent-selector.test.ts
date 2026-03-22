@@ -8,6 +8,7 @@ import {
   selectExecutiveToolPackForTurn,
 } from '@/lib/ai/agents/executive-agent/selector';
 import type { ExecutiveAgentInput } from '@/lib/ai/agents/executive-agent/types';
+import type { SelectableSkill } from '@/lib/services/skills';
 
 const { listSelectableMcpServerPacksMock } = vi.hoisted(() => ({
   listSelectableMcpServerPacksMock: vi.fn(),
@@ -78,10 +79,74 @@ function buildMcpServerPack(overrides: Partial<{
   };
 }
 
+function buildSelectableSkill(overrides: Partial<SelectableSkill> = {}): SelectableSkill {
+  return {
+    id: 'skill-1',
+    slug: 'investor-updates',
+    name: 'Investor Updates',
+    description: 'Handle investor update requests tersely.',
+    catalogSummary: 'Handle investor update requests tersely.',
+    ...overrides,
+  };
+}
+
 describe('Executive agent exposure planner', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     listSelectableMcpServerPacksMock.mockResolvedValue([]);
+  });
+
+  test('draft without recognized approval adds a harness reminder to coach the user', async () => {
+    const input = buildInput({
+      userRequest: 'can u shoot that over to him',
+      history: [
+        buildAssistantMessage({
+          createdAt: '2026-03-02T17:00:00.000Z',
+          content: `Draft ready:\nTo: jake@acme.com\nSub: Quick update\n\nHey Jake,\nAll set.\n`,
+        }),
+      ],
+    });
+
+    const features = extractExecutiveTurnFeatures({
+      input,
+      pendingCalendarChangePresent: false,
+    });
+    expect(features.draftCandidatePresent).toBe(true);
+    expect(features.explicitSendApproval).toBe(false);
+
+    const selection = await selectExecutiveToolPackForTurn({
+      input,
+      features,
+    });
+
+    expect(
+      selection.reminders.some((line) =>
+        line.includes('not recognized as explicit send approval'),
+      ),
+    ).toBe(true);
+  });
+
+  test('explicit send approval recognizes standalone send and yes send it', () => {
+    expect(
+      extractExecutiveTurnFeatures({
+        input: buildInput({ userRequest: 'send' }),
+        pendingCalendarChangePresent: false,
+      }).explicitSendApproval,
+    ).toBe(true);
+
+    expect(
+      extractExecutiveTurnFeatures({
+        input: buildInput({ userRequest: 'yes send it' }),
+        pendingCalendarChangePresent: false,
+      }).explicitSendApproval,
+    ).toBe(true);
+
+    expect(
+      extractExecutiveTurnFeatures({
+        input: buildInput({ userRequest: 'send me the full thread' }),
+        pendingCalendarChangePresent: false,
+      }).explicitSendApproval,
+    ).toBe(false);
   });
 
   test('explicit send approval with an unsent draft stays in safe context until requested', async () => {
@@ -170,6 +235,25 @@ describe('Executive agent exposure planner', () => {
 
     expect(selection.mcpConnectionIds).toEqual(['mcp-conn-1']);
     expect(selection.reasons).toContain('explicit MCP server alias match');
+  });
+
+  test('exact skill name mention deterministically preselects the skill', async () => {
+    const input = buildInput({
+      userRequest: 'Use Investor Updates for this reply.',
+    });
+
+    const features = extractExecutiveTurnFeatures({
+      input,
+      pendingCalendarChangePresent: false,
+    });
+    const selection = await selectExecutiveToolPackForTurn({
+      input,
+      features,
+      selectableSkills: [buildSelectableSkill()],
+    });
+
+    expect(selection.skillIds).toEqual(['skill-1']);
+    expect(selection.reasons).toContain('explicit skill name match');
   });
 
   test('generic docs phrasing does not preselect MCP connections', async () => {

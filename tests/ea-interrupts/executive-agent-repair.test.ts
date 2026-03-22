@@ -6,12 +6,16 @@ const {
   buildExecutiveAgentToolsMock,
   resolveMcpToolExposureMock,
   listSelectableMcpServerPacksMock,
+  listSelectableSkillsMock,
+  resolveSkillExposureMock,
 } = vi.hoisted(() => ({
   callTextWithToolsMock: vi.fn(),
   callTextWithMessagesMock: vi.fn(),
   buildExecutiveAgentToolsMock: vi.fn(),
   resolveMcpToolExposureMock: vi.fn(),
   listSelectableMcpServerPacksMock: vi.fn(),
+  listSelectableSkillsMock: vi.fn(),
+  resolveSkillExposureMock: vi.fn(),
 }));
 
 vi.mock('@/lib/ai/callLlm', () => ({
@@ -25,6 +29,7 @@ vi.mock('@/lib/ai/callLlm', () => ({
 }));
 
 vi.mock('@/lib/ai/models', () => ({
+  getGoogleThinkingProviderOptions: () => undefined,
   models: {
     execAgent: () => 'mock-model',
   },
@@ -113,6 +118,31 @@ vi.mock('@/lib/services/mcp/policy/service', async (importOriginal) => {
       },
     }),
     listSelectableMcpServerPacks: listSelectableMcpServerPacksMock.mockResolvedValue([]),
+  };
+});
+
+vi.mock('@/lib/services/skills', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/services/skills')>();
+  return {
+    ...actual,
+    listSelectableSkills: listSelectableSkillsMock.mockResolvedValue([]),
+    resolveSkillExposure: resolveSkillExposureMock.mockResolvedValue({
+      selectedSkillIds: [],
+      selectedSkills: [],
+      availableSkills: [],
+      unavailableSkillIds: [],
+    }),
+    compileSkillPromptContext: vi.fn(() => ({
+      availableSkillLines: [],
+      selectedSkillFragments: [],
+      reminderLines: [],
+      degradedSummaryLines: [],
+      metadata: {
+        availableSkillCount: 0,
+        selectedSkillIds: [],
+        degradations: [],
+      },
+    })),
   };
 });
 
@@ -331,6 +361,68 @@ describe('Executive agent repair rerun', () => {
     });
   });
 
+  test('reruns into media delivery when the turn requests the media delivery pack', async () => {
+    let buildCount = 0;
+    buildExecutiveAgentToolsMock.mockImplementation(() => {
+      buildCount += 1;
+      return buildCount === 1
+        ? {
+            search_inbox_context: tool('search_inbox_context'),
+            request_tool_pack_exposure: tool('request_tool_pack_exposure'),
+          }
+        : {
+            search_inbox_context: tool('search_inbox_context'),
+            deliver_content_reference: tool('deliver_content_reference'),
+          };
+    });
+
+    callTextWithToolsMock
+      .mockResolvedValueOnce({
+        text: '',
+        toolCalls: [{ toolName: 'request_tool_pack_exposure' }],
+        toolResults: [
+          {
+            toolName: 'request_tool_pack_exposure',
+            result: {
+              ok: true,
+              requestedPackIds: ['media_delivery_pack'],
+              rerunRequired: true,
+            },
+          },
+        ],
+        steps: [{ toolCalls: [{ toolName: 'request_tool_pack_exposure' }] }],
+        toolBudget: { totalCalls: 1, perTool: { request_tool_pack_exposure: 1 } },
+      })
+      .mockResolvedValueOnce({
+        text: 'Delivered to Telegram.',
+        toolCalls: [{ toolName: 'deliver_content_reference' }],
+        toolResults: [
+          {
+            toolName: 'deliver_content_reference',
+            result: { success: true, message: 'Delivered.' },
+          },
+        ],
+        steps: [{ toolCalls: [{ toolName: 'deliver_content_reference' }] }],
+        toolBudget: { totalCalls: 1, perTool: { deliver_content_reference: 1 } },
+      });
+
+    const agent = new ExecutiveAgent();
+    const result = await agent.process(
+      buildInput({
+        userRequest: 'show me that pdf on telegram',
+      }),
+    );
+
+    expect(callTextWithToolsMock).toHaveBeenCalledTimes(2);
+    expect(result.status).toBe('ok');
+    expect(result.response).toBe('Delivered to Telegram.');
+    expect(result.metadata?.harness).toMatchObject({
+      repairAttempted: true,
+      repairExpandedPacks: ['media_delivery_pack'],
+      repairReason: 'requested_tool_pack_exposure',
+    });
+  });
+
   test('marks generic terminal fallback responses as degraded', async () => {
     buildExecutiveAgentToolsMock.mockImplementation(() => ({
       search_memory: tool('search_memory'),
@@ -397,6 +489,50 @@ describe('Executive agent repair rerun', () => {
 
     expect(result.status).toBe('ok');
     expect(result.response).toBe('CMPT 410 Assignment 1 is due on Tuesday, March 24, 2026.');
+  });
+
+  test('uses timeout synthesis when a deadline hits after partial progress', async () => {
+    buildExecutiveAgentToolsMock.mockImplementation(() => ({
+      search_inbox_context: {
+        description: 'search_inbox_context',
+        inputSchema: {},
+        execute: async () => ({
+          summary: 'Found one likely match in inbox search.',
+          matchedCount: 1,
+        }),
+      },
+      search_memory: tool('search_memory'),
+    }));
+
+    callTextWithToolsMock.mockImplementationOnce(async ({ tools }) => {
+      await tools.search_inbox_context.execute({});
+      throw new Error('Deadline exceeded');
+    });
+    callTextWithMessagesMock.mockResolvedValueOnce({
+      text: 'I found one matching inbox result, but I ran out of time before I could verify the exact tweet. Give me the sender or one exact phrase from it.',
+    });
+
+    const agent = new ExecutiveAgent();
+    const result = await agent.process(
+      buildInput({
+        userRequest: 'show me the tweet',
+      }),
+    );
+
+    const timeoutSynthesisCall = callTextWithMessagesMock.mock.calls[0]?.[0];
+    expect(callTextWithMessagesMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        op: 'twilio.executive.timeout_synthesis',
+      }),
+    );
+    expect(timeoutSynthesisCall?.messages?.[0]?.content).toContain('Recent tool trace summary:');
+    expect(timeoutSynthesisCall?.messages?.[0]?.content).toContain('Recent tool execution snapshots:');
+    expect(timeoutSynthesisCall?.messages?.[0]?.content).toContain('tool=search_inbox_context');
+    expect(timeoutSynthesisCall?.messages?.[0]?.content).toContain('Found one likely match in inbox search.');
+    expect(result.status).toBe('fallback');
+    expect(result.response).toBe(
+      'I found one matching inbox result, but I ran out of time before I could verify the exact tweet. Give me the sender or one exact phrase from it.',
+    );
   });
 
 });

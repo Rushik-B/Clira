@@ -9,6 +9,10 @@ import {
   GMAIL_PULL_WORKER_HEARTBEAT_TTL_SECONDS,
   readGmailPullWorkerHeartbeat,
 } from '@/lib/email/gmailPullWorkerHeartbeat';
+import {
+  getConfiguredLanguageModelProviders,
+  getMissingLanguageModelConfig,
+} from '@/lib/ai/models';
 
 const REQUIRED_ENV = [
   'GOOGLE_CLIENT_ID',
@@ -28,14 +32,10 @@ export async function GET() {
       getGmailPullSubscription();
     }
 
-    const hasLlmKey = !!(
-      process.env.GOOGLE_GENERATIVE_AI_API_KEY || process.env.GOOGLE_API_KEY
-    );
     const missingRequired = REQUIRED_ENV.filter((envVar) => !process.env[envVar]);
+    const missingLanguageModelConfig = getMissingLanguageModelConfig();
 
-    if (!hasLlmKey) {
-      missingRequired.push('GOOGLE_GENERATIVE_AI_API_KEY');
-    }
+    missingRequired.push(...missingLanguageModelConfig);
 
     if (missingRequired.length > 0) {
       return NextResponse.json(
@@ -67,6 +67,7 @@ export async function GET() {
           checks: {
             database: 'healthy',
             environment: 'healthy',
+            languageModelProviders: getConfiguredLanguageModelProviders(),
             gmailIngestionMode: mode,
             gmailPullWorker: 'unhealthy',
             gmailPullWorkerHeartbeatAgeMs: pullHeartbeat?.ageMs ?? null,
@@ -83,6 +84,7 @@ export async function GET() {
       checks: {
         database: 'healthy',
         environment: 'healthy',
+        languageModelProviders: getConfiguredLanguageModelProviders(),
         gmailIngestionMode: mode,
         gmailPullWorker: mode === 'pull' ? 'healthy' : 'not-required',
         gmailPullWorkerHeartbeatAgeMs: pullHeartbeat?.ageMs ?? null,

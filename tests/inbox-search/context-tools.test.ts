@@ -11,6 +11,10 @@ const listInboxMocks = vi.hoisted(() => ({
   listInboxEmails: vi.fn(),
 }));
 
+const readAttachmentMocks = vi.hoisted(() => ({
+  readEmailAttachmentContent: vi.fn(),
+}));
+
 const readPdfMocks = vi.hoisted(() => ({
   readEmailPdfAttachment: vi.fn(),
 }));
@@ -50,6 +54,7 @@ vi.mock('@/lib/ai/agents/emailRetrievalSubagent', () => ({
 
 vi.mock('@/lib/services/inbox-search', () => ({
   listInboxEmails: listInboxMocks.listInboxEmails,
+  readEmailAttachmentContent: readAttachmentMocks.readEmailAttachmentContent,
   readEmailPdfAttachment: readPdfMocks.readEmailPdfAttachment,
 }));
 
@@ -223,6 +228,15 @@ function createMockToolResultCache() {
           set_ok: 0,
           set_skipped_non_cacheable: 0,
         },
+        read_email_attachment_content: {
+          history_hit: 0,
+          runtime_hit: 0,
+          miss_not_found: 0,
+          miss_expired: 0,
+          miss_invalidated: 0,
+          set_ok: 0,
+          set_skipped_non_cacheable: 0,
+        },
         search_calendar: {
           history_hit: 0,
           runtime_hit: 0,
@@ -242,6 +256,15 @@ function createMockToolResultCache() {
           set_skipped_non_cacheable: 0,
         },
         check_calendar: {
+          history_hit: 0,
+          runtime_hit: 0,
+          miss_not_found: 0,
+          miss_expired: 0,
+          miss_invalidated: 0,
+          set_ok: 0,
+          set_skipped_non_cacheable: 0,
+        },
+        search_web: {
           history_hit: 0,
           runtime_hit: 0,
           miss_not_found: 0,

@@ -22,6 +22,73 @@ interface TelegramTarget {
   telegramUserId: string;
 }
 
+function pickPreferredTelegramTarget(params: {
+  recentConversation:
+    | {
+        chatId: string;
+        telegramUserId: string;
+        updatedAt: Date;
+      }
+    | null;
+  recentLink:
+    | {
+        chatId: string;
+        telegramUserId: string;
+        updatedAt: Date;
+      }
+    | null;
+}): TelegramTarget | null {
+  const { recentConversation, recentLink } = params;
+
+  if (recentConversation && recentLink) {
+    return recentConversation.updatedAt >= recentLink.updatedAt
+      ? {
+          chatId: recentConversation.chatId,
+          telegramUserId: recentConversation.telegramUserId,
+        }
+      : {
+          chatId: recentLink.chatId,
+          telegramUserId: recentLink.telegramUserId,
+        };
+  }
+
+  if (recentConversation) {
+    return {
+      chatId: recentConversation.chatId,
+      telegramUserId: recentConversation.telegramUserId,
+    };
+  }
+
+  if (recentLink) {
+    return {
+      chatId: recentLink.chatId,
+      telegramUserId: recentLink.telegramUserId,
+    };
+  }
+
+  return null;
+}
+
+export async function resolveTelegramDeliveryTargetForUser(
+  userId: string,
+): Promise<TelegramTarget | null> {
+  if (!isTelegramEnabled()) {
+    return null;
+  }
+
+  const telegramConversationManager = getTelegramConversationManager();
+  const pairingManager = getPairingManager();
+  const [recentConversation, recentLink] = await Promise.all([
+    telegramConversationManager.getMostRecentConversationForUser(userId),
+    pairingManager.getMostRecentActiveLinkForUser(userId),
+  ]);
+
+  return pickPreferredTelegramTarget({
+    recentConversation,
+    recentLink,
+  });
+}
+
 export interface MessagingTargetsResolution {
   notificationPreference: NotificationDeliveryChannel;
   hasWhatsAppAvailable: boolean;
@@ -46,35 +113,7 @@ export async function resolveMessagingTargets(
   let availableTelegramTarget: TelegramTarget | null = null;
 
   if (isTelegramEnabled()) {
-    const telegramConversationManager = getTelegramConversationManager();
-    const pairingManager = getPairingManager();
-    const [recentConversation, recentLink] = await Promise.all([
-      telegramConversationManager.getMostRecentConversationForUser(input.userId),
-      pairingManager.getMostRecentActiveLinkForUser(input.userId),
-    ]);
-
-    if (recentConversation && recentLink) {
-      availableTelegramTarget =
-        recentConversation.updatedAt >= recentLink.updatedAt
-          ? {
-              chatId: recentConversation.chatId,
-              telegramUserId: recentConversation.telegramUserId,
-            }
-          : {
-              chatId: recentLink.chatId,
-              telegramUserId: recentLink.telegramUserId,
-            };
-    } else if (recentConversation) {
-      availableTelegramTarget = {
-        chatId: recentConversation.chatId,
-        telegramUserId: recentConversation.telegramUserId,
-      };
-    } else if (recentLink) {
-      availableTelegramTarget = {
-        chatId: recentLink.chatId,
-        telegramUserId: recentLink.telegramUserId,
-      };
-    }
+    availableTelegramTarget = await resolveTelegramDeliveryTargetForUser(input.userId);
   }
 
   const hasTelegramAvailable = Boolean(availableTelegramTarget);

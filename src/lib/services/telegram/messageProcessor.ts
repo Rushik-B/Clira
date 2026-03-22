@@ -31,15 +31,18 @@ import {
 } from '@/lib/services/telegram';
 import {
   buildOrchestrationMessageMetadata,
+  detectMessagingCommand,
   emitOrchestratorEvent,
   getMessagingOrchestrator,
   getDuplicateInboundMessageIdFromAdapter,
   isAbortError,
   type ChannelAdapter,
+  type MessagingCommand,
   type RunContext,
 } from '@/lib/services/messaging-orchestration';
 import {
   buildInlineBufferProvenance,
+  createStoredContentReference,
   extractContentFromBuffer,
   formatMessagingMediaForAgent,
   renderContentExtractionForLegacyText,
@@ -52,7 +55,7 @@ export interface ProcessMessageResult {
   metadata?: Prisma.InputJsonObject;
 }
 
-type Command = 'send' | 'save' | 'clear' | 'cancel' | 'help' | null;
+type Command = MessagingCommand;
 
 const VOICE_MEMO_NO_CONTENT_PHRASES = [
   '[no speech detected]',
@@ -71,66 +74,6 @@ function isVoiceMemoNoContent(transcript: string): boolean {
   const t = transcript.trim().toLowerCase();
   if (!t) return true;
   return VOICE_MEMO_NO_CONTENT_PHRASES.some((phrase) => t === phrase || t.startsWith(phrase));
-}
-
-function detectCommand(text: string): Command {
-  const normalized = text.toLowerCase().trim();
-
-  if (
-    normalized === 'send' ||
-    normalized === 'send it' ||
-    normalized === 'send now' ||
-    normalized === 'yes send' ||
-    normalized === 'yes, send' ||
-    normalized === 'yes send it' ||
-    normalized === 'send email' ||
-    normalized === 'send the email'
-  ) {
-    return 'send';
-  }
-
-  if (
-    normalized === 'save' ||
-    normalized === 'save it' ||
-    normalized === 'save draft' ||
-    normalized === 'save as draft' ||
-    normalized === 'save to drafts'
-  ) {
-    return 'save';
-  }
-
-  if (
-    normalized === 'clear' ||
-    normalized === 'reset' ||
-    normalized === 'start over' ||
-    normalized === 'new conversation' ||
-    normalized === 'clear conversation'
-  ) {
-    return 'clear';
-  }
-
-  if (
-    normalized === 'cancel' ||
-    normalized === 'cancel draft' ||
-    normalized === 'discard' ||
-    normalized === 'discard draft' ||
-    normalized === 'nevermind' ||
-    normalized === 'never mind'
-  ) {
-    return 'cancel';
-  }
-
-  if (
-    normalized === 'help' ||
-    normalized === '/help' ||
-    normalized === 'commands' ||
-    normalized === 'what can you do' ||
-    normalized === 'what can you do?'
-  ) {
-    return 'help';
-  }
-
-  return null;
 }
 
 type ResolvedReplyContext = {
@@ -424,6 +367,20 @@ export async function processTelegramMessage(
     try {
       if (message.voiceFileId) {
         const media = await telegramClient.getFileBuffer(message.voiceFileId);
+        const contentReference = await createStoredContentReference({
+          userId: link.userId,
+          buffer: media.data,
+          mimeHint: message.voiceMimeType ?? media.mimeType,
+          trustClass: 'user_provided',
+          provenance: buildInlineBufferProvenance({
+            sourceLabel: 'Telegram voice memo',
+            sourceKind: 'telegram_media',
+            channel: 'telegram',
+            conversationId: conversation.id,
+            messageId,
+            attachmentId: message.voiceFileId,
+          }),
+        });
         const extraction = await extractContentFromBuffer({
           buffer: media.data,
           mimeType: message.voiceMimeType ?? media.mimeType,
@@ -454,10 +411,28 @@ export async function processTelegramMessage(
             error: 'Voice memo transcription empty',
           };
         }
-        inboundMetadata = { senderName, fromVoiceMemo: true };
+        inboundMetadata = {
+          senderName,
+          fromVoiceMemo: true,
+          contentRefIds: [contentReference.contentRefId],
+        };
       } else if (message.imageFileId) {
         const media = await telegramClient.getFileBuffer(message.imageFileId!);
         const caption = message.imageCaption?.trim();
+        const contentReference = await createStoredContentReference({
+          userId: link.userId,
+          buffer: media.data,
+          mimeHint: message.imageMimeType ?? media.mimeType,
+          trustClass: 'user_provided',
+          provenance: buildInlineBufferProvenance({
+            sourceLabel: 'Telegram image',
+            sourceKind: 'telegram_media',
+            channel: 'telegram',
+            conversationId: conversation.id,
+            messageId,
+            attachmentId: message.imageFileId,
+          }),
+        });
         const extraction = await extractContentFromBuffer({
           buffer: media.data,
           mimeType: message.imageMimeType ?? media.mimeType,
@@ -482,10 +457,30 @@ export async function processTelegramMessage(
           extraction,
           caption,
         });
-        inboundMetadata = { senderName, fromImage: true, imageCaption: message.imageCaption ?? null };
+        inboundMetadata = {
+          senderName,
+          fromImage: true,
+          imageCaption: message.imageCaption ?? null,
+          contentRefIds: [contentReference.contentRefId],
+        };
       } else {
         const media = await telegramClient.getFileBuffer(message.pdfFileId!);
         const caption = message.pdfCaption?.trim();
+        const contentReference = await createStoredContentReference({
+          userId: link.userId,
+          buffer: media.data,
+          displayName: message.pdfFilename ?? null,
+          mimeHint: message.pdfMimeType ?? media.mimeType,
+          trustClass: 'user_provided',
+          provenance: buildInlineBufferProvenance({
+            sourceLabel: 'Telegram PDF',
+            sourceKind: 'telegram_media',
+            channel: 'telegram',
+            conversationId: conversation.id,
+            messageId,
+            attachmentId: message.pdfFileId,
+          }),
+        });
         const extraction = await extractContentFromBuffer({
           buffer: media.data,
           mimeType: message.pdfMimeType ?? media.mimeType,
@@ -517,6 +512,7 @@ export async function processTelegramMessage(
           fromPdf: true,
           pdfFilename: message.pdfFilename ?? null,
           pdfCaption: message.pdfCaption ?? null,
+          contentRefIds: [contentReference.contentRefId],
         };
       }
     } catch (error) {
@@ -580,7 +576,7 @@ export async function processTelegramMessage(
 
   await adapter.persistInbound();
 
-  let activeCommand: Command = detectCommand(commandText);
+  let activeCommand: Command = detectMessagingCommand(commandText);
 
   const orchestrator = getMessagingOrchestrator();
   const orchestrationDecision = await orchestrator.prepareRunWithAdapter({

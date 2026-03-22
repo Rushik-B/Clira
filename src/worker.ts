@@ -49,7 +49,12 @@ import { createGmailServiceForUser } from '@/lib/security/getUserGmailCredential
 import { encryptEmailContent, decryptEmailContent } from '@/lib/security/emailCrypto';
 // AI queue label removed: no longer creating/applying a dedicated Gmail label
 import { normalizeGmailLabelColor } from '@/lib/gmail/labelColors';
-import { triggerReminderNotification, markReminderMissed } from '@/lib/services/reminderNotificationService';
+import {
+  getReminderIdsEligibleForTerminalFailureMiss,
+  markReminderMissed,
+  REMINDER_PRE_DELIVERY_MISSABLE_STATUS_LIST,
+  triggerReminderNotifications,
+} from '@/lib/services/reminderNotificationService';
 import { isPrismaAuthenticationFailure } from '@/lib/prismaErrors';
 import {
   isTelegramEnabled,
@@ -588,20 +593,56 @@ const mcpHealthcheckConnectionWorker = new Worker<McpHealthcheckConnectionJobDat
 );
 
 // --- Worker for Reminder Notifications ---
-const reminderNotificationWorker = new Worker<ReminderNotificationJobData>(
+/** Pre-batch job shape (single reminder per job). In-flight Redis jobs may still use this. */
+type LegacyReminderNotificationJobData = {
+  reminderId: string;
+  userId: string;
+  userEmail: string;
+  title: string;
+  context?: string;
+};
+
+function normalizeReminderNotificationJobData(
+  data: ReminderNotificationJobData | LegacyReminderNotificationJobData,
+): ReminderNotificationJobData {
+  if ('items' in data && Array.isArray(data.items) && data.items.length > 0) {
+    return data;
+  }
+  const legacy = data as LegacyReminderNotificationJobData;
+  return {
+    userId: legacy.userId,
+    userEmail: legacy.userEmail,
+    dueMinuteEpochMs: 0,
+    items: [
+      {
+        reminderId: legacy.reminderId,
+        title: legacy.title,
+        context: legacy.context,
+      },
+    ],
+  };
+}
+
+const reminderNotificationWorker = new Worker<
+  ReminderNotificationJobData | LegacyReminderNotificationJobData
+>(
   'reminder-notification',
-  async (job: Job<ReminderNotificationJobData>) => {
-    const { reminderId, userId } = job.data;
-    console.log(`[REMINDER NOTIFY START] reminder=${reminderId} user=${userId} (Job ID: ${job.id})`);
+  async (job: Job<ReminderNotificationJobData | LegacyReminderNotificationJobData>) => {
+    const normalized = normalizeReminderNotificationJobData(job.data);
+    const { userId, items } = normalized;
+    const ids = items.map((i) => i.reminderId).join(',');
+    console.log(
+      `[REMINDER NOTIFY START] batch=${items.length} reminders=[${ids}] user=${userId} (Job ID: ${job.id})`,
+    );
 
     try {
-      await triggerReminderNotification(job.data);
-      console.log(`[REMINDER NOTIFY COMPLETE] reminder=${reminderId} (Job ID: ${job.id})`);
+      await triggerReminderNotifications(normalized);
+      console.log(`[REMINDER NOTIFY COMPLETE] user=${userId} batch=${items.length} (Job ID: ${job.id})`);
     } catch (error) {
-      console.error(`[REMINDER NOTIFY FAILED] reminder=${reminderId} (Job ID: ${job.id})`, error);
+      console.error(`[REMINDER NOTIFY FAILED] reminders=[${ids}] (Job ID: ${job.id})`, error);
       if (isPrismaAuthenticationFailure(error)) {
         throw new UnrecoverableError(
-          `Non-retryable database authentication failure while processing reminder ${reminderId}`,
+          `Non-retryable database authentication failure while processing reminder batch [${ids}]`,
         );
       }
       throw error;
@@ -615,9 +656,10 @@ const reminderNotificationWorker = new Worker<ReminderNotificationJobData>(
 
 reminderNotificationWorker.on('failed', async (job, error) => {
   if (!job) return;
+  const batchIds = normalizeReminderNotificationJobData(job.data).items.map((i) => i.reminderId);
   if (isPrismaAuthenticationFailure(error)) {
     console.error(
-      `[REMINDER NOTIFY NON-RETRYABLE] reminder=${job.data.reminderId} skipping retry and missed-state write due to Prisma authentication failure`,
+      `[REMINDER NOTIFY NON-RETRYABLE] reminders=[${batchIds.join(',')}] skipping retry and missed-state write due to Prisma authentication failure`,
     );
     return;
   }
@@ -626,23 +668,31 @@ reminderNotificationWorker.on('failed', async (job, error) => {
   const attemptsMade = job.attemptsMade ?? 0;
   if (attemptsMade < attempts) {
     console.warn(
-      `[REMINDER NOTIFY RETRY] reminder=${job.data.reminderId} attempt=${attemptsMade}/${attempts}`,
+      `[REMINDER NOTIFY RETRY] reminders=[${batchIds.join(',')}] attempt=${attemptsMade}/${attempts}`,
     );
     return;
   }
 
   const reason = error instanceof Error ? error.message : 'delivery-failed';
-  try {
-    await markReminderMissed({
-      reminderId: job.data.reminderId,
-      userId: job.data.userId,
-      reason,
-    });
-  } catch (markError) {
-    console.error(
-      `[REMINDER NOTIFY MISS MARK FAILED] reminder=${job.data.reminderId} unable to persist MISSED state after terminal failure`,
-      markError,
-    );
+  const remindersToMarkMissed = await getReminderIdsEligibleForTerminalFailureMiss({
+    reminderIds: batchIds,
+    userId: job.data.userId,
+  });
+
+  for (const reminderId of remindersToMarkMissed) {
+    try {
+      await markReminderMissed({
+        reminderId,
+        userId: job.data.userId,
+        reason,
+        allowedStatuses: REMINDER_PRE_DELIVERY_MISSABLE_STATUS_LIST,
+      });
+    } catch (markError) {
+      console.error(
+        `[REMINDER NOTIFY MISS MARK FAILED] reminder=${reminderId} unable to persist MISSED state after terminal failure`,
+        markError,
+      );
+    }
   }
 });
 

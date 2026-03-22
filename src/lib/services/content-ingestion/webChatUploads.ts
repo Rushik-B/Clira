@@ -112,7 +112,7 @@ export async function ingestWebChatUploads(params: {
       continue;
     }
 
-    const reference = createStoredContentReference({
+    const reference = await createStoredContentReference({
       userId: params.userId,
       buffer: decoded.buffer,
       displayName: filename,

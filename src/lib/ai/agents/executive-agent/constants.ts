@@ -10,11 +10,12 @@ export function resolveExecAgentThinkingLevel(): ExecAgentThinkingLevel {
   return 'high';
 }
 
-export const MESSAGING_DEADLINE_MS = 180_000;
+export const MESSAGING_DEADLINE_MS = 220_000;
 export const MESSAGING_TOOL_RESPONSE_BUFFER_MS = 3_500;
 export const MESSAGING_FIRST_TOOL_MAX_BUDGET_MS = 30_000;
 export const MESSAGING_SUBSEQUENT_TOOL_RESERVE_MS = 15_000;
 export const MESSAGING_MIN_SUBAGENT_BUDGET_MS = 8_000;
+export const MESSAGING_TIMEOUT_SYNTHESIS_BUDGET_MS = 2_500;
 export const PLAN_CALENDAR_CHANGE_MIN_BUDGET_MS = 35_000;
 export const CALENDAR_SEARCH_MIN_BUDGET_MS = 35_000;
 export const MESSAGING_MAX_STEPS = 30;
@@ -26,6 +27,9 @@ export const PENDING_CALENDAR_CHANGE_TTL_MS = 10 * 60 * 1000;
 
 /** Per-tool call limits. Sum of used tools is also capped by MESSAGING_MAX_TOOL_CALLS_TOTAL. */
 export const MESSAGING_TOOL_BUDGETS_BASE: Record<string, number> = {
+  request_skill_exposure: 1,
+  request_tool_pack_exposure: 1,
+  request_mcp_server_tools: 1,
   search_inbox_context: 4,
   list_inbox_emails: 3,
   search_calendar: 2,
@@ -44,9 +48,12 @@ export const MESSAGING_TOOL_BUDGETS_BASE: Record<string, number> = {
   snooze_reminder: 50,
   dismiss_reminder: 50,
   cancel_reminder: 50,
+  deliver_content_reference: 4,
   send_email: 1,
-  send_progress_update: 3,
+  send_progress_update: 1,
+  read_email_attachment_content: 10,
   read_email_pdf_attachment: 10,
+  search_web: 4,
 };
 
 export const MESSAGING_INBOX_CALL_LIMITS: Record<'quick' | 'deep', number> = {

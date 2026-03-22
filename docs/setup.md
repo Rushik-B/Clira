@@ -21,6 +21,29 @@ Set all required values in `.env`.
 Fresh Docker volumes bootstrap a dedicated app DB role from `CLIRA_DB_APP_USER` / `CLIRA_DB_APP_PASSWORD`.
 If your Postgres volume already exists, create or update that role once before starting app and workers.
 
+If you plan to run the full Docker stack on a VM, also set:
+
+- `APP_PUBLIC_URL` to the external URL users will open in the browser
+- `APP_LANDING_PAGE_URL` only if unauthenticated users should be redirected to a separate landing page instead of `/signin`
+
+### Language model provider
+
+Clira defaults to Gemini-backed models. To keep the current setup unchanged, leave `AI_PROVIDER=google` and set `GOOGLE_GENERATIVE_AI_API_KEY` (or `GOOGLE_API_KEY`).
+
+If you want to use OpenRouter, set `AI_PROVIDER=openrouter`, `OPENROUTER_API_KEY`, and explicit role model ids as described in `docs/ai-providers.md`.
+
+Per-model provider overrides take precedence over the global provider if you need a mixed setup.
+
+### Executive-agent public web search
+
+If you want the executive agent to look up current public information on the internet, set:
+
+```env
+EXA_API_KEY=your_exa_api_key
+```
+
+This enables the executive agent's `search_web` tool. It is optional. Without it, inbox, calendar, memory, and other agent features still work, but public web search degrades cleanly as unavailable.
+
 ## 2) Start infra
 
 ```bash
@@ -120,4 +143,5 @@ If running local `npm run dev` + `npm run start:worker` + `npm run start:gmail-p
 - Use strong `NEXTAUTH_SECRET` and `CRON_SECRET`
 - Keep app and worker as separate processes
 - Configure persistent Postgres and Redis volumes
+- Set `APP_PUBLIC_URL` to the real public VM/domain URL before `docker compose up --build`
 - Configure webhook URLs with HTTPS if using push mode

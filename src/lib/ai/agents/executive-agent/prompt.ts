@@ -22,7 +22,28 @@ import {
   formatReplyPipelineInstruction,
 } from './replyPipelineContext';
 
-export const EXECUTIVE_AGENT_PROMPT_VERSION = 'ea-prompt-v10';
+export const EXECUTIVE_AGENT_PROMPT_VERSION = 'ea-prompt-v19';
+
+// Injected only when the exec agent is activated by a system trigger (alert or reminder),
+// not by a user message. Tells the agent to reason with full context but output selectively.
+const NOTIFICATION_DELIVERY_MODE_SECTION = `## Notification Delivery Mode
+You are responding to a system-triggered notification, not a user message. The user did not initiate this turn — you are interrupting them.
+
+Output contract for this turn:
+- Use all available context (memory, inbox, calendar, reply pipeline) for your internal reasoning and tool calls. That is the work.
+- Your final output is the notification itself: what happened, and why it matters to this user specifically.
+- Target length: for a single reminder, 1-2 sentences. For a batch (multiple reminders in one delivery), cover every listed item in one message. Prefer a short numbered or bulleted list when there are several distinct items. Do not drop or merge items into vague prose; each item deserves a clear line or sentence.
+- Duplicate or overlapping reminders: if two or more items clearly refer to the same thing (same meeting or link, same deadline, same person to contact, same subscription), recognize that and say it once. Merge redundant lines into a single clear nudge instead of repeating nearly identical text. If titles differ slightly but the substance is the same, pick one phrasing and do not enumerate duplicates as separate items.
+- Do not mention the Reply Pipeline, reply queue counts, or unrelated email backlog in your output.
+- Do not offer follow-up actions unless you can complete them this turn with currently available tools and they are directly relevant to this specific notification.
+- Match confidence to evidence. For financial or security alerts, prefer "looks like", "matches", or "probably" over "definitely" or "it's yours". For confirmed facts, state them plainly.
+- Do not append a reflexive "Want me to..." closer. If there is no genuinely useful next step you can complete right now, stop.
+- One topic only when there is a single reminder. If the request lists multiple reminders (batch), treat each as required coverage; do not add unrelated topics.`;
+
+function isNotificationRequest(userRequest: string): boolean {
+  return userRequest.startsWith('ALERT NOTIFICATION') ||
+    userRequest.startsWith('REMINDER DELIVERY');
+}
 
 export async function resolveUserCalendarTimezone(userId: string): Promise<string> {
   let userTimezone = DEFAULT_CALENDAR_TIMEZONE;
@@ -57,6 +78,9 @@ function buildCurrentTurnMessage(params: {
   mcpToolSummaryLines: string[];
   mcpDegradedSummaryLines: string[];
   mcpAvailableServerLines: string[];
+  availableSkillLines: string[];
+  selectedSkillFragments: string[];
+  skillDegradedSummaryLines: string[];
 }): string {
   const sections = [
     '## Current Turn Context',
@@ -70,9 +94,10 @@ function buildCurrentTurnMessage(params: {
     params.runContextFragment,
     '',
     '## Capability Model This Turn',
-    '- Safe context tools for memory, inbox, calendar, PDF reads, progress updates, and reply preference reads are available every turn.',
+    '- Safe context tools for memory, inbox, calendar, public web search, PDF reads, progress updates, and reply preference reads are available every turn.',
     '- Only action tools already exposed this turn are callable right now.',
     '- "Available Action Packs" are candidates you may request with request_tool_pack_exposure when safe context is not enough.',
+    '- "Available Skills" are user-authored guidance candidates you may request with request_skill_exposure when that guidance would materially help.',
     '- Only MCP tools listed under "MCP Tools This Turn" are callable right now.',
     '- "Available MCP Server Packs" are candidates you may request with request_mcp_server_tools when native tools are insufficient.',
     '',
@@ -103,10 +128,31 @@ function buildCurrentTurnMessage(params: {
           '',
         ]
       : []),
+    ...(params.availableSkillLines.length > 0
+      ? [
+          '## Available Skills',
+          ...params.availableSkillLines.map((line) => `- ${line}`),
+          '',
+        ]
+      : []),
+    ...(params.selectedSkillFragments.length > 0
+      ? [
+          '## Selected Skills This Turn',
+          ...params.selectedSkillFragments,
+          '',
+        ]
+      : []),
     ...(params.mcpDegradedSummaryLines.length > 0
       ? [
           '## MCP Degraded Tools',
           ...params.mcpDegradedSummaryLines.map((line) => `- ${line}`),
+          '',
+        ]
+      : []),
+    ...(params.skillDegradedSummaryLines.length > 0
+      ? [
+          '## Skill Prompt Degraded Notes',
+          ...params.skillDegradedSummaryLines.map((line) => `- ${line}`),
           '',
         ]
       : []),
@@ -120,6 +166,9 @@ function buildCurrentTurnMessage(params: {
     '## User Memory Snapshot',
     params.memoryContext,
     '',
+    ...(isNotificationRequest(params.input.userRequest)
+      ? [NOTIFICATION_DELIVERY_MODE_SECTION, '']
+      : []),
     '## Current User Request',
     params.input.userRequest,
   ];
@@ -137,6 +186,9 @@ export async function buildExecutiveAgentPrompt(
     mcpToolSummaryLines?: string[];
     mcpDegradedSummaryLines?: string[];
     mcpAvailableServerLines?: string[];
+    availableSkillLines?: string[];
+    selectedSkillFragments?: string[];
+    skillDegradedSummaryLines?: string[];
   },
 ): Promise<PromptContext> {
   const systemPrompt = readPromptFile('whatsapp/executiveAgentPrompt.md');
@@ -250,6 +302,9 @@ export async function buildExecutiveAgentPrompt(
           mcpToolSummaryLines: options?.mcpToolSummaryLines ?? [],
           mcpDegradedSummaryLines: options?.mcpDegradedSummaryLines ?? [],
           mcpAvailableServerLines: options?.mcpAvailableServerLines ?? [],
+          availableSkillLines: options?.availableSkillLines ?? [],
+          selectedSkillFragments: options?.selectedSkillFragments ?? [],
+          skillDegradedSummaryLines: options?.skillDegradedSummaryLines ?? [],
         }),
       },
     ],

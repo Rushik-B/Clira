@@ -8,6 +8,11 @@ import { createGmailServiceForUser } from '@/lib/security/getUserGmailCredential
 import { encryptEmailContent, encryptThreadContent, decryptEmailContent, decryptEmails, decryptThreadContent } from '@/lib/security/emailCrypto';
 import { triggerAlertNotification } from '@/lib/services/alertNotificationService';
 import { enqueueInboxIndexJob } from '@/lib/services/inbox-search';
+import {
+  extractGmailPayloadBodyText,
+  extractGmailPayloadBodyTextWithAttachments,
+  truncateGmailExtractedBody,
+} from '@/lib/email/gmailPayloadBody';
 import { reconcileResolvedGeneratedDrafts } from '@/lib/services/queue/reconcileResolvedGeneratedDrafts';
 // AI queue label removed: no longer creating/applying a dedicated Gmail label
 import type { AiTraceContext } from '@/lib/ai/tracing';
@@ -57,6 +62,84 @@ export class GmailPushService {
       return candidate !== current;
     }
   }
+
+  private dedupeEmailsByMessageId<T extends {
+    messageId?: string | null;
+    labelIds?: string[] | null;
+    to?: string[] | null;
+    cc?: string[] | null;
+    body?: string | null;
+    snippet?: string | null;
+    gmailThreadId?: string | null;
+    rfc2822MessageId?: string | null;
+    references?: string | null;
+    inReplyTo?: string | null;
+    isSent?: boolean;
+    isDraft?: boolean;
+    date?: Date | string | null;
+    createdAt?: Date | string | null;
+  }>(emails: T[]): T[] {
+    const byMessageId = new Map<string, T>();
+    const order: string[] = [];
+    const passthrough: T[] = [];
+
+    for (const email of emails) {
+      const messageId = String(email.messageId || '').trim();
+      if (!messageId) {
+        passthrough.push(email);
+        continue;
+      }
+
+      const existing = byMessageId.get(messageId);
+      if (!existing) {
+        byMessageId.set(messageId, {
+          ...email,
+          labelIds: Array.from(new Set((email.labelIds || []).filter(Boolean))),
+          to: Array.from(new Set((email.to || []).filter(Boolean))),
+          cc: Array.from(new Set((email.cc || []).filter(Boolean))),
+        });
+        order.push(messageId);
+        continue;
+      }
+
+      const merged = {
+        ...existing,
+        ...email,
+        gmailThreadId: existing.gmailThreadId || email.gmailThreadId,
+        rfc2822MessageId: existing.rfc2822MessageId || email.rfc2822MessageId,
+        references: existing.references || email.references,
+        inReplyTo: existing.inReplyTo || email.inReplyTo,
+        body: (email.body && email.body.length > (existing.body?.length ?? 0)) ? email.body : existing.body,
+        snippet: (email.snippet && email.snippet.length > (existing.snippet?.length ?? 0)) ? email.snippet : existing.snippet,
+        labelIds: Array.from(new Set([...(existing.labelIds || []), ...(email.labelIds || [])].filter(Boolean))),
+        to: Array.from(new Set([...(existing.to || []), ...(email.to || [])].filter(Boolean))),
+        cc: Array.from(new Set([...(existing.cc || []), ...(email.cc || [])].filter(Boolean))),
+        isSent: Boolean(existing.isSent || email.isSent),
+        isDraft: Boolean(existing.isDraft || email.isDraft),
+        date: existing.date || email.date,
+        createdAt: existing.createdAt || email.createdAt,
+      } satisfies T;
+
+      byMessageId.set(messageId, merged);
+    }
+
+    return [
+      ...passthrough,
+      ...order.map((messageId) => byMessageId.get(messageId)!).filter(Boolean),
+    ];
+  }
+
+  private buildAlertNotificationDedupKey(mailboxId: string, messageId: string, alertId: string): string | null {
+    const normalizedMessageId = String(messageId || '').trim();
+    const normalizedAlertId = String(alertId || '').trim();
+
+    if (!mailboxId || !normalizedMessageId || !normalizedAlertId) {
+      return null;
+    }
+
+    return `${mailboxId}:${normalizedMessageId}:${normalizedAlertId}`;
+  }
+
   private async prepareGmailClient({
     userId,
     mailboxId,
@@ -413,6 +496,14 @@ export class GmailPushService {
       }
       
       if (newEmails.length > 0) {
+        const dedupedNewEmails = this.dedupeEmailsByMessageId(newEmails);
+        if (dedupedNewEmails.length !== newEmails.length) {
+          console.log(
+            `📧 Collapsed duplicate Gmail message payloads from ${newEmails.length} to ${dedupedNewEmails.length} before processing for user ${user.id}`,
+          );
+        }
+        newEmails = dedupedNewEmails;
+
         console.log(`📧 Found ${newEmails.length} new emails for user ${user.id}`);
         
         // **CRITICAL FIX #3**: Filter out emails that arrived before user signup
@@ -427,9 +518,16 @@ export class GmailPushService {
           return isPostSignup;
         });
         
-        console.log(`📧 After filtering pre-signup emails: ${postSignupEmails.length} emails to process`);
+        const emailsToProcess = this.dedupeEmailsByMessageId(postSignupEmails);
+        if (emailsToProcess.length !== postSignupEmails.length) {
+          console.log(
+            `📧 Collapsed duplicate post-signup emails from ${postSignupEmails.length} to ${emailsToProcess.length} for user ${user.id}`,
+          );
+        }
+
+        console.log(`📧 After filtering pre-signup emails: ${emailsToProcess.length} emails to process`);
         
-        if (postSignupEmails.length === 0) {
+        if (emailsToProcess.length === 0) {
           console.log(`📧 No post-signup emails to process for user ${user.id}`);
           // Still update history ID to prevent reprocessing
           await this.updateLastHistoryId(mailbox.id, targetHistoryId);
@@ -437,9 +535,9 @@ export class GmailPushService {
         }
         
         // Store new emails in database (replacing deprecated method)
-        console.log(`💾 DEBUG: Storing ${postSignupEmails.length} emails in database...`);
+        console.log(`💾 DEBUG: Storing ${emailsToProcess.length} emails in database...`);
         
-        for (const emailData of postSignupEmails) {
+        for (const emailData of emailsToProcess) {
           console.log(`💾 DEBUG: Storing email from ${emailData.from}, messageId: ${emailData.messageId}`);
           
           try {
@@ -607,9 +705,10 @@ export class GmailPushService {
         // Filter and generate replies for new, non-sent emails with filtering
         const replyGenerator = new ReplyGeneratorService();
         
-        console.log(`🔬 DEBUG: Starting filtering loop for ${postSignupEmails.length} emails`);
+        console.log(`🔬 DEBUG: Starting filtering loop for ${emailsToProcess.length} emails`);
+        const triggeredAlertNotificationKeys = new Set<string>();
         
-        for (const emailData of postSignupEmails) {
+        for (const emailData of emailsToProcess) {
           console.log(`🔬 DEBUG: Processing email with messageId: ${emailData.messageId}`);
           console.log(`🔬 DEBUG: Email from: ${emailData.from}, subject: "${emailData.subject}"`);
           console.log(`🔬 DEBUG: Email isSent flag: ${emailData.isSent}`);
@@ -832,24 +931,40 @@ export class GmailPushService {
               );
 
               if (routerDecision.shouldNotify && routerDecision.matchedAlertId) {
-                console.log(
-                  `🔔 Alert matched: ${routerDecision.matchedAlertDescription || routerDecision.matchedAlertId}`,
+                const alertNotificationKey = this.buildAlertNotificationDedupKey(
+                  mailbox.id,
+                  savedEmail.messageId,
+                  routerDecision.matchedAlertId,
                 );
 
-                await triggerAlertNotification({
-                  userId: user.id,
-                  userEmail: userDetails.email,
-                  email: {
-                    from: emailData.from,
-                    subject: emailData.subject,
-                    // Use a larger window so decisive sentences are not truncated
-                    snippet: (emailData.snippet || emailData.body || '').slice(0, 5000),
-                  },
-                  alert: {
-                    id: routerDecision.matchedAlertId,
-                    description: routerDecision.matchedAlertDescription || '',
-                  },
-                });
+                if (alertNotificationKey && triggeredAlertNotificationKeys.has(alertNotificationKey)) {
+                  console.log(
+                    `🔕 Skipping duplicate alert notification trigger for mailbox ${mailbox.id}, message ${savedEmail.messageId}, alert ${routerDecision.matchedAlertId}`,
+                  );
+                } else {
+                  if (alertNotificationKey) {
+                    triggeredAlertNotificationKeys.add(alertNotificationKey);
+                  }
+
+                  console.log(
+                    `🔔 Alert matched: ${routerDecision.matchedAlertDescription || routerDecision.matchedAlertId}`,
+                  );
+
+                  await triggerAlertNotification({
+                    userId: user.id,
+                    userEmail: userDetails.email,
+                    email: {
+                      from: emailData.from,
+                      subject: emailData.subject,
+                      // Use a larger window so decisive sentences are not truncated
+                      snippet: (emailData.snippet || emailData.body || '').slice(0, 5000),
+                    },
+                    alert: {
+                      id: routerDecision.matchedAlertId,
+                      description: routerDecision.matchedAlertDescription || '',
+                    },
+                  });
+                }
               }
 
               if (!routerDecision.shouldReply) {
@@ -1143,7 +1258,7 @@ export class GmailPushService {
         
         // Update last history ID (monotonic)
         await this.updateLastHistoryId(mailbox.id, targetHistoryId);
-        console.log(`✅ Processed ${postSignupEmails.length} new emails via push notification with filtering`);
+        console.log(`✅ Processed ${emailsToProcess.length} new emails via push notification with filtering`);
       } else {
         console.log(`📧 No new emails found in history update for user ${user.id}`);
         // Still update history ID (monotonic) to prevent reprocessing
@@ -1200,7 +1315,7 @@ export class GmailPushService {
             id: message.id
           });
 
-          const parsedEmail = this.parseGmailMessageWithLabels(fullMessage.data);
+          const parsedEmail = await this.parseGmailMessageWithLabels(fullMessage.data);
           if (parsedEmail) {
             // Always add the email to the list for processing
             emails.push(parsedEmail);
@@ -1245,7 +1360,8 @@ export class GmailPushService {
       // Use Gmail history.list to get changes (page through results)
       await this.ensureAuthenticated();
       let pageToken: string | undefined = undefined;
-      const messageIds: string[] = [];
+      const messageIds = new Set<string>();
+      let rawMessageIdCount = 0;
       let pages = 0;
 
       do {
@@ -1260,7 +1376,12 @@ export class GmailPushService {
         history.forEach((historyItem: any) => {
           if (historyItem.messagesAdded) {
             historyItem.messagesAdded.forEach((added: any) => {
-              messageIds.push(added.message.id);
+              const messageId = String(added?.message?.id || '').trim();
+              if (!messageId) {
+                return;
+              }
+              rawMessageIdCount += 1;
+              messageIds.add(messageId);
             });
           }
         });
@@ -1269,12 +1390,14 @@ export class GmailPushService {
         pages += 1;
       } while (pageToken && pages < 50); // safety cap
 
-      if (messageIds.length === 0) {
+      if (messageIds.size === 0) {
         console.log(`📧 No new message IDs found in history`);
         return [];
       }
 
-      console.log(`📧 Found ${messageIds.length} new message IDs from history across ${pages} page(s)`);
+      console.log(
+        `📧 Found ${messageIds.size} unique new message IDs (${rawMessageIdCount} raw entries) from history across ${pages} page(s)`,
+      );
 
       // Fetch the actual emails with labels
       const emails = [];
@@ -1286,7 +1409,7 @@ export class GmailPushService {
             id: messageId
           });
 
-          const parsedEmail = this.parseGmailMessageWithLabels(message.data);
+          const parsedEmail = await this.parseGmailMessageWithLabels(message.data);
           if (parsedEmail) {
             // Always add the email to the list for processing
             emails.push(parsedEmail);
@@ -1318,10 +1441,36 @@ export class GmailPushService {
   /**
    * Parse Gmail message to our email format WITH LABELS for filtering
    */
-  private parseGmailMessageWithLabels(message: any): any | null {
+  private async fetchMessageAttachmentData(messageId: string, attachmentId: string): Promise<string | null> {
+    try {
+      const response = await this.gmail.users.messages.attachments.get({
+        userId: 'me',
+        messageId,
+        id: attachmentId,
+      });
+
+      return typeof response.data?.data === 'string' ? response.data.data : null;
+    } catch (error) {
+      console.warn('⚠️ Failed to fetch textual attachment while parsing Gmail push body', {
+        messageId,
+        attachmentId,
+        error,
+      });
+      return null;
+    }
+  }
+
+  private async parseGmailMessageWithLabels(message: any): Promise<any | null> {
     try {
       const headers = message.payload?.headers || [];
       const getHeader = (name: string) => headers.find((h: any) => h.name.toLowerCase() === name.toLowerCase())?.value || '';
+      const inlineBody = extractGmailPayloadBodyText(message.payload);
+      const body =
+        inlineBody ||
+        await extractGmailPayloadBodyTextWithAttachments(
+          message.payload,
+          async ({ attachmentId }) => this.fetchMessageAttachmentData(message.id, attachmentId),
+        );
 
       return {
         messageId: message.id,
@@ -1333,7 +1482,7 @@ export class GmailPushService {
         to: getHeader('to').split(',').map((email: string) => email.trim()),
         cc: getHeader('cc').split(',').map((email: string) => email.trim()).filter(Boolean),
         subject: getHeader('subject'),
-        body: this.extractEmailBody(message.payload),
+        body: truncateGmailExtractedBody(body),
         snippet: message.snippet || '',
         isSent: message.labelIds?.includes('SENT') || false,
         isDraft: message.labelIds?.includes('DRAFT') || false,
@@ -1344,25 +1493,6 @@ export class GmailPushService {
       console.error('Error parsing Gmail message:', error);
       return null;
     }
-  }
-
-  /**
-   * Extract email body from Gmail message payload
-   */
-  private extractEmailBody(payload: any): string {
-    if (payload.body?.data) {
-      return Buffer.from(payload.body.data, 'base64').toString('utf-8');
-    }
-
-    if (payload.parts) {
-      for (const part of payload.parts) {
-        if (part.mimeType === 'text/plain' && part.body?.data) {
-          return Buffer.from(part.body.data, 'base64').toString('utf-8');
-        }
-      }
-    }
-
-    return '';
   }
 
   /**

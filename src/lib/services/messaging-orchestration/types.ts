@@ -26,6 +26,7 @@ export type RunPackId =
   | 'safe_context_pack'
   | 'calendar_mutation_pack'
   | 'reminder_alert_pack'
+  | 'media_delivery_pack'
   | 'settings_mutation_pack'
   | 'email_send_pack';
 

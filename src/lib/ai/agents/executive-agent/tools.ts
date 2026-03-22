@@ -1,12 +1,14 @@
 import { z } from 'zod';
 import { progressUpdateKinds } from '@/lib/ai/progressTypes';
 import {
+  createSendProgressUpdateToolFromEmitter,
   createSendProgressUpdateTool,
 } from '@/lib/ai/tools/sendProgressUpdate';
 import type {
   ExecutiveRuntimeContext,
 } from './types';
 import { buildContextTools } from './tools/context-tools';
+import { buildWebSearchTools } from './tools/web-search-tool';
 import { buildCalendarMutationTools } from './tools/calendar-mutation-tools';
 import { buildMessagingTools } from './tools/messaging-tools';
 import {
@@ -27,8 +29,8 @@ function buildUnavailableProgressUpdateTool(context: ExecutiveRuntimeContext) {
   return {
     description:
       'Send a short, human progress update only when the user would otherwise be left waiting. ' +
-      'Use for genuinely long-running or multi-step work, or when escalating after a weak first result. ' +
-      'Do not use for quick single-lookups.',
+      'Automatic wait notes may already be sent for long-running work, so use this only when you have genuinely helpful extra context. ' +
+      'Do not use it just to narrate another lookup.',
     inputSchema: progressUpdateInputSchema,
     execute: async () => ({
       sent: false,
@@ -47,6 +49,7 @@ function buildRequestToolPackExposureDescription(
   return [
     'Request one or more native action packs for the next pass when safe context is not enough and you need action tools.',
     'Use this only after deciding which action pack actually fits the user request.',
+    'If you call this tool, call it alone in the step (do not batch it with inbox search, PDF reads, or other tools). The next pass reloads your tool set; expensive reads should run after the right pack is exposed.',
     `Available action packs: ${summaries.join(' ')}`,
   ].join(' ');
 }
@@ -128,6 +131,102 @@ function buildRequestToolPackExposureTool(
   };
 }
 
+function buildRequestSkillExposureDescription(
+  selectableSkills: readonly {
+    id: string;
+    name: string;
+    catalogSummary: string;
+  }[],
+): string {
+  const summaries = selectableSkills.map(
+    (skill) => `${skill.name} (skillId=${skill.id}): ${skill.catalogSummary}`,
+  );
+  return [
+    'Request one or more user-authored skills for the next pass when the current task would benefit from that guidance.',
+    'Skills are read-only prompt guidance. They do not add tools or change Clira policy.',
+    'If you call this tool, call it alone in the step. The next pass reloads the prompt with the selected skill fragments.',
+    `Available skills: ${summaries.join(' ')}`,
+  ].join(' ');
+}
+
+function buildRequestSkillExposureSchema(
+  selectableSkillIds: readonly string[],
+): Record<string, unknown> {
+  return {
+    type: 'object',
+    properties: {
+      skillIds: {
+        type: 'array',
+        items: {
+          type: 'string',
+          enum: selectableSkillIds,
+        },
+        uniqueItems: true,
+        minItems: 1,
+        maxItems: 3,
+        description: 'One or more skill ids to expose on the next pass.',
+      },
+      reason: {
+        type: 'string',
+        minLength: 1,
+        maxLength: 240,
+        description: 'Short reason for why this guidance is needed.',
+      },
+    },
+    required: ['skillIds'],
+  };
+}
+
+function buildRequestSkillExposureTool(
+  context: ExecutiveRuntimeContext,
+) {
+  const selectableSkills = (context.skillExposure?.availableSkills ?? context.selectableSkills ?? [])
+    .filter((skill) => !context.skillExposure?.selectedSkillIds.includes(skill.id));
+
+  if (selectableSkills.length === 0) {
+    return null;
+  }
+
+  return {
+    description: buildRequestSkillExposureDescription(selectableSkills),
+    providerInputSchema: buildRequestSkillExposureSchema(
+      selectableSkills.map((skill) => skill.id),
+    ),
+    execute: async (rawArgs: Record<string, unknown>) => {
+      const args =
+        rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)
+          ? rawArgs
+          : {};
+      const allowedSkillIds = new Set(selectableSkills.map((skill) => skill.id));
+      const requestedSkillIds = Array.isArray(args.skillIds)
+        ? args.skillIds.filter(
+            (value): value is string =>
+              typeof value === 'string' && allowedSkillIds.has(value),
+          )
+        : [];
+      const uniqueRequestedSkillIds = Array.from(new Set(requestedSkillIds));
+
+      if (uniqueRequestedSkillIds.length === 0) {
+        return {
+          ok: false,
+          error: 'invalid_skill_selection',
+          message: 'Select at least one available skill.',
+        };
+      }
+
+      return {
+        ok: true,
+        requestedSkillIds: uniqueRequestedSkillIds,
+        reason:
+          typeof args.reason === 'string' && args.reason.trim().length > 0
+            ? args.reason.trim()
+            : null,
+        rerunRequired: true,
+      };
+    },
+  };
+}
+
 function buildOrderedToolNames(context: ExecutiveRuntimeContext): string[] {
   const nativeToolNames = buildPackToolAllowlistForSelection(
     context.selectedPacks,
@@ -146,6 +245,14 @@ function buildOrderedToolNames(context: ExecutiveRuntimeContext): string[] {
 
   if (requestableActionPackIds.length > 0) {
     nativeWrapperNames.push('request_tool_pack_exposure');
+  }
+
+  if (
+    (context.skillExposure?.availableSkills ?? context.selectableSkills ?? []).some(
+      (skill) => !context.skillExposure?.selectedSkillIds.includes(skill.id),
+    )
+  ) {
+    nativeWrapperNames.push('request_skill_exposure');
   }
 
   if (
@@ -188,6 +295,7 @@ export function buildExecutiveAgentTools(context: ExecutiveRuntimeContext): Reco
 
   const allTools: Record<string, unknown> = {
     ...buildContextTools({ context, nextSubagentCallIndex }),
+    ...buildWebSearchTools({ context }),
     ...buildCalendarMutationTools({ context, nextSubagentCallIndex }),
     ...buildMessagingTools({ context }),
     ...buildExecutiveMcpTools({
@@ -200,14 +308,24 @@ export function buildExecutiveAgentTools(context: ExecutiveRuntimeContext): Reco
   if (requestToolPackExposure) {
     allTools.request_tool_pack_exposure = requestToolPackExposure;
   }
+  const requestSkillExposure = buildRequestSkillExposureTool(context);
+  if (requestSkillExposure) {
+    allTools.request_skill_exposure = requestSkillExposure;
+  }
 
   allTools.send_progress_update = context.input.progressContext
-    ? createSendProgressUpdateTool({
-        ...context.input.progressContext,
-        canEmitProgress:
-          context.input.progressContext.canEmitProgress ??
-          (() => context.isBurstStable()),
-      })
+    ? context.progressEmitter
+      ? createSendProgressUpdateToolFromEmitter(
+          context.progressEmitter,
+          context.channel,
+          context.input.progressContext.requestId,
+        )
+      : createSendProgressUpdateTool({
+          ...context.input.progressContext,
+          canEmitProgress:
+            context.input.progressContext.canEmitProgress ??
+            (() => context.isBurstStable()),
+        })
     : buildUnavailableProgressUpdateTool(context);
 
   const orderedToolNames = buildOrderedToolNames(context);

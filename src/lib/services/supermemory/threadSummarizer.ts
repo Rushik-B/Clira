@@ -11,7 +11,7 @@
 
 import { z } from 'zod';
 import { callObject } from '@/lib/ai/callLlm';
-import { models } from '@/lib/ai/models';
+import { getGoogleThinkingProviderOptions, models } from '@/lib/ai/models';
 import { logger } from '@/lib/logger';
 import { readPromptFile } from '@/lib/prompts';
 import {
@@ -168,6 +168,9 @@ async function summarizeThreadDirect(
     prompt,
     schema: ThreadEpisodeContentSchema,
     temperature: 0.3,
+    providerOptions: getGoogleThinkingProviderOptions('flashLite', {
+      thinkingLevel: 'medium',
+    }),
     op: 'supermemory.thread.summarize',
     concurrency: { key: 'supermemory', maxConcurrency: 5 },
     retry: { maxAttempts: 2 },
@@ -222,6 +225,9 @@ async function summarizeThreadHierarchically(
     prompt: synthesisPrompt,
     schema: ThreadEpisodeContentSchema,
     temperature: 0.3,
+    providerOptions: getGoogleThinkingProviderOptions('flashLite', {
+      thinkingLevel: 'medium',
+    }),
     op: 'supermemory.thread.synthesize',
     concurrency: { key: 'supermemory', maxConcurrency: 3 },
     retry: { maxAttempts: 2 },
@@ -277,6 +283,9 @@ Preserve specific dates, names, and numbers.`;
     prompt,
     schema: ChunkSummarySchema,
     temperature: 0.3,
+    providerOptions: getGoogleThinkingProviderOptions('flashLite', {
+      thinkingLevel: 'medium',
+    }),
     op: 'supermemory.chunk.summarize',
     concurrency: { key: 'supermemory.chunk', maxConcurrency: 8 },
     retry: { maxAttempts: 2 },
@@ -416,4 +425,3 @@ export function validateEpisodeContent(content: ThreadEpisodeContent): {
     issues,
   };
 }
-

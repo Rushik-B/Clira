@@ -3,6 +3,11 @@ import { logger } from '../logger'
 import { prisma } from '../prisma'
 import { EmailContextQuery } from '../../types'
 import { encryptToken } from '@/lib/encryption'
+import {
+  extractGmailPayloadBodyText,
+  extractGmailPayloadBodyTextWithAttachments,
+  truncateGmailExtractedBody,
+} from '@/lib/email/gmailPayloadBody'
 
 export interface EmailData {
   messageId: string
@@ -206,7 +211,7 @@ export class GmailService {
               format: 'full'
             })
 
-            return this.parseEmailMessage(messageResponse.data)
+            return await this.parseEmailMessage(messageResponse.data)
           } catch (error) {
             console.error(`Error fetching message ${message.id}:`, error)
             return null
@@ -262,7 +267,7 @@ export class GmailService {
               format: 'full'
             })
 
-            return this.parseEmailMessage(messageResponse.data)
+            return await this.parseEmailMessage(messageResponse.data)
           } catch (error) {
             console.error(`Error fetching message ${message.id}:`, error)
             return null
@@ -319,7 +324,7 @@ export class GmailService {
               format: 'full'
             })
 
-            return this.parseEmailMessage(messageResponse.data)
+            return await this.parseEmailMessage(messageResponse.data)
           } catch (error) {
             console.error(`Error fetching inbox message ${message.id}:`, error)
             return null
@@ -623,7 +628,7 @@ export class GmailService {
         return null;
       }
 
-      const parsed = this.parseEmailMessage(message);
+      const parsed = await this.parseEmailMessage(message);
       if (!parsed) {
         return null;
       }
@@ -769,36 +774,26 @@ export class GmailService {
     }
   }
 
-  private decodePayloadBody(payload: any): string {
-    if (!payload) return ''
+  private async fetchMessageAttachmentData(messageId: string, attachmentId: string): Promise<string | null> {
+    try {
+      const response = await this.gmail.users.messages.attachments.get({
+        userId: 'me',
+        messageId,
+        id: attachmentId,
+      })
 
-    if (payload.body?.data) {
-      const normalized = payload.body.data.replace(/-/g, '+').replace(/_/g, '/')
-      return Buffer.from(normalized, 'base64').toString('utf-8')
+      return typeof response.data?.data === 'string' ? response.data.data : null
+    } catch (error) {
+      logger.warn('[GmailService] failed to fetch textual attachment while parsing email body', {
+        messageId,
+        attachmentId,
+        error,
+      })
+      return null
     }
-
-    if (Array.isArray(payload.parts)) {
-      for (const part of payload.parts) {
-        if (part.mimeType === 'text/plain' || part.mimeType === 'text/html') {
-          const candidate = this.decodePayloadBody(part)
-          if (candidate) {
-            return candidate
-          }
-        }
-      }
-
-      for (const part of payload.parts) {
-        const candidate = this.decodePayloadBody(part)
-        if (candidate) {
-          return candidate
-        }
-      }
-    }
-
-    return ''
   }
 
-  private parseEmailMessage(message: GmailMessage): EmailData | null {
+  private async parseEmailMessage(message: GmailMessage): Promise<EmailData | null> {
     try {
       const headers = message.payload.headers
       const getHeader = (name: string) => headers.find((h: any) => h.name.toLowerCase() === name.toLowerCase())?.value || ''
@@ -831,7 +826,13 @@ export class GmailService {
       const cc = parseEmailAddresses(getHeader('Cc'))
       const subject = getHeader('Subject')
       const dateHeader = getHeader('Date')
-      const body = this.decodePayloadBody(message.payload)
+      const inlineBody = extractGmailPayloadBodyText(message.payload)
+      const body =
+        inlineBody ||
+        await extractGmailPayloadBodyTextWithAttachments(
+          message.payload,
+          async ({ attachmentId }) => this.fetchMessageAttachmentData(message.id, attachmentId),
+        )
       
       // Determine if email is sent or received
       const isSent = message.labelIds?.includes('SENT') || false
@@ -849,7 +850,7 @@ export class GmailService {
         to,
         cc,
         subject,
-        body: body.substring(0, 10000), // Limit body size
+        body: truncateGmailExtractedBody(body),
         snippet: message.snippet || '',
         isSent,
         isDraft,
@@ -903,7 +904,7 @@ export class GmailService {
         format: 'full'
       });
 
-      return this.parseEmailMessage(messageResponse.data);
+      return await this.parseEmailMessage(messageResponse.data);
     } catch (error) {
       console.error(`Error fetching message ${messageId}:`, error);
       return null;
@@ -948,7 +949,7 @@ export class GmailService {
               format: 'full'
             });
 
-            return this.parseEmailMessage(messageResponse.data);
+            return await this.parseEmailMessage(messageResponse.data);
           } catch (error) {
             console.error(`Error fetching message ${message.id}:`, error);
             return null;
@@ -1499,7 +1500,7 @@ export class GmailService {
               format: 'full'
             })
 
-            const email = this.parseEmailMessage(messageResponse.data)
+            const email = await this.parseEmailMessage(messageResponse.data)
             if (!email || email.isSent) {
               return null
             }
@@ -1631,7 +1632,7 @@ export class GmailService {
               { swallowPermissionError: false },
             )
 
-            return this.parseEmailMessage(messageResponse.data)
+            return await this.parseEmailMessage(messageResponse.data)
           } catch (error) {
             logger.error(`Error fetching message ${message.id} in thread ${threadId}:`, error)
             return null

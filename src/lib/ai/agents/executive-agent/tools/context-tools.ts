@@ -9,6 +9,7 @@ import {
 } from '@/lib/services/core/replyContextTools';
 import {
   listInboxEmails,
+  readEmailAttachmentContent,
   readEmailPdfAttachment,
 } from '@/lib/services/inbox-search';
 import {
@@ -34,6 +35,11 @@ import {
   searchInboxContextProviderSchema,
 } from '../search-inbox-context-contract';
 import {
+  normalizeReadEmailAttachmentContentArgs,
+  readEmailAttachmentContentArgsSchema,
+  readEmailAttachmentContentProviderSchema,
+} from '../read-email-attachment-content-contract';
+import {
   normalizeReadEmailPdfAttachmentArgs,
   readEmailPdfAttachmentArgsSchema,
   readEmailPdfAttachmentProviderSchema,
@@ -43,6 +49,7 @@ import {
   CALENDAR_SEARCH_MIN_BUDGET_MS,
   MESSAGING_INBOX_CALL_LIMITS,
 } from '../constants';
+import { sanitizeContentReferenceForModel } from '@/lib/services/content-ingestion/referenceModeling';
 import {
   buildToolBudgetExceededResult,
   runWithSubagentBudget,
@@ -51,6 +58,7 @@ import {
 import type {
   ExecutiveRuntimeContext,
   ListInboxEmailsArgs,
+  ReadEmailAttachmentContentArgs,
   ReadEmailPdfAttachmentArgs,
   SearchInboxContextArgs,
 } from '../types';
@@ -60,6 +68,9 @@ const searchInboxContextToolDescription = readPromptFile(
 );
 const listInboxEmailsToolDescription = readPromptFile(
   'executive-agent/listInboxEmailsTool.md',
+);
+const readEmailAttachmentContentToolDescription = readPromptFile(
+  'executive-agent/readEmailAttachmentContentTool.md',
 );
 const readEmailPdfAttachmentToolDescription = readPromptFile(
   'executive-agent/readEmailPdfAttachmentTool.md',
@@ -133,7 +144,7 @@ function buildInvalidListInboxEmailsResult(message: string) {
   };
 }
 
-function buildInvalidReadEmailPdfAttachmentResult(messageId: string, message: string) {
+function buildInvalidReadEmailAttachmentResult(messageId: string, message: string) {
   return {
     ok: false as const,
     status: 'invalid_request' as const,
@@ -219,7 +230,7 @@ function localizeListInboxEmailsDates<T extends { items?: Array<Record<string, u
   };
 }
 
-function localizePdfAttachmentDates<T extends Record<string, unknown>>(result: T, userTimezone: string): T {
+function localizeAttachmentReadDates<T extends Record<string, unknown>>(result: T, userTimezone: string): T {
   const nextResult: Record<string, unknown> = { ...result };
 
   if (result.message && typeof result.message === 'object' && !Array.isArray(result.message)) {
@@ -460,6 +471,84 @@ export function buildContextTools({
         },
       },
 
+      read_email_attachment_content: {
+        description: readEmailAttachmentContentToolDescription,
+        inputSchema: readEmailAttachmentContentArgsSchema,
+        providerInputSchema: readEmailAttachmentContentProviderSchema,
+        execute: async (args: ReadEmailAttachmentContentArgs) => {
+          let normalizedArgs;
+          try {
+            normalizedArgs = normalizeReadEmailAttachmentContentArgs(args);
+          } catch (error) {
+            const message =
+              error instanceof z.ZodError
+                ? error.issues[0]?.message ?? 'Invalid read_email_attachment_content request.'
+                : error instanceof Error
+                  ? error.message
+                  : 'Invalid read_email_attachment_content request.';
+            logger.warn('[executiveAgent] read_email_attachment_content invalid args', {
+              userId: input.userId,
+              message,
+              args,
+            });
+            const fallbackMessageId =
+              args && typeof args === 'object' && typeof args.messageId === 'string'
+                ? args.messageId
+                : 'unknown';
+            return buildInvalidReadEmailAttachmentResult(fallbackMessageId, message);
+          }
+
+          const cachedResult = toolResultCache.get('read_email_attachment_content', normalizedArgs);
+          if (cachedResult) {
+            logger.info(
+              `[executiveAgent] read_email_attachment_content cache hit: messageId="${truncate(normalizedArgs.messageId, 80)}"`,
+            );
+            return cachedResult;
+          }
+
+          logger.info(
+            `[executiveAgent] read_email_attachment_content: messageId="${truncate(normalizedArgs.messageId, 80)}" mailbox="${truncate(normalizedArgs.mailboxEmail ?? normalizedArgs.mailboxId ?? '(auto)', 80)}"`,
+          );
+
+          const toolCallIndex = nextSubagentCallIndex();
+          const result = await runWithSubagentBudget({
+            toolName: 'read_email_attachment_content',
+            counts: { total: 0, tool: 0 },
+            timeLeftMs: toolAbort.timeLeftMs(),
+            abortSignal: toolAbortSignal,
+            toolCallIndex,
+            run: (budgetContext) =>
+              readEmailAttachmentContent({
+                userId: input.userId,
+                messageId: normalizedArgs.messageId,
+                mailboxId: normalizedArgs.mailboxId,
+                mailboxEmail: normalizedArgs.mailboxEmail,
+                attachmentId: normalizedArgs.attachmentId,
+                attachmentFilename: normalizedArgs.attachmentFilename,
+                abortSignal: budgetContext.abortSignal,
+                traceContext: input.traceContext,
+              }),
+          });
+
+          const localizedResult = localizeAttachmentReadDates(result, userTimezone);
+          const localizedContentRefs =
+            localizedResult.ok && 'contentRefs' in localizedResult
+              ? localizedResult.contentRefs ?? []
+              : [];
+          const resultForModel =
+            localizedResult.ok
+              ? {
+                  ...localizedResult,
+                  contentRefs: localizedContentRefs.map((reference: typeof localizedContentRefs[number]) =>
+                    sanitizeContentReferenceForModel(reference),
+                  ),
+                }
+              : localizedResult;
+          toolResultCache.set('read_email_attachment_content', normalizedArgs, resultForModel);
+          return resultForModel;
+        },
+      },
+
       read_email_pdf_attachment: {
         description: readEmailPdfAttachmentToolDescription,
         inputSchema: readEmailPdfAttachmentArgsSchema,
@@ -484,7 +573,7 @@ export function buildContextTools({
               args && typeof args === 'object' && typeof args.messageId === 'string'
                 ? args.messageId
                 : 'unknown';
-            return buildInvalidReadEmailPdfAttachmentResult(fallbackMessageId, message);
+            return buildInvalidReadEmailAttachmentResult(fallbackMessageId, message);
           }
 
           const cachedResult = toolResultCache.get('read_email_pdf_attachment', normalizedArgs);
@@ -519,9 +608,22 @@ export function buildContextTools({
               }),
           });
 
-          const localizedResult = localizePdfAttachmentDates(result, userTimezone);
-          toolResultCache.set('read_email_pdf_attachment', normalizedArgs, localizedResult);
-          return localizedResult;
+          const localizedResult = localizeAttachmentReadDates(result, userTimezone);
+          const localizedContentRefs =
+            localizedResult.ok && 'contentRefs' in localizedResult
+              ? localizedResult.contentRefs ?? []
+              : [];
+          const resultForModel =
+            localizedResult.ok
+              ? {
+                  ...localizedResult,
+                  contentRefs: localizedContentRefs.map((reference: typeof localizedContentRefs[number]) =>
+                    sanitizeContentReferenceForModel(reference),
+                  ),
+                }
+              : localizedResult;
+          toolResultCache.set('read_email_pdf_attachment', normalizedArgs, resultForModel);
+          return resultForModel;
         },
       },
 

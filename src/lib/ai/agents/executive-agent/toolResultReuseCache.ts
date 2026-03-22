@@ -5,18 +5,22 @@ import type {
 const TOOL_RESULT_TTL_MS = {
   search_inbox_context: 10 * 60 * 1000,
   list_inbox_emails: 10 * 60 * 1000,
+  read_email_attachment_content: 10 * 60 * 1000,
   read_email_pdf_attachment: 10 * 60 * 1000,
   search_calendar: 5 * 60 * 1000,
   check_calendar: 5 * 60 * 1000,
+  search_web: 5 * 60 * 1000,
   search_memory: 15 * 60 * 1000,
 } as const;
 
 const CACHEABLE_TOOL_NAMES = [
   'search_inbox_context',
   'list_inbox_emails',
+  'read_email_attachment_content',
   'read_email_pdf_attachment',
   'search_calendar',
   'check_calendar',
+  'search_web',
   'search_memory',
 ] as const;
 
@@ -165,6 +169,22 @@ function normalizeCaseInsensitiveString(value: unknown): unknown {
   return typeof value === 'string' ? value.trim().toLowerCase() : value;
 }
 
+function normalizeSortedStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  const normalized = Array.from(
+    new Set(
+      value
+        .map((item) => normalizeCaseInsensitiveString(item))
+        .filter((item): item is string => typeof item === 'string' && item.length > 0),
+    ),
+  ).sort((left, right) => left.localeCompare(right));
+
+  return normalized.length > 0 ? normalized : undefined;
+}
+
 function deriveSearchInboxIntentFingerprint(args: unknown, result?: unknown): string {
   const argsRecord = isRecord(args) ? args : null;
   const resultRecord = isRecord(result) ? result : null;
@@ -234,7 +254,7 @@ function normalizeToolArgs(toolName: CacheableToolName, args: unknown): unknown 
     };
   }
 
-  if (toolName === 'read_email_pdf_attachment') {
+  if (toolName === 'read_email_attachment_content' || toolName === 'read_email_pdf_attachment') {
     return {
       ...normalized,
       mailboxEmail: normalizeCaseInsensitiveString(normalized.mailboxEmail),
@@ -254,6 +274,18 @@ function normalizeToolArgs(toolName: CacheableToolName, args: unknown): unknown 
       ...normalized,
       maxResults: normalized.maxResults ?? 10,
       minRelevance: normalized.minRelevance ?? 40,
+    };
+  }
+
+  if (toolName === 'search_web') {
+    return {
+      ...normalized,
+      category: normalized.category ?? 'general',
+      freshness: normalized.freshness ?? 'default',
+      resultMode: normalized.resultMode ?? 'highlights',
+      maxResults: normalized.maxResults ?? 5,
+      includeDomains: normalizeSortedStringArray(normalized.includeDomains),
+      excludeDomains: normalizeSortedStringArray(normalized.excludeDomains),
     };
   }
 

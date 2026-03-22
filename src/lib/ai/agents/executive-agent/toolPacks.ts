@@ -11,15 +11,18 @@ export const EXECUTIVE_TOOL_NAMES = [
   'send_progress_update',
   'search_inbox_context',
   'list_inbox_emails',
+  'read_email_attachment_content',
   'read_email_pdf_attachment',
   'search_calendar',
   'check_calendar',
+  'search_web',
   'get_reply_preferences',
   'plan_calendar_change',
   'commit_calendar_change',
   'add_email_alert',
   'remove_email_alert',
   'list_email_alerts',
+  'deliver_content_reference',
   'add_reminder',
   'list_reminders',
   'snooze_reminder',
@@ -37,9 +40,11 @@ export const SAFE_CONTEXT_PACK_TOOLS = [
   'send_progress_update',
   'search_inbox_context',
   'list_inbox_emails',
+  'read_email_attachment_content',
   'read_email_pdf_attachment',
   'search_calendar',
   'check_calendar',
+  'search_web',
   'get_reply_preferences',
 ] as const satisfies readonly ExecutiveToolName[];
 
@@ -58,6 +63,7 @@ const ACTION_PACK_TOOLS = {
     'dismiss_reminder',
     'cancel_reminder',
   ],
+  media_delivery_pack: ['deliver_content_reference'],
   settings_mutation_pack: ['manage_reply_preferences'],
   email_send_pack: ['send_email'],
 } as const satisfies Record<
@@ -76,6 +82,7 @@ export const EXECUTIVE_PACK_ORDER = [
   'safe_context_pack',
   'calendar_mutation_pack',
   'reminder_alert_pack',
+  'media_delivery_pack',
   'settings_mutation_pack',
   'email_send_pack',
 ] as const satisfies readonly ToolPackId[];
@@ -83,6 +90,7 @@ export const EXECUTIVE_PACK_ORDER = [
 const REQUESTABLE_ACTION_PACK_ORDER = [
   'calendar_mutation_pack',
   'reminder_alert_pack',
+  'media_delivery_pack',
   'settings_mutation_pack',
   'email_send_pack',
 ] as const satisfies readonly Exclude<ToolPackId, 'safe_context_pack'>[];
@@ -95,6 +103,8 @@ const ACTION_PACK_REQUEST_SUMMARIES: Record<
     'Calendar changes: plan or confirm create/update/delete calendar actions. Commit only works when a pending calendar change exists.',
   reminder_alert_pack:
     'Reminders and alerts: create, list, snooze, dismiss, cancel, and manage email alerts.',
+  media_delivery_pack:
+    'Media delivery: send a previously returned content reference to the user on Telegram as the original file.',
   settings_mutation_pack:
     'Reply preference updates: store standing planner/style instructions and sender-specific reply rules.',
   email_send_pack:

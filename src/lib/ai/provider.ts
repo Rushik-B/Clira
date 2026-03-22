@@ -1,4 +1,8 @@
-import { models } from './models';
+import {
+  getGoogleThinkingProviderOptions,
+  getModel,
+  type ModelKey,
+} from './models';
 
 export type ModelRole =
   | 'planner'
@@ -9,29 +13,26 @@ export type ModelRole =
   | 'emailRetrieval'
   | 'folderGeneration';
 
-/**
- * v1 provider facade.
- * Current implementation returns Gemini-backed models from models.ts.
- */
+const ROLE_MODEL_MAP: Record<ModelRole, ModelKey> = {
+  planner: 'flash',
+  stylist: 'pro',
+  router: 'replyRouter',
+  executive: 'execAgent',
+  calendarSearch: 'calendarSearch',
+  emailRetrieval: 'emailRetrieval',
+  folderGeneration: 'folderGeneration',
+};
+
 export function getLanguageModel(role: ModelRole) {
-  switch (role) {
-    case 'planner':
-      return models.flash();
-    case 'stylist':
-      return models.flash();
-    case 'router':
-      return models.replyRouter();
-    case 'executive':
-      return models.execAgent();
-    case 'calendarSearch':
-      return models.calendarSearch();
-    case 'emailRetrieval':
-      return models.emailRetrieval();
-    case 'folderGeneration':
-      return models.folderGeneration();
-    default: {
-      const _never: never = role;
-      return _never;
-    }
-  }
+  return getModel(ROLE_MODEL_MAP[role]);
+}
+
+export function getLanguageModelThinkingOptions(
+  role: ModelRole,
+  config: {
+    thinkingBudget?: number;
+    thinkingLevel?: 'minimal' | 'low' | 'medium' | 'high';
+  },
+) {
+  return getGoogleThinkingProviderOptions(ROLE_MODEL_MAP[role], config);
 }

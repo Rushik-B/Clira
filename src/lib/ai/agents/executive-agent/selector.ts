@@ -3,6 +3,9 @@ import {
   type McpSelectableServerPack,
 } from '@/lib/services/mcp/policy/service';
 import type {
+  SelectableSkill,
+} from '@/lib/services/skills';
+import type {
   ConversationMessageDTO,
 } from '@/lib/ai/schemas/executiveAgentSchemas';
 import type {
@@ -172,8 +175,14 @@ export function extractExecutiveTurnFeatures(params: {
       'yep',
       'yup',
       'sure',
+      'send',
       'ok send',
       'okay send',
+      'ok send it',
+      'okay send it',
+      'yes send it',
+      'yeah send it',
+      'yep send it',
       'confirm',
       'approved',
       'approve',
@@ -283,11 +292,25 @@ function uniqueConnectionIds(connectionIds: readonly string[]): string[] {
   return ordered;
 }
 
+function uniqueSkillIds(skillIds: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const ordered: string[] = [];
+
+  for (const skillId of skillIds) {
+    if (!skillId || seen.has(skillId)) continue;
+    seen.add(skillId);
+    ordered.push(skillId);
+  }
+
+  return ordered;
+}
+
 function buildSelection(params: {
   packIds?: readonly ToolPackId[];
   reasons: string[];
   reminders?: string[];
   mcpConnectionIds?: readonly string[];
+  skillIds?: readonly string[];
   repairAttempted?: boolean;
 }): ToolExposurePlan {
   const actionPackIds = uniquePackIds(
@@ -298,6 +321,7 @@ function buildSelection(params: {
     primaryPack: actionPackIds[0] ?? 'safe_context_pack',
     packIds: ['safe_context_pack', ...actionPackIds],
     mcpConnectionIds: uniqueConnectionIds(params.mcpConnectionIds ?? []),
+    skillIds: uniqueSkillIds(params.skillIds ?? []),
     reasons: params.reasons,
     reminders: params.reminders ?? [],
     repairAttempted: params.repairAttempted === true,
@@ -347,6 +371,15 @@ function hasExplicitAliasMatch(normalizedText: string, alias: string): boolean {
   return ` ${normalizedText} `.includes(` ${alias} `);
 }
 
+function normalizeSkillMatchText(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function detectExplicitMcpServerMentions(params: {
   userRequest: string;
   mcpServerPacks: readonly McpSelectableServerPack[];
@@ -361,6 +394,20 @@ function detectExplicitMcpServerMentions(params: {
       ),
     )
     .map((pack) => pack.connectionId);
+}
+
+function detectExplicitSkillMentions(params: {
+  userRequest: string;
+  selectableSkills: readonly SelectableSkill[];
+}): string[] {
+  const normalizedUserRequest = normalizeSkillMatchText(params.userRequest);
+  if (!normalizedUserRequest) return [];
+
+  return params.selectableSkills
+    .filter((skill) =>
+      hasExplicitAliasMatch(normalizedUserRequest, normalizeSkillMatchText(skill.name)),
+    )
+    .map((skill) => skill.id);
 }
 
 async function selectDeterministicMcpConnectionIds(params: {
@@ -404,16 +451,22 @@ export async function selectExecutiveToolPackForTurn(params: {
   input: ExecutiveAgentInput;
   features: ExecutiveTurnFeatures;
   mcpServerPacks?: readonly McpSelectableServerPack[];
+  selectableSkills?: readonly SelectableSkill[];
 }): Promise<ToolExposurePlan> {
   const mcpSelection = await selectDeterministicMcpConnectionIds({
     input: params.input,
     features: params.features,
     mcpServerPacks: params.mcpServerPacks,
   });
+  const preselectedSkillIds = detectExplicitSkillMentions({
+    userRequest: params.input.userRequest,
+    selectableSkills: params.selectableSkills ?? [],
+  });
 
   const reasons = [
     'safe context substrate available every turn',
     ...mcpSelection.reasons,
+    ...(preselectedSkillIds.length > 0 ? ['explicit skill name match'] : []),
   ];
   const reminders = [
     'Safe context tools for inbox, calendar, memory, PDF reads, progress updates, and reply preference reads are available every turn.',
@@ -428,11 +481,18 @@ export async function selectExecutiveToolPackForTurn(params: {
     reminders.push('An approved draft candidate exists; request the email send pack only if you truly intend to send it.');
   }
 
+  if (params.features.draftCandidatePresent && !params.features.explicitSendApproval) {
+    reminders.push(
+      'A draft email is present in recent assistant turns, but the user\'s latest message is not recognized as explicit send approval. If they asked to send, ship, or go ahead in free-form wording, briefly tell them to send a short approval message by itself (examples: yes, yep, sure, send, send it, yes send it, go ahead, ship it, or a thumbs-up). After that, request the email send pack and use send_email. Do not say you lack email forever; explain that the system needs that short confirmation first.',
+    );
+  }
+
   return buildSelection({
     packIds: [],
     reasons,
     reminders,
     mcpConnectionIds: mcpSelection.connectionIds,
+    skillIds: preselectedSkillIds,
   });
 }
 
@@ -532,6 +592,7 @@ export async function expandExposurePlanForRepair(params: {
           )
         : params.plan.reminders,
     mcpConnectionIds: nextMcpConnectionIds,
+    skillIds: params.plan.skillIds,
     repairAttempted: true,
   });
 

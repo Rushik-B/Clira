@@ -8,7 +8,13 @@ Checks:
 
 - `NEXTAUTH_SECRET` is set and stable
 - `NEXTAUTH_URL` matches actual app URL
+- Docker deploys: `APP_PUBLIC_URL` matches the real external VM/domain URL
 - Google OAuth callback URL is correctly configured
+
+Actions:
+
+- If using `docker compose`, set `APP_PUBLIC_URL` in `.env`, then recreate `app`, `worker`, `gmail-pull-worker`, `backfill-worker`, and `cron`
+- Re-check Google OAuth callback configuration after any public URL change
 
 ## Gmail Push Not Processing New Mail
 
@@ -43,13 +49,19 @@ Checks:
 - Worker process (`npm run start:worker`) is running
 - Job enqueue logs appear in API routes
 
+Docker-specific checks:
+
+- Containers use `redis://redis:6379`, not `redis://localhost:16379`
+- The cron container also resolves `db` and `redis` by service name, not localhost
+
 ## Replies Not Generated
 
 Checks:
 
 - User onboarding state complete (`masterPromptGenerated`)
 - Email passed filtering rules
-- LLM key (`GOOGLE_GENERATIVE_AI_API_KEY`) is present
+- The active language-model provider is configured. For Gemini that means `GOOGLE_GENERATIVE_AI_API_KEY` or `GOOGLE_API_KEY`; for OpenRouter that means `OPENROUTER_API_KEY`
+- If `/api/health` reports missing provider config, compare `AI_PROVIDER` and any per-model overrides with `docs/ai-providers.md`
 
 ## Pub/Sub Webhook Retries Continuously
 

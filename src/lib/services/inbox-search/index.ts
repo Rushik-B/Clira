@@ -35,6 +35,7 @@ export {
 export { indexInboxSearchEmail } from '@/lib/services/inbox-search/indexer';
 export { searchInboxDocuments, buildInboxSearchPlan } from '@/lib/services/inbox-search/search';
 export { listInboxEmails } from '@/lib/services/inbox-search/list-emails';
+export { readEmailAttachmentContent } from '@/lib/services/inbox-search/read-email-attachment-content';
 export { readEmailPdfAttachment } from '@/lib/services/inbox-search/read-email-pdf-attachment';
 export { fetchInboxThreadSlice } from '@/lib/services/inbox-search/thread-expansion';
 export {
@@ -78,6 +79,11 @@ export type {
   ListInboxEmailsSortBy,
   ListInboxEmailsToolArgs,
 } from '@/lib/services/inbox-search/types';
+export type {
+  EmailAttachmentContentCandidate,
+  EmailAttachmentContentKind,
+  ReadEmailAttachmentContentResult,
+} from '@/lib/services/inbox-search/read-email-attachment-content';
 export type {
   EmailPdfAttachmentCandidate,
   ReadEmailPdfAttachmentResult,

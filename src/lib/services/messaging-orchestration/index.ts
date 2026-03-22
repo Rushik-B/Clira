@@ -29,6 +29,7 @@ export {
 } from './channelAdapters';
 
 export { isAbortError } from './isAbortError';
+export { detectMessagingCommand } from './commandDetection';
 
 export type {
   BurstState,
@@ -41,6 +42,8 @@ export type {
   RelevanceDecision,
   RunContext,
 } from './types';
+
+export type { MessagingCommand } from './commandDetection';
 
 export {
   EA_DROP_POLICY,
