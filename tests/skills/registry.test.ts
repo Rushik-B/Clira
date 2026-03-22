@@ -24,7 +24,7 @@ const {
       actionHistory: {
         create: vi.fn(),
       },
-      $transaction: vi.fn(async (callback: (tx: typeof tx) => Promise<unknown>) => callback(tx)),
+      $transaction: vi.fn(async (callback) => callback(tx)),
     },
     txMock: tx,
     transactionMock: tx,
