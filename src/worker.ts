@@ -49,7 +49,12 @@ import { createGmailServiceForUser } from '@/lib/security/getUserGmailCredential
 import { encryptEmailContent, decryptEmailContent } from '@/lib/security/emailCrypto';
 // AI queue label removed: no longer creating/applying a dedicated Gmail label
 import { normalizeGmailLabelColor } from '@/lib/gmail/labelColors';
-import { triggerReminderNotifications, markReminderMissed } from '@/lib/services/reminderNotificationService';
+import {
+  getReminderIdsEligibleForTerminalFailureMiss,
+  markReminderMissed,
+  REMINDER_PRE_DELIVERY_MISSABLE_STATUS_LIST,
+  triggerReminderNotifications,
+} from '@/lib/services/reminderNotificationService';
 import { isPrismaAuthenticationFailure } from '@/lib/prismaErrors';
 import {
   isTelegramEnabled,
@@ -669,12 +674,18 @@ reminderNotificationWorker.on('failed', async (job, error) => {
   }
 
   const reason = error instanceof Error ? error.message : 'delivery-failed';
-  for (const reminderId of batchIds) {
+  const remindersToMarkMissed = await getReminderIdsEligibleForTerminalFailureMiss({
+    reminderIds: batchIds,
+    userId: job.data.userId,
+  });
+
+  for (const reminderId of remindersToMarkMissed) {
     try {
       await markReminderMissed({
         reminderId,
         userId: job.data.userId,
         reason,
+        allowedStatuses: REMINDER_PRE_DELIVERY_MISSABLE_STATUS_LIST,
       });
     } catch (markError) {
       console.error(

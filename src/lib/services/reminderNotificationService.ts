@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { DEFAULT_CALENDAR_TIMEZONE } from '@/constants/time';
 import { getExecutiveAgent } from '@/lib/ai/agents/executiveAgent';
 import { logger } from '@/lib/logger';
@@ -35,8 +36,14 @@ export function utcDueMinuteEpochMs(d: Date): number {
   return Math.floor(d.getTime() / 60000) * 60000;
 }
 
+const REMINDER_CLAIMED_STATUS: ReminderStatus = 'DELIVERING';
 const REMINDER_DELIVERABLE_STATUS_LIST: ReminderStatus[] = ['PENDING', 'SNOOZED'];
-const REMINDER_MISSABLE_STATUS_LIST: ReminderStatus[] = ['PENDING', 'SNOOZED', 'DELIVERED'];
+export const REMINDER_PRE_DELIVERY_MISSABLE_STATUS_LIST: readonly ReminderStatus[] = ['PENDING', 'SNOOZED'];
+const REMINDER_MISSABLE_STATUS_LIST: ReminderStatus[] = [
+  ...REMINDER_PRE_DELIVERY_MISSABLE_STATUS_LIST,
+  REMINDER_CLAIMED_STATUS,
+  'DELIVERED',
+];
 
 function getLocalDayOfWeek(date: Date): number {
   return date.getUTCDay();
@@ -146,17 +153,23 @@ export async function markReminderMissed({
   reminderId,
   userId,
   reason,
+  allowedStatuses = REMINDER_MISSABLE_STATUS_LIST,
 }: {
   reminderId: string;
   userId: string;
   reason?: string;
+  allowedStatuses?: readonly ReminderStatus[];
 }): Promise<void> {
+  if (allowedStatuses.length === 0) {
+    return;
+  }
+
   const reminder = await prisma.reminder.findFirst({
     where: { id: reminderId, userId },
     select: { id: true, title: true, scheduledAt: true, status: true },
   });
 
-  if (!reminder || !REMINDER_MISSABLE_STATUS_LIST.includes(reminder.status)) {
+  if (!reminder || !allowedStatuses.includes(reminder.status)) {
     return;
   }
 
@@ -164,9 +177,12 @@ export async function markReminderMissed({
     where: {
       id: reminderId,
       userId,
-      status: { in: REMINDER_MISSABLE_STATUS_LIST },
+      status: { in: [...allowedStatuses] },
     },
-    data: { status: 'MISSED' },
+    data: {
+      status: 'MISSED',
+      deliveryClaimId: null,
+    },
   });
 
   if (updateResult.count === 0) {
@@ -186,6 +202,31 @@ export async function markReminderMissed({
       undoable: false,
     },
   });
+}
+
+export async function getReminderIdsEligibleForTerminalFailureMiss({
+  reminderIds,
+  userId,
+}: {
+  reminderIds: string[];
+  userId: string;
+}): Promise<string[]> {
+  const uniqueReminderIds = [...new Set(reminderIds)];
+  if (uniqueReminderIds.length === 0) {
+    return [];
+  }
+
+  const eligibleReminders = await prisma.reminder.findMany({
+    where: {
+      id: { in: uniqueReminderIds },
+      userId,
+      status: { in: [...REMINDER_PRE_DELIVERY_MISSABLE_STATUS_LIST] },
+    },
+    select: { id: true },
+  });
+
+  const eligibleIds = new Set(eligibleReminders.map((reminder) => reminder.id));
+  return reminderIds.filter((reminderId) => eligibleIds.has(reminderId));
 }
 
 type ReminderDeliveryRow = {
@@ -275,6 +316,10 @@ function buildBatchReminderSystemMessage(reminders: ReminderDeliveryRow[]): stri
 /**
  * Delivers one or more reminders for the same user that share the same UTC minute bucket.
  * Enqueued by the reminder cron as one job per (user, minute).
+ *
+ * This flow is intentionally non-atomic across the batch: a reminder can already be
+ * persisted as DELIVERED before later work in the same batch fails. Callers reconciling
+ * terminal worker failures must reload current statuses before writing MISSED.
  */
 export async function triggerReminderNotifications(data: ReminderNotificationJobData): Promise<void> {
   const { userId, userEmail, dueMinuteEpochMs, items } = data;
