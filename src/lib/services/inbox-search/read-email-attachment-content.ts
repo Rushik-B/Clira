@@ -229,6 +229,24 @@ function isRetryableGmailError(error: unknown): boolean {
   return false;
 }
 
+function createMissingAttachmentDataError(params: {
+  attachmentId: string;
+  attachmentData: GmailAttachmentApiResponse | null;
+  status: unknown;
+}): Error & { status?: number } {
+  const error = new Error(
+    params.attachmentData
+      ? `Gmail returned attachment ${params.attachmentId} without any content data.`
+      : `Gmail returned an empty response for attachment ${params.attachmentId}.`,
+  ) as Error & { status?: number };
+
+  if (typeof params.status === 'number' && Number.isFinite(params.status)) {
+    error.status = params.status;
+  }
+
+  return error;
+}
+
 function readSupportedAttachmentDescriptor(params: {
   mimeType?: string | null;
   filename?: string | null;
@@ -830,17 +848,25 @@ export async function readEmailAttachmentContent(
         });
         const attachmentData = (attachmentResponse.data ?? null) as GmailAttachmentApiResponse | null;
         if (!attachmentData?.data) {
+          const retryable = isRetryableGmailError(
+            createMissingAttachmentDataError({
+              attachmentId: selectedAttachment.attachmentId,
+              attachmentData,
+              status: (attachmentResponse as { status?: unknown }).status,
+            }),
+          );
           logger.warn('[readEmailAttachmentContent] attachment fetch missing data', {
             userId: params.userId,
             mailboxId: mailbox.mailboxId,
             messageId: params.messageId,
             attachmentId: selectedAttachment.attachmentId,
+            retryable,
           });
           return {
             ok: false,
             status: 'attachment_fetch_failed',
             message: 'Gmail returned the attachment without any content.',
-            retryable: true,
+            retryable,
             messageContext,
             availableAttachments: attachments.map(toPublicAttachment),
           };
@@ -848,18 +874,20 @@ export async function readEmailAttachmentContent(
 
         attachmentBuffer = normalizeBase64Url(attachmentData.data);
       } catch (error) {
+        const retryable = isRetryableGmailError(error);
         logger.warn('[readEmailAttachmentContent] attachment fetch failed', {
           userId: params.userId,
           mailboxId: mailbox.mailboxId,
           messageId: params.messageId,
           attachmentId: selectedAttachment.attachmentId,
+          retryable,
           error: error instanceof Error ? error.message : String(error),
         });
         return {
           ok: false,
           status: 'attachment_fetch_failed',
           message: 'Failed to download the attachment from Gmail.',
-          retryable: true,
+          retryable,
           messageContext,
           availableAttachments: attachments.map(toPublicAttachment),
         };

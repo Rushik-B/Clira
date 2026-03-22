@@ -108,6 +108,8 @@ function createGmailContext(params: {
   mimeType: string;
   attachmentId?: string;
   attachmentData?: string;
+  attachmentResponseStatus?: number;
+  attachmentGetError?: unknown;
   extraParts?: Array<Record<string, unknown>>;
 }) {
   const attachmentId = params.attachmentId ?? 'att-1';
@@ -136,11 +138,14 @@ function createGmailContext(params: {
       },
     },
   });
-  const attachmentsGet = vi.fn().mockResolvedValue({
-    data: {
-      data: params.attachmentData ?? Buffer.from(`${params.filename}-bytes`).toString('base64url'),
-    },
-  });
+  const attachmentsGet = params.attachmentGetError
+    ? vi.fn().mockRejectedValue(params.attachmentGetError)
+    : vi.fn().mockResolvedValue({
+        status: params.attachmentResponseStatus ?? 200,
+        data: {
+          data: params.attachmentData ?? Buffer.from(`${params.filename}-bytes`).toString('base64url'),
+        },
+      });
 
   return {
     gmail: {
@@ -333,6 +338,49 @@ describe('readEmailAttachmentContent', () => {
           kind: 'txt',
         },
       ],
+    });
+  });
+
+  test('marks missing attachment data as non-retryable when Gmail does not signal a retryable failure', async () => {
+    const gmailContext = createGmailContext({
+      filename: 'grades.xlsx',
+      mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      attachmentData: '',
+      attachmentResponseStatus: 200,
+    });
+    gmailMocks.createGmailServiceForUser.mockResolvedValue(gmailContext);
+
+    const result = await readEmailAttachmentContent({
+      userId: 'user-1',
+      messageId: 'message-1',
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      status: 'attachment_fetch_failed',
+      message: 'Gmail returned the attachment without any content.',
+      retryable: false,
+    });
+  });
+
+  test('marks attachment download failures as retryable only when Gmail returns a retryable error', async () => {
+    const gmailContext = createGmailContext({
+      filename: 'grades.xlsx',
+      mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      attachmentGetError: Object.assign(new Error('Gmail temporarily unavailable'), { status: 503 }),
+    });
+    gmailMocks.createGmailServiceForUser.mockResolvedValue(gmailContext);
+
+    const result = await readEmailAttachmentContent({
+      userId: 'user-1',
+      messageId: 'message-1',
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      status: 'attachment_fetch_failed',
+      message: 'Failed to download the attachment from Gmail.',
+      retryable: true,
     });
   });
 });
