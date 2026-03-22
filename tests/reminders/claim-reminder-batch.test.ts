@@ -1,7 +1,10 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
 import { logger } from '@/lib/logger';
-import { claimReminderBatchForDelivery } from '@/lib/services/reminderNotificationService';
+import {
+  claimReminderBatchForDelivery,
+  utcDueMinuteEpochMs,
+} from '@/lib/services/reminderNotificationService';
 
 describe('claimReminderBatchForDelivery', () => {
   beforeEach(() => {
@@ -12,6 +15,7 @@ describe('claimReminderBatchForDelivery', () => {
 
   test('claims only due reminders and marks stale reminders missed before delivery', async () => {
     const now = new Date('2026-03-22T12:00:00.000Z');
+    const dueMinuteEpochMs = utcDueMinuteEpochMs(new Date('2026-03-22T11:59:00.000Z'));
     const initialFindMany = vi.fn().mockResolvedValue([
       {
         id: 'r-due',
@@ -70,7 +74,7 @@ describe('claimReminderBatchForDelivery', () => {
 
     const result = await claimReminderBatchForDelivery({
       userId: 'user-1',
-      dueMinuteEpochMs: now.getTime(),
+      dueMinuteEpochMs,
       uniqueIds: ['r-due', 'r-stale', 'r-future'],
       now,
       db,
@@ -100,6 +104,7 @@ describe('claimReminderBatchForDelivery', () => {
   test('warns when fewer reminders are claimed than expected', async () => {
     const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
     const now = new Date('2026-03-22T12:00:00.000Z');
+    const dueMinuteEpochMs = utcDueMinuteEpochMs(new Date('2026-03-22T11:59:00.000Z'));
     const initialFindMany = vi.fn().mockResolvedValue([
       {
         id: 'r-1',
@@ -149,7 +154,7 @@ describe('claimReminderBatchForDelivery', () => {
 
     await claimReminderBatchForDelivery({
       userId: 'user-1',
-      dueMinuteEpochMs: now.getTime(),
+      dueMinuteEpochMs,
       uniqueIds: ['r-1', 'r-2'],
       now,
       db,
@@ -166,5 +171,83 @@ describe('claimReminderBatchForDelivery', () => {
         reminderIds: ['r-1', 'r-2'],
       }),
     );
+  });
+
+  test('reapplies the due-time predicates inside the claim transaction', async () => {
+    const now = new Date('2026-03-22T12:00:30.000Z');
+    const dueMinuteEpochMs = utcDueMinuteEpochMs(new Date('2026-03-22T11:59:00.000Z'));
+    const initialFindMany = vi.fn().mockResolvedValue([
+      {
+        id: 'r-raced',
+        userId: 'user-1',
+        title: 'Raced reminder',
+        status: 'PENDING',
+        scheduledAt: new Date('2026-03-22T11:59:30.000Z'),
+        snoozedUntil: null,
+      },
+    ]);
+    const txUpdateMany = vi.fn().mockResolvedValue({ count: 0 });
+    const txFindMany = vi.fn().mockResolvedValue([]);
+    const db = {
+      reminder: {
+        findMany: initialFindMany,
+      },
+      $transaction: vi.fn(async (callback: (tx: unknown) => Promise<unknown>) => callback({
+        reminder: {
+          updateMany: txUpdateMany,
+          findMany: txFindMany,
+        },
+      })),
+    } as never;
+
+    const result = await claimReminderBatchForDelivery({
+      userId: 'user-1',
+      dueMinuteEpochMs,
+      uniqueIds: ['r-raced'],
+      now,
+      db,
+      markMissed: vi.fn().mockResolvedValue(undefined),
+    });
+
+    expect(txUpdateMany).toHaveBeenCalledWith({
+      where: {
+        id: { in: ['r-raced'] },
+        userId: 'user-1',
+        status: { in: ['PENDING', 'SNOOZED'] },
+        OR: [
+          {
+            status: 'PENDING',
+            scheduledAt: {
+              gte: new Date('2026-03-22T11:59:00.000Z'),
+              lte: now,
+              lt: new Date('2026-03-22T12:00:00.000Z'),
+            },
+          },
+          {
+            status: 'SNOOZED',
+            snoozedUntil: {
+              gte: new Date('2026-03-22T11:59:00.000Z'),
+              lte: now,
+              lt: new Date('2026-03-22T12:00:00.000Z'),
+            },
+          },
+          {
+            status: 'SNOOZED',
+            snoozedUntil: null,
+            scheduledAt: {
+              gte: new Date('2026-03-22T11:59:00.000Z'),
+              lte: now,
+              lt: new Date('2026-03-22T12:00:00.000Z'),
+            },
+          },
+        ],
+      },
+      data: {
+        status: 'DELIVERING',
+        deliveryClaimId: expect.any(String),
+      },
+    });
+    expect(result.candidateIds).toEqual(['r-raced']);
+    expect(result.claimed).toEqual([]);
   });
 });

@@ -14,11 +14,14 @@ set -euo pipefail
 SSH_HOST="${CLIRA_SSH_HOST:-digital-ocean-droplet}"
 
 run_remote() {
+  local remote_cmd
+
   if [[ -z "${CLIRA_REMOTE_DIR:-}" ]]; then
-    ssh "$SSH_HOST" 'set -euo pipefail; cd ~/Clira; git pull --ff-only; DOCKER_BUILDKIT=1 docker compose up --build -d'
+    remote_cmd='set -euo pipefail; cd ~/Clira; git pull --ff-only; DOCKER_BUILDKIT=1 docker compose up --build -d'
+    ssh "$SSH_HOST" "bash -lc $(printf '%q' "$remote_cmd")"
   else
-    # shellcheck disable=SC2029
-    ssh "$SSH_HOST" "set -euo pipefail; cd $(printf '%q' "$CLIRA_REMOTE_DIR"); git pull --ff-only; DOCKER_BUILDKIT=1 docker compose up --build -d"
+    printf -v remote_cmd 'set -euo pipefail; cd %q; git pull --ff-only; DOCKER_BUILDKIT=1 docker compose up --build -d' "$CLIRA_REMOTE_DIR"
+    ssh "$SSH_HOST" "bash -lc $(printf '%q' "$remote_cmd")"
   fi
 }
 
