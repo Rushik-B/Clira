@@ -173,6 +173,45 @@ describe('Executive tool result reuse cache', () => {
     expect(stats.search_memory.runtime_hit).toBe(1);
   });
 
+  test('reuses search_web runtime results with normalized defaults', () => {
+    vi.setSystemTime(new Date('2026-02-26T12:00:00.000Z'));
+
+    const cache = createExecutiveToolResultReuseCache({ conversationHistory: [] });
+    cache.set(
+      'search_web',
+      {
+        query: 'latest openai announcement',
+        includeDomains: ['OpenAI.com', 'openai.com'],
+      },
+      {
+        ok: true,
+        provider: 'public_web',
+        searchType: 'auto',
+        query: 'latest openai announcement',
+        category: 'general',
+        freshness: 'default',
+        resultMode: 'highlights',
+        resultCount: 1,
+        sources: [{ title: 'OpenAI', url: 'https://openai.com', snippets: [] }],
+        summary: 'Found 1 public web result.',
+      },
+    );
+
+    const cached = cache.get<Record<string, unknown>>('search_web', {
+      query: 'latest openai announcement',
+      category: 'general',
+      freshness: 'default',
+      resultMode: 'highlights',
+      maxResults: 5,
+      includeDomains: [' openai.com '],
+    });
+
+    expect(cached).toBeTruthy();
+    expect(cached?.resultCount).toBe(1);
+    expect((cached?._cache as { source?: string } | undefined)?.source).toBe('runtime');
+    expect(cache.getStats().search_web.runtime_hit).toBe(1);
+  });
+
   test('reuses list_inbox_emails history results with normalized defaults', () => {
     vi.setSystemTime(new Date('2026-02-26T12:00:00.000Z'));
 

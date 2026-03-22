@@ -142,6 +142,15 @@ function buildContext(params: {
           set_ok: 0,
           set_skipped_non_cacheable: 0,
         },
+        search_web: {
+          history_hit: 0,
+          runtime_hit: 0,
+          miss_not_found: 0,
+          miss_expired: 0,
+          miss_invalidated: 0,
+          set_ok: 0,
+          set_skipped_non_cacheable: 0,
+        },
         search_memory: {
           history_hit: 0,
           runtime_hit: 0,
@@ -264,6 +273,7 @@ describe('Executive agent tool packs', () => {
       'read_email_pdf_attachment',
       'search_calendar',
       'check_calendar',
+      'search_web',
       'get_reply_preferences',
     ]);
     expect(toolNames).not.toContain('send_email');
@@ -424,7 +434,7 @@ describe('Executive agent tool packs', () => {
 
     const toolNames = Object.keys(buildExecutiveAgentTools(context));
 
-    expect(toolNames.slice(0, 10)).toEqual([
+    expect(toolNames.slice(0, 11)).toEqual([
       'search_memory',
       'append_to_supermemory',
       'send_progress_update',
@@ -434,6 +444,7 @@ describe('Executive agent tool packs', () => {
       'read_email_pdf_attachment',
       'search_calendar',
       'check_calendar',
+      'search_web',
       'get_reply_preferences',
     ]);
     expect(toolNames.slice(-2)).toEqual([
