@@ -250,6 +250,11 @@ const SUPPRESSED_TOOLS = new Set([
   'request_tool_pack_exposure',
   'request_skill_exposure',
   'request_mcp_server_tools',
+  'add_reminder',
+  'list_reminders',
+  'snooze_reminder',
+  'dismiss_reminder',
+  'cancel_reminder',
 ]);
 
 const PREFIXES_TO_STRIP = [

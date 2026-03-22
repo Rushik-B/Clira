@@ -12,8 +12,8 @@ describe('tool progress descriptions', () => {
   });
 
   test('varies repeated updates within the same run', () => {
-    const first = getToolProgressDescription('list_reminders', { variationIndex: 0 });
-    const second = getToolProgressDescription('list_reminders', { variationIndex: 1 });
+    const first = getToolProgressDescription('list_email_alerts', { variationIndex: 0 });
+    const second = getToolProgressDescription('list_email_alerts', { variationIndex: 1 });
 
     expect(first).toBeTruthy();
     expect(second).toBeTruthy();
@@ -100,5 +100,13 @@ describe('tool progress descriptions', () => {
   test('suppresses progress text for internal wrapper tools', () => {
     expect(getToolProgressDescription('send_progress_update')).toBeNull();
     expect(getToolProgressDescription('request_mcp_server_tools')).toBeNull();
+  });
+
+  test('suppresses auto progress text for reminder tools', () => {
+    expect(getToolProgressDescription('add_reminder')).toBeNull();
+    expect(getToolProgressDescription('list_reminders')).toBeNull();
+    expect(getToolProgressDescription('snooze_reminder')).toBeNull();
+    expect(getToolProgressDescription('dismiss_reminder')).toBeNull();
+    expect(getToolProgressDescription('cancel_reminder')).toBeNull();
   });
 });
