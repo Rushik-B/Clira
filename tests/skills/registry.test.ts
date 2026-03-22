@@ -8,7 +8,8 @@ const {
   const tx = {
     userSkill: {
       create: vi.fn(),
-      update: vi.fn(),
+      updateMany: vi.fn(),
+      findFirst: vi.fn(),
     },
     actionHistory: {
       create: vi.fn(),
@@ -36,8 +37,10 @@ vi.mock('@/lib/prisma', () => ({
 }));
 
 import {
+  archiveUserSkill,
   createUserSkill,
   listSelectableSkills,
+  updateUserSkill,
 } from '@/lib/services/skills';
 
 describe('skill registry', () => {
@@ -133,5 +136,90 @@ describe('skill registry', () => {
         catalogSummary: 'Handle investor update replies tersely.',
       },
     ]);
+  });
+
+  test('update rejects with not found when the skill is archived during the transaction', async () => {
+    prismaMock.userSkill.findFirst.mockResolvedValueOnce({
+      id: 'skill-1',
+      userId: 'user-1',
+      slug: 'investor-updates',
+      name: 'Investor Updates',
+      description: 'Handle investor update replies tersely.',
+      body: '## Rules\n- Keep it concise.',
+      enabled: true,
+      catalogSummary: 'Handle investor update replies tersely.',
+      archivedAt: null,
+      createdAt: new Date('2026-03-19T00:00:00.000Z'),
+      updatedAt: new Date('2026-03-19T00:00:00.000Z'),
+    });
+    txMock.userSkill.updateMany.mockResolvedValue({ count: 0 });
+
+    await expect(
+      updateUserSkill({
+        userId: 'user-1',
+        skillId: 'skill-1',
+        name: 'Investor Notes',
+      }),
+    ).rejects.toMatchObject({
+      code: 'user_skill_not_found',
+      status: 404,
+    });
+
+    expect(txMock.userSkill.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: 'skill-1',
+        userId: 'user-1',
+        archivedAt: null,
+      },
+      data: {
+        slug: 'investor-updates',
+        name: 'Investor Notes',
+        description: 'Handle investor update replies tersely.',
+        body: '## Rules\n- Keep it concise.',
+        enabled: true,
+        catalogSummary: 'Handle investor update replies tersely.',
+      },
+    });
+    expect(txMock.actionHistory.create).not.toHaveBeenCalled();
+  });
+
+  test('archive rejects with not found when the skill is archived during the transaction', async () => {
+    prismaMock.userSkill.findFirst.mockResolvedValueOnce({
+      id: 'skill-1',
+      userId: 'user-1',
+      slug: 'investor-updates',
+      name: 'Investor Updates',
+      description: 'Handle investor update replies tersely.',
+      body: '## Rules\n- Keep it concise.',
+      enabled: true,
+      catalogSummary: 'Handle investor update replies tersely.',
+      archivedAt: null,
+      createdAt: new Date('2026-03-19T00:00:00.000Z'),
+      updatedAt: new Date('2026-03-19T00:00:00.000Z'),
+    });
+    txMock.userSkill.updateMany.mockResolvedValue({ count: 0 });
+
+    await expect(
+      archiveUserSkill({
+        userId: 'user-1',
+        skillId: 'skill-1',
+      }),
+    ).rejects.toMatchObject({
+      code: 'user_skill_not_found',
+      status: 404,
+    });
+
+    expect(txMock.userSkill.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: 'skill-1',
+        userId: 'user-1',
+        archivedAt: null,
+      },
+      data: {
+        enabled: false,
+        archivedAt: expect.any(Date),
+      },
+    });
+    expect(txMock.actionHistory.create).not.toHaveBeenCalled();
   });
 });

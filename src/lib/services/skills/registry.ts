@@ -35,6 +35,13 @@ function mapUserSkillRecord(record: RawUserSkillRecord): UserSkillRecord {
   };
 }
 
+function createUserSkillNotFoundError(): UserSkillServiceError {
+  return new UserSkillServiceError('Skill not found.', {
+    code: 'user_skill_not_found',
+    status: 404,
+  });
+}
+
 async function getOwnedSkillOrThrow(userId: string, skillId: string): Promise<UserSkillRecord> {
   const record = await prisma.userSkill.findFirst({
     where: {
@@ -45,10 +52,7 @@ async function getOwnedSkillOrThrow(userId: string, skillId: string): Promise<Us
   });
 
   if (!record) {
-    throw new UserSkillServiceError('Skill not found.', {
-      code: 'user_skill_not_found',
-      status: 404,
-    });
+    throw createUserSkillNotFoundError();
   }
 
   return mapUserSkillRecord(record as RawUserSkillRecord);
@@ -138,8 +142,12 @@ export async function updateUserSkill(input: UpdateUserSkillInput): Promise<User
 
   try {
     const updated = await prisma.$transaction(async (tx) => {
-      const skill = await tx.userSkill.update({
-        where: { id: current.id },
+      const updateResult = await tx.userSkill.updateMany({
+        where: {
+          id: current.id,
+          userId: current.userId,
+          archivedAt: null,
+        },
         data: {
           slug: normalized.slug,
           name: normalized.name,
@@ -149,6 +157,20 @@ export async function updateUserSkill(input: UpdateUserSkillInput): Promise<User
           catalogSummary: normalized.catalogSummary,
         },
       });
+      if (updateResult.count === 0) {
+        throw createUserSkillNotFoundError();
+      }
+
+      const skill = await tx.userSkill.findFirst({
+        where: {
+          id: current.id,
+          userId: current.userId,
+          archivedAt: null,
+        },
+      });
+      if (!skill) {
+        throw createUserSkillNotFoundError();
+      }
 
       const event =
         input.enabled != null && input.name == null && input.description == null && input.body == null && input.slug == null
@@ -209,13 +231,30 @@ export async function archiveUserSkill(params: {
   const archivedAt = new Date();
 
   const archived = await prisma.$transaction(async (tx) => {
-    const skill = await tx.userSkill.update({
-      where: { id: current.id },
+    const updateResult = await tx.userSkill.updateMany({
+      where: {
+        id: current.id,
+        userId: current.userId,
+        archivedAt: null,
+      },
       data: {
         enabled: false,
         archivedAt,
       },
     });
+    if (updateResult.count === 0) {
+      throw createUserSkillNotFoundError();
+    }
+
+    const skill = await tx.userSkill.findFirst({
+      where: {
+        id: current.id,
+        userId: current.userId,
+      },
+    });
+    if (!skill) {
+      throw createUserSkillNotFoundError();
+    }
 
     await tx.actionHistory.create({
       data: {
