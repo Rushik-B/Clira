@@ -75,6 +75,7 @@ import {
   type ExecutiveToolResultCacheStats,
 } from './toolResultReuseCache';
 import { stripCacheDebugMetadataForPersistence } from './persistence';
+import { extractPendingEmailDraftMetadata } from './emailDraftThreading';
 import { normalizeExecutiveAgentToolsForModel } from './tool-schema-normalization';
 import { createInitialWorkingState, createWorkingStateController } from './workingState';
 import {
@@ -910,6 +911,13 @@ export class ExecutiveAgent {
         metadata.steps = stripCacheDebugMetadataForPersistence(
           passResult.steps,
         ) as Prisma.InputJsonValue;
+      }
+      const pendingEmailDraft = extractPendingEmailDraftMetadata({
+        response: passResult.response,
+        toolResults: passResult.toolResults,
+      });
+      if (pendingEmailDraft) {
+        metadata.pendingEmailDraft = pendingEmailDraft as Prisma.InputJsonValue;
       }
       if (passResult.toolBudget) {
         metadata.toolBudget = passResult.toolBudget as Prisma.InputJsonValue;

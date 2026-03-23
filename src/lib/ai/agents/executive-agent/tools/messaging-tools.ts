@@ -17,6 +17,9 @@ import {
   generateMemoryCustomId,
   truncate,
 } from '../helpers';
+import {
+  findPendingEmailDraftInHistory,
+} from '../emailDraftThreading';
 import type {
   ExecutiveRuntimeContext,
 } from '../types';
@@ -921,14 +924,51 @@ export function buildMessagingTools({
               };
             }
 
+            const historyDraft = findPendingEmailDraftInHistory({
+              history: input.conversationHistory,
+              to: args.to,
+              subject: args.subject,
+            });
+
+            let resolvedThreadId = args.threadId ?? historyDraft?.threadId;
+            let resolvedInReplyTo = args.inReplyTo;
+            let resolvedReferences = args.references;
+
+            if (resolvedThreadId && (!resolvedInReplyTo || !resolvedReferences)) {
+              try {
+                const threadEmails = await gmailContext.gmail.fetchFullThread(resolvedThreadId);
+                const latestThreadEmail = Array.isArray(threadEmails)
+                  ? [...threadEmails]
+                      .filter((email) => Boolean(email?.rfc2822MessageId))
+                      .sort((left, right) => right.date.getTime() - left.date.getTime())[0]
+                  : null;
+
+                if (latestThreadEmail?.rfc2822MessageId) {
+                  resolvedInReplyTo = resolvedInReplyTo ?? latestThreadEmail.rfc2822MessageId;
+                  resolvedReferences = resolvedReferences ?? latestThreadEmail.references ?? undefined;
+                }
+              } catch (error) {
+                const message = error instanceof Error ? error.message : 'Unknown error';
+                logger.warn(
+                  `[executiveAgent] Failed to recover reply headers for thread ${resolvedThreadId}: ${message}`,
+                );
+              }
+            }
+
+            if (resolvedThreadId && !args.threadId) {
+              logger.info(
+                `[executiveAgent] Recovered Gmail thread for send_email: threadId=${resolvedThreadId}`,
+              );
+            }
+
             const result = await gmailContext.gmail.sendEmail({
               to: args.to,
               cc: args.cc,
               subject: args.subject,
               body: args.body,
-              inReplyTo: args.inReplyTo,
-              references: args.references,
-              threadId: args.threadId,
+              inReplyTo: resolvedInReplyTo,
+              references: resolvedReferences,
+              threadId: resolvedThreadId,
             });
 
             logger.info(`[executiveAgent] Email sent: messageId=${result.id}`);

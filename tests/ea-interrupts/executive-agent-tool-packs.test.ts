@@ -7,6 +7,9 @@ vi.mock('@/lib/prisma', () => ({
     },
   ),
 }));
+vi.mock('@/lib/security/getUserGmailCredentials', () => ({
+  createGmailServiceForUser: vi.fn(),
+}));
 
 import { buildExecutiveAgentTools } from '@/lib/ai/agents/executive-agent/tools';
 import {
@@ -25,6 +28,17 @@ import type {
   McpToolManifestRecord,
 } from '@/lib/services/mcp/types';
 import type { SelectableSkill, SkillExposure } from '@/lib/services/skills';
+import { createGmailServiceForUser } from '@/lib/security/getUserGmailCredentials';
+
+type ExecutableTool<TArgs, TResult> = {
+  execute: (args: TArgs) => Promise<TResult>;
+};
+
+function getExecutableTool<TArgs, TResult>(tool: unknown): ExecutableTool<TArgs, TResult> {
+  expect(tool).toBeTruthy();
+  expect(typeof (tool as { execute?: unknown }).execute).toBe('function');
+  return tool as ExecutableTool<TArgs, TResult>;
+}
 
 function buildInput(params: {
   userRequest: string;
@@ -252,6 +266,105 @@ function buildMcpTool(overrides?: Partial<McpToolManifestRecord>): McpToolManife
 }
 
 describe('Executive agent tool packs', () => {
+  test('send_email recovers Gmail threading from the recent draft history', async () => {
+    const createGmailServiceForUserMock = vi.mocked(createGmailServiceForUser);
+    const fetchFullThread = vi.fn().mockResolvedValue([
+      {
+        messageId: 'gmail-msg-1',
+        gmailMessageId: 'gmail-msg-1',
+        gmailThreadId: 'thread-amelia',
+        rfc2822MessageId: '<parent@portalabetheagency.info>',
+        references: '<root@portalabetheagency.info>',
+        inReplyTo: '<root@portalabetheagency.info>',
+        from: 'Amelia Martinez <ameliamartinez@portalabetheagency.info>',
+        to: ['rushikbusiness@gmail.com'],
+        cc: [],
+        subject: 'Rushik <> Vestara Intro',
+        body: 'Following up on the intro.',
+        snippet: 'Following up on the intro.',
+        isSent: false,
+        isDraft: false,
+        date: new Date('2026-03-23T20:55:00.000Z'),
+        hasAttachments: false,
+      },
+    ]);
+    const sendEmail = vi.fn().mockResolvedValue({
+      id: 'sent-msg-1',
+      threadId: 'thread-amelia',
+    });
+
+    createGmailServiceForUserMock.mockResolvedValue({
+      gmail: {
+        fetchFullThread,
+        sendEmail,
+      },
+    } as Awaited<ReturnType<typeof createGmailServiceForUser>>);
+
+    const context = buildContext({
+      input: buildInput({
+        userRequest: 'send it',
+        history: [
+          {
+            id: 'assistant-draft',
+            role: 'ASSISTANT',
+            direction: 'OUTBOUND',
+            content:
+              'ive got the draft ready for amelia martinez. good to go?\n\nTo: ameliamartinez@portalabetheagency.info\nSub: Re: Rushik <> Vestara Intro\n\nno',
+            metadata: {
+              toolResults: [
+                {
+                  toolName: 'search_inbox_context',
+                  result: {
+                    matches: [
+                      {
+                        threadId: 'thread-amelia',
+                        from: 'Amelia Martinez <ameliamartinez@portalabetheagency.info>',
+                        subject: 'Rushik <> Vestara Intro',
+                      },
+                    ],
+                  },
+                },
+              ],
+            },
+            createdAt: new Date('2026-03-23T21:05:30.000Z'),
+          },
+        ],
+      }),
+      pendingCalendarChangePresent: false,
+      selectedPacks: ['safe_context_pack', 'email_send_pack'],
+    });
+
+    const sendEmailTool = getExecutableTool<
+      {
+        to: string;
+        subject: string;
+        body: string;
+        confirmed: boolean;
+      },
+      Record<string, unknown>
+    >(buildExecutiveAgentTools(context).send_email);
+
+    const result = await sendEmailTool.execute({
+      to: 'ameliamartinez@portalabetheagency.info',
+      subject: 'Re: Rushik <> Vestara Intro',
+      body: 'no',
+      confirmed: true,
+    });
+
+    expect(fetchFullThread).toHaveBeenCalledWith('thread-amelia');
+    expect(sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: 'ameliamartinez@portalabetheagency.info',
+        subject: 'Re: Rushik <> Vestara Intro',
+        body: 'no',
+        threadId: 'thread-amelia',
+        inReplyTo: '<parent@portalabetheagency.info>',
+        references: '<root@portalabetheagency.info>',
+      }),
+    );
+    expect(result.success).toBe(true);
+  });
+
   test('safe context substrate stays read-oriented on its own', () => {
     const context = buildContext({
       input: buildInput({
