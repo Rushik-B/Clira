@@ -1,6 +1,60 @@
-# Clira
+<p align="center">
+  <a href="https://tryclira.com">
+    <img src="public/Github/empty-queue.png" alt="Clira queue empty state" width="100%" />
+  </a>
+</p>
 
-Clira is a self-hosted AI email assistant built around draft-first workflows, deterministic filtering, and separate worker processes for ingestion and reply generation.
+<h1 align="center">Clira</h1>
+
+<p align="center">
+  Self-hosted AI email assistant for draft-first workflows, deterministic filtering, and worker-driven reply generation.
+</p>
+
+<p align="center">
+  <a href="https://tryclira.com"><strong>Website</strong></a>
+  ·
+  <a href="docs/self-host.md"><strong>Self-Host</strong></a>
+  ·
+  <a href="docs/setup.md"><strong>Contributor Setup</strong></a>
+  ·
+  <a href="docs/architecture.md"><strong>Architecture</strong></a>
+  ·
+  <a href="https://github.com/Rushik-B/Clira/issues"><strong>Issues</strong></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/Rushik-B/Clira/actions/workflows/ci.yml">
+    <img src="https://img.shields.io/github/actions/workflow/status/Rushik-B/Clira/ci.yml?branch=main&style=for-the-badge&label=CI" alt="CI status" />
+  </a>
+  <a href="https://github.com/Rushik-B/Clira/blob/main/package.json">
+    <img src="https://img.shields.io/github/package-json/v/Rushik-B/Clira?style=for-the-badge&label=Build" alt="Build version" />
+  </a>
+  <a href="https://github.com/Rushik-B/Clira/pkgs/container/clira">
+    <img src="https://img.shields.io/badge/Docker-ghcr.io%2Frushik--b%2Fclira%3Amain-2496ED?style=for-the-badge&logo=docker&logoColor=white" alt="Docker image" />
+  </a>
+  <a href="https://github.com/Rushik-B/Clira/blob/main/LICENSE">
+    <img src="https://img.shields.io/github/license/Rushik-B/Clira?style=for-the-badge" alt="MIT license" />
+  </a>
+  <a href="https://github.com/Rushik-B/Clira/blob/main/package.json">
+    <img src="https://img.shields.io/badge/Node-22.x-339933?style=for-the-badge&logo=nodedotjs&logoColor=white" alt="Node 22.x" />
+  </a>
+</p>
+
+Clira is an email-first assistant built for people who want AI help without giving up control. It organizes inbound mail, drafts replies, keeps deterministic filters ahead of generation, and separates UI, ingestion, and worker execution so self-hosting remains inspectable and reliable.
+
+## Highlights
+
+- Draft-first queue with human review before send
+- Gmail ingestion in push and pull modes
+- Deterministic filtering before reply generation
+- Worker-based architecture for ingestion, planning, and async jobs
+- Self-hostable stack with Docker Compose and GHCR images
+
+## Product Views
+
+| ![Clira full queue](public/Github/full-queue.png) | ![Clira reply modal](public/Github/reply-modal.png) |
+| :--: | :--: |
+| _Queue view with actionable drafts_ | _Reply review modal before approval_ |
 
 ## Fast Self-Host
 
@@ -32,7 +86,7 @@ npm run setup:google -- --project-id YOUR_PROJECT_ID --mode pull --write-env
 - `GOOGLE_CLIENT_SECRET`
 - your AI provider key
 
-5. Pull and start the launch default stack.
+5. Pull and start the default launch stack.
 
 ```bash
 npm run selfhost:up
@@ -44,9 +98,9 @@ npm run selfhost:up
 - Liveness: [http://localhost:13000/api/health](http://localhost:13000/api/health)
 - Deep readiness: [http://localhost:13000/api/health?deep=1](http://localhost:13000/api/health?deep=1)
 
-## Image Versions
+## Image Tags
 
-Clira now publishes two kinds of image tags:
+Clira publishes two kinds of image tags:
 
 - `main` and `sha-<commit>` for continuous builds from the `main` branch
 - `vX.Y.Z`, `vX.Y`, and `latest` for release tags such as `v0.1.0`
@@ -73,7 +127,7 @@ npm run selfhost:up:full
 
 ## Required Environment Values
 
-Minimum first-run values live at the top of [`.env.example`](/Users/Rushik/Downloads/clira-os/Clira/.env.example). The important ones are:
+Minimum first-run values live at the top of [`.env.example`](.env.example). The important ones are:
 
 - `APP_PUBLIC_URL`
 - `NEXTAUTH_SECRET`
@@ -104,7 +158,7 @@ Clira stores local runtime secrets under `.clira-runtime/`. The default Gmail se
 
 ## Contributor Workflow
 
-If you are developing Clira rather than just hosting it, use [docs/setup.md](/Users/Rushik/Downloads/clira-os/Clira/docs/setup.md). That doc covers:
+If you are developing Clira rather than just hosting it, use [`docs/setup.md`](docs/setup.md). That doc covers:
 
 - local `npm run dev`
 - worker processes in separate terminals
@@ -113,14 +167,15 @@ If you are developing Clira rather than just hosting it, use [docs/setup.md](/Us
 
 ## AI Provider Notes
 
-Google remains the default provider. The OpenRouter env names are still used for compatibility, but `OPENROUTER_BASE_URL` can point at any OpenAI-compatible endpoint. That includes OpenRouter, LM Studio, vLLM, and similar gateways. Details live in [docs/ai-providers.md](/Users/Rushik/Downloads/clira-os/Clira/docs/ai-providers.md).
+Google remains the default provider. The OpenRouter env names are still used for compatibility, but `OPENROUTER_BASE_URL` can point at any OpenAI-compatible endpoint. That includes OpenRouter, LM Studio, vLLM, and similar gateways. Details live in [`docs/ai-providers.md`](docs/ai-providers.md).
 
 ## Documentation
 
-- Self-host guide: [docs/self-host.md](/Users/Rushik/Downloads/clira-os/Clira/docs/self-host.md)
-- Contributor setup: [docs/setup.md](/Users/Rushik/Downloads/clira-os/Clira/docs/setup.md)
-- Gmail Pub/Sub: [docs/gmail-pubsub.md](/Users/Rushik/Downloads/clira-os/Clira/docs/gmail-pubsub.md)
-- AI providers: [docs/ai-providers.md](/Users/Rushik/Downloads/clira-os/Clira/docs/ai-providers.md)
-- Troubleshooting: [docs/troubleshooting.md](/Users/Rushik/Downloads/clira-os/Clira/docs/troubleshooting.md)
-- Operations: [docs/operations.md](/Users/Rushik/Downloads/clira-os/Clira/docs/operations.md)
-- Full docs index: [docs/README.md](/Users/Rushik/Downloads/clira-os/Clira/docs/README.md)
+- Self-host guide: [`docs/self-host.md`](docs/self-host.md)
+- Contributor setup: [`docs/setup.md`](docs/setup.md)
+- Architecture: [`docs/architecture.md`](docs/architecture.md)
+- Gmail Pub/Sub: [`docs/gmail-pubsub.md`](docs/gmail-pubsub.md)
+- AI providers: [`docs/ai-providers.md`](docs/ai-providers.md)
+- Troubleshooting: [`docs/troubleshooting.md`](docs/troubleshooting.md)
+- Operations: [`docs/operations.md`](docs/operations.md)
+- Full docs index: [`docs/README.md`](docs/README.md)
