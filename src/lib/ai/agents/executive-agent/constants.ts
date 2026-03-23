@@ -39,6 +39,7 @@ export const MESSAGING_TOOL_BUDGETS_BASE: Record<string, number> = {
   get_reply_preferences: 4,
   manage_reply_preferences: 2,
   add_email_alert: 10,
+  update_email_alert: 10,
   remove_email_alert: 10,
   list_email_alerts: 2,
   plan_calendar_change: 2,

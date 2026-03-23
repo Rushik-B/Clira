@@ -212,6 +212,19 @@ function summarizeToolResult(toolName: string, result: unknown): string | null {
       }
       break;
     }
+    case 'update_email_alert': {
+      if (output.success === true) {
+        const id = getStringValue(output.alertId) ?? 'unknown';
+        const description =
+          getStringValue(output.description) ??
+          getStringValue(output.message);
+        summary = `update_email_alert: updated (${id})`;
+        if (description) summary += ` — ${description}`;
+      } else {
+        summary = `update_email_alert: failed${getStringValue(output.message) ? ` — ${getStringValue(output.message)}` : ''}`;
+      }
+      break;
+    }
     case 'remove_email_alert': {
       if (output.success === true) {
         summary = `remove_email_alert: removed (${getStringValue(output.alertId) ?? 'unknown'})`;

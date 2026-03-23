@@ -93,6 +93,13 @@ const TOOL_PROGRESS_PHRASES: Record<string, readonly string[]> = {
     'setting that alert up rn',
     'alert is good to go',
   ],
+  update_email_alert: [
+    'updating that alert',
+    'tweaking that alert for u',
+    'changing that alert rn',
+    'got it, updating the alert',
+    'making that alert change',
+  ],
   remove_email_alert: [
     'turned off that alert',
     'got rid of the alert',
@@ -226,6 +233,7 @@ const TOOL_PROGRESS_DESCRIPTORS: Record<string, ToolProgressDescriptor> = {
   plan_calendar_change: { topic: 'that calendar change', actionClass: 'write' },
   commit_calendar_change: { topic: 'that calendar change', actionClass: 'write' },
   add_email_alert: { topic: 'that alert', actionClass: 'write' },
+  update_email_alert: { topic: 'that alert', actionClass: 'write' },
   remove_email_alert: { topic: 'that alert', actionClass: 'delete' },
   list_email_alerts: { topic: 'your alerts', actionClass: 'read' },
   add_reminder: { topic: 'that reminder', actionClass: 'write' },

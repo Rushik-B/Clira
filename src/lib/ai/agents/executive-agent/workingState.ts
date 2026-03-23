@@ -163,6 +163,7 @@ function summarizeToolResult(toolName: string, result: unknown): string | null {
   if (
     [
       'add_email_alert',
+      'update_email_alert',
       'remove_email_alert',
       'list_email_alerts',
       'add_reminder',
@@ -413,6 +414,7 @@ export function createWorkingStateController(initialState: ExecutiveWorkingState
       if (
         [
           'add_email_alert',
+          'update_email_alert',
           'remove_email_alert',
           'add_reminder',
           'snooze_reminder',

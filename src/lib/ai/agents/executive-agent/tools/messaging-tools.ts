@@ -367,7 +367,77 @@ export function buildMessagingTools({
       },
 
       // ─────────────────────────────────────────────────────────────────────────
-      // Tool 11: Remove Email Alert
+      // Tool 11: Update Email Alert
+      // ─────────────────────────────────────────────────────────────────────────
+      update_email_alert: {
+        description:
+          'Update an email alert by ID or find by description. ' +
+          'Use list_email_alerts first to see active alerts.',
+        inputSchema: z.object({
+          alertId: z.string().optional().describe('Alert ID to update'),
+          descriptionMatch: z.string().optional().describe('Find alert by partial description match'),
+          description: z
+            .string()
+            .min(5)
+            .max(300)
+            .describe('Updated alert description (natural language)'),
+        }),
+        execute: async (args: {
+          alertId?: string;
+          descriptionMatch?: string;
+          description: string;
+        }) => {
+          const stale = await ensureCurrentRun('update_email_alert');
+          if (stale) return stale;
+
+          if (!args.alertId && !args.descriptionMatch) {
+            return { success: false, message: 'Provide an alertId or descriptionMatch.' };
+          }
+
+          const description = args.description.trim();
+          if (description.length < 5) {
+            return { success: false, message: 'Please provide a longer alert description.' };
+          }
+
+          let alert: { id: string; description: string } | null = null;
+
+          if (args.alertId) {
+            alert = await prisma.emailAlert.findFirst({
+              where: { id: args.alertId, userId: input.userId },
+              select: { id: true, description: true },
+            });
+          } else if (args.descriptionMatch) {
+            alert = await prisma.emailAlert.findFirst({
+              where: {
+                userId: input.userId,
+                isActive: true,
+                description: { contains: args.descriptionMatch, mode: 'insensitive' },
+              },
+              select: { id: true, description: true },
+            });
+          }
+
+          if (!alert) {
+            return { success: false, message: 'Alert not found.' };
+          }
+
+          const updatedAlert = await prisma.emailAlert.update({
+            where: { id: alert.id },
+            data: { description },
+          });
+          logger.info(`[executiveAgent] Updated email alert: ${updatedAlert.id}`);
+
+          return {
+            success: true,
+            alertId: updatedAlert.id,
+            description: updatedAlert.description,
+            message: `Updated alert: "${updatedAlert.description}"`,
+          };
+        },
+      },
+
+      // ─────────────────────────────────────────────────────────────────────────
+      // Tool 12: Remove Email Alert
       // ─────────────────────────────────────────────────────────────────────────
       remove_email_alert: {
         description:
@@ -419,7 +489,7 @@ export function buildMessagingTools({
       },
 
       // ─────────────────────────────────────────────────────────────────────────
-      // Tool 12: List Email Alerts
+      // Tool 13: List Email Alerts
       // ─────────────────────────────────────────────────────────────────────────
       list_email_alerts: {
         description: 'List all active email alerts. Parallelism: call this in the same step as any other independent tool calls. Every sequential step adds latency.',
@@ -443,7 +513,7 @@ export function buildMessagingTools({
       },
 
       // ─────────────────────────────────────────────────────────────────────────
-      // Tool 13: Add Reminder
+      // Tool 14: Add Reminder
       // ─────────────────────────────────────────────────────────────────────────
       add_reminder: {
         description:
