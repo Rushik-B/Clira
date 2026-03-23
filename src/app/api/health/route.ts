@@ -19,84 +19,118 @@ const REQUIRED_ENV = [
   'GOOGLE_CLIENT_SECRET',
   'NEXTAUTH_SECRET',
   'DATABASE_URL',
+  'CRON_SECRET',
+  'EMAIL_ENCRYPT_SECRET',
+  'EMAIL_ENCRYPT_SALT',
 ];
 
-export async function GET() {
+type DeepHealthResult = {
+  status: 'healthy' | 'unhealthy';
+  degraded: boolean;
+  checks?: Record<string, unknown>;
+  missing?: string[];
+  error?: string;
+};
+
+function buildBaseResponse(mode: 'live' | 'deep') {
+  return {
+    mode,
+    timestamp: new Date().toISOString(),
+    version: process.env.npm_package_version || '0.1.0',
+    uptime: process.uptime(),
+  };
+}
+
+async function runDeepHealth(): Promise<DeepHealthResult> {
+  await prisma.$queryRaw`SELECT 1`;
+
+  const mode = getGmailIngestionMode();
+  getGmailPubSubTopic();
+  if (mode === 'pull') {
+    getGmailPullSubscription();
+  }
+
+  const missingRequired = REQUIRED_ENV.filter((envVar) => !process.env[envVar]);
+  const missingLanguageModelConfig = getMissingLanguageModelConfig();
+  const missing = [...missingRequired, ...missingLanguageModelConfig];
+
+  const pullHeartbeat = mode === 'pull' ? await readGmailPullWorkerHeartbeat() : null;
+  const pullWorkerHealthy =
+    mode === 'push'
+      ? true
+      : Boolean(
+          pullHeartbeat && pullHeartbeat.ageMs <= GMAIL_PULL_WORKER_HEARTBEAT_TTL_SECONDS * 1000,
+        );
+
+  const checks = {
+    database: 'healthy',
+    environment: missing.length === 0 ? 'healthy' : 'unhealthy',
+    languageModelProviders: getConfiguredLanguageModelProviders(),
+    gmailIngestionMode: mode,
+    gmailPullWorker: mode === 'pull' ? (pullWorkerHealthy ? 'healthy' : 'unhealthy') : 'not-required',
+    gmailPullWorkerHeartbeatAgeMs: pullHeartbeat?.ageMs ?? null,
+  };
+
+  if (missing.length > 0) {
+    return {
+      status: 'unhealthy',
+      degraded: true,
+      checks,
+      missing,
+      error: 'Configuration incomplete',
+    };
+  }
+
+  if (!pullWorkerHealthy) {
+    return {
+      status: 'unhealthy',
+      degraded: true,
+      checks,
+      error: 'Gmail pull worker heartbeat is stale or missing',
+    };
+  }
+
+  return {
+    status: 'healthy',
+    degraded: false,
+    checks,
+  };
+}
+
+export async function GET(request: Request) {
+  const url = new URL(request.url);
+  const deep = url.searchParams.get('deep') === '1';
   const isDevelopment = process.env.NODE_ENV === 'development';
 
-  try {
-    await prisma.$queryRaw`SELECT 1`;
-    const mode = getGmailIngestionMode();
-    getGmailPubSubTopic();
-    if (mode === 'pull') {
-      getGmailPullSubscription();
-    }
-
-    const missingRequired = REQUIRED_ENV.filter((envVar) => !process.env[envVar]);
-    const missingLanguageModelConfig = getMissingLanguageModelConfig();
-
-    missingRequired.push(...missingLanguageModelConfig);
-
-    if (missingRequired.length > 0) {
-      return NextResponse.json(
-        {
-          status: 'unhealthy',
-          error: 'Configuration incomplete',
-          ...(isDevelopment ? { missing: missingRequired } : {}),
-          timestamp: new Date().toISOString(),
-        },
-        { status: 500 },
-      );
-    }
-
-    const pullHeartbeat = mode === 'pull' ? await readGmailPullWorkerHeartbeat() : null;
-    const pullWorkerHealthy =
-      mode === 'push'
-        ? true
-        : Boolean(
-            pullHeartbeat &&
-              pullHeartbeat.ageMs <= GMAIL_PULL_WORKER_HEARTBEAT_TTL_SECONDS * 1000,
-          );
-
-    if (!pullWorkerHealthy) {
-      return NextResponse.json(
-        {
-          status: 'unhealthy',
-          error: 'Gmail pull worker heartbeat is stale or missing',
-          timestamp: new Date().toISOString(),
-          checks: {
-            database: 'healthy',
-            environment: 'healthy',
-            languageModelProviders: getConfiguredLanguageModelProviders(),
-            gmailIngestionMode: mode,
-            gmailPullWorker: 'unhealthy',
-            gmailPullWorkerHeartbeatAgeMs: pullHeartbeat?.ageMs ?? null,
-          },
-        },
-        { status: 500 },
-      );
-    }
-
+  if (!deep) {
     return NextResponse.json({
       status: 'healthy',
-      timestamp: new Date().toISOString(),
-      version: process.env.npm_package_version || '0.1.0',
+      degraded: false,
       checks: {
-        database: 'healthy',
-        environment: 'healthy',
-        languageModelProviders: getConfiguredLanguageModelProviders(),
-        gmailIngestionMode: mode,
-        gmailPullWorker: mode === 'pull' ? 'healthy' : 'not-required',
-        gmailPullWorkerHeartbeatAgeMs: pullHeartbeat?.ageMs ?? null,
+        app: 'healthy',
+        readiness: 'not-run',
       },
-      uptime: process.uptime(),
+      ...buildBaseResponse('live'),
     });
+  }
+
+  try {
+    const result = await runDeepHealth();
+
+    return NextResponse.json(
+      {
+        ...buildBaseResponse('deep'),
+        ...result,
+      },
+      { status: result.status === 'healthy' ? 200 : 500 },
+    );
   } catch (error) {
     return NextResponse.json(
       {
+        ...buildBaseResponse('deep'),
         status: 'unhealthy',
+        degraded: true,
         error: isDevelopment && error instanceof Error ? error.message : 'Health check failed',
-        timestamp: new Date().toISOString(),
       },
       { status: 500 },
     );
