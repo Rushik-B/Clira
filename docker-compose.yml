@@ -8,18 +8,18 @@ x-shared-env: &shared-env
     REDIS_URL: redis://redis:6379
     NEXTAUTH_URL: ${APP_PUBLIC_URL:-http://localhost:13000}
     NEXT_PUBLIC_LANDING_PAGE_URL: ${APP_LANDING_PAGE_URL:-}
-    GOOGLE_APPLICATION_CREDENTIALS: /app/google-service-account.json
+    GOOGLE_APPLICATION_CREDENTIALS: /var/lib/clira/google-service-account.json
     CLIRA_AI_TRACE_ENABLED: "true"
     CLIRA_AI_TRACE_DIR: /var/lib/clira/ai-traces
     CLIRA_AI_TRACE_CAPTURE: full
   volumes:
-    - ./google-service-account.json:/app/google-service-account.json:ro
     - ./.clira-runtime:/var/lib/clira
 
 services:
   app:
-    build: .
-    image: clira-app:local
+    profiles: ["core"]
+    image: ${CLIRA_IMAGE:-ghcr.io/rushik-b/clira:latest}
+    pull_policy: always
     command: sh -c "npx prisma migrate deploy && npm run start"
     ports:
       - "13000:3000"
@@ -31,7 +31,9 @@ services:
         condition: service_started
 
   worker:
-    image: clira-app:local
+    profiles: ["core"]
+    image: ${CLIRA_IMAGE:-ghcr.io/rushik-b/clira:latest}
+    pull_policy: always
     command: sh -c "npm run start:worker"
     <<: *shared-env
     depends_on:
@@ -43,7 +45,9 @@ services:
         condition: service_started
 
   backfill-worker:
-    image: clira-app:local
+    profiles: ["backfill"]
+    image: ${CLIRA_IMAGE:-ghcr.io/rushik-b/clira:latest}
+    pull_policy: always
     command: sh -c "npm run start:backfill-worker"
     <<: *shared-env
     depends_on:
@@ -55,7 +59,9 @@ services:
         condition: service_started
 
   gmail-pull-worker:
-    image: clira-app:local
+    profiles: ["core"]
+    image: ${CLIRA_IMAGE:-ghcr.io/rushik-b/clira:latest}
+    pull_policy: always
     command: sh -c "npm run start:gmail-pull-worker"
     <<: *shared-env
     depends_on:
@@ -67,7 +73,9 @@ services:
         condition: service_started
 
   cron:
-    image: clira-app:local
+    profiles: ["core"]
+    image: ${CLIRA_IMAGE:-ghcr.io/rushik-b/clira:latest}
+    pull_policy: always
     command: sh -c "npm run start:cron"
     <<: *shared-env
     environment:
@@ -79,6 +87,7 @@ services:
         condition: service_started
 
   db:
+    profiles: ["core", "backfill"]
     # pgvector required for InboxSearchChunk.embedding (email search subagent semantic search)
     image: pgvector/pgvector:pg16
     restart: unless-stopped
@@ -100,6 +109,7 @@ services:
       retries: 10
 
   redis:
+    profiles: ["core", "backfill"]
     image: redis:7-alpine
     restart: unless-stopped
     ports:
