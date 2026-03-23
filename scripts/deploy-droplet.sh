@@ -17,14 +17,14 @@ run_remote() {
   local remote_cmd
 
   if [[ -z "${CLIRA_REMOTE_DIR:-}" ]]; then
-    remote_cmd='set -euo pipefail; cd ~/Clira; git pull --ff-only; DOCKER_BUILDKIT=1 docker compose up --build -d'
+    remote_cmd='set -euo pipefail; cd ~/Clira; git pull --ff-only; docker compose --profile core --profile backfill pull; docker compose --profile core --profile backfill up -d'
     ssh "$SSH_HOST" "bash -lc $(printf '%q' "$remote_cmd")"
   else
-    printf -v remote_cmd 'set -euo pipefail; cd %q; git pull --ff-only; DOCKER_BUILDKIT=1 docker compose up --build -d' "$CLIRA_REMOTE_DIR"
+    printf -v remote_cmd 'set -euo pipefail; cd %q; git pull --ff-only; docker compose --profile core --profile backfill pull; docker compose --profile core --profile backfill up -d' "$CLIRA_REMOTE_DIR"
     ssh "$SSH_HOST" "bash -lc $(printf '%q' "$remote_cmd")"
   fi
 }
 
-echo "==> ${SSH_HOST}: git pull + docker compose up --build -d"
+echo "==> ${SSH_HOST}: git pull + docker compose pull/up"
 run_remote
 echo "==> Done."
