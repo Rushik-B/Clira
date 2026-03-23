@@ -12,8 +12,8 @@ describe('tool progress descriptions', () => {
   });
 
   test('varies repeated updates within the same run', () => {
-    const first = getToolProgressDescription('list_email_alerts', { variationIndex: 0 });
-    const second = getToolProgressDescription('list_email_alerts', { variationIndex: 1 });
+    const first = getToolProgressDescription('list_inbox_emails', { variationIndex: 0 });
+    const second = getToolProgressDescription('list_inbox_emails', { variationIndex: 1 });
 
     expect(first).toBeTruthy();
     expect(second).toBeTruthy();
@@ -119,5 +119,23 @@ describe('tool progress descriptions', () => {
         elapsedMs: 30_000,
       }),
     ).toBeNull();
+  });
+
+  test('suppresses progress text for email alert tools', () => {
+    for (const tool of [
+      'add_email_alert',
+      'update_email_alert',
+      'remove_email_alert',
+      'list_email_alerts',
+    ] as const) {
+      expect(getToolProgressDescription(tool)).toBeNull();
+      expect(
+        getToolProgressDescription(tool, {
+          variationIndex: 1,
+          sentCount: 1,
+          elapsedMs: 30_000,
+        }),
+      ).toBeNull();
+    }
   });
 });
