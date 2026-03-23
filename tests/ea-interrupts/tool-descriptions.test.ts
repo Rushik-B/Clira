@@ -109,4 +109,15 @@ describe('tool progress descriptions', () => {
     expect(getToolProgressDescription('dismiss_reminder')).toBeNull();
     expect(getToolProgressDescription('cancel_reminder')).toBeNull();
   });
+
+  test('suppresses progress text for append_to_supermemory', () => {
+    expect(getToolProgressDescription('append_to_supermemory')).toBeNull();
+    expect(
+      getToolProgressDescription('append_to_supermemory', {
+        variationIndex: 1,
+        sentCount: 1,
+        elapsedMs: 30_000,
+      }),
+    ).toBeNull();
+  });
 });
