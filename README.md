@@ -44,6 +44,16 @@ npm run selfhost:up
 - Liveness: [http://localhost:13000/api/health](http://localhost:13000/api/health)
 - Deep readiness: [http://localhost:13000/api/health?deep=1](http://localhost:13000/api/health?deep=1)
 
+## Image Versions
+
+Clira now publishes two kinds of image tags:
+
+- `main` and `sha-<commit>` for continuous builds from the `main` branch
+- `vX.Y.Z`, `vX.Y`, and `latest` for release tags such as `v0.1.0`
+
+For evaluation and internal testing, the default `CLIRA_IMAGE=ghcr.io/rushik-b/clira:main` is fine.
+For production or any install you want to keep stable, pin `CLIRA_IMAGE` to an exact release tag in `.env`.
+
 ## What Starts By Default
 
 `npm run selfhost:up` starts the `core` profile:

@@ -18,7 +18,7 @@ x-shared-env: &shared-env
 services:
   app:
     profiles: ["core"]
-    image: ${CLIRA_IMAGE:-ghcr.io/rushik-b/clira:latest}
+    image: ${CLIRA_IMAGE:-ghcr.io/rushik-b/clira:main}
     pull_policy: always
     command: sh -c "npx prisma migrate deploy && npm run start"
     ports:
@@ -32,7 +32,7 @@ services:
 
   worker:
     profiles: ["core"]
-    image: ${CLIRA_IMAGE:-ghcr.io/rushik-b/clira:latest}
+    image: ${CLIRA_IMAGE:-ghcr.io/rushik-b/clira:main}
     pull_policy: always
     command: sh -c "npm run start:worker"
     <<: *shared-env
@@ -46,7 +46,7 @@ services:
 
   backfill-worker:
     profiles: ["backfill"]
-    image: ${CLIRA_IMAGE:-ghcr.io/rushik-b/clira:latest}
+    image: ${CLIRA_IMAGE:-ghcr.io/rushik-b/clira:main}
     pull_policy: always
     command: sh -c "npm run start:backfill-worker"
     <<: *shared-env
@@ -60,7 +60,7 @@ services:
 
   gmail-pull-worker:
     profiles: ["core"]
-    image: ${CLIRA_IMAGE:-ghcr.io/rushik-b/clira:latest}
+    image: ${CLIRA_IMAGE:-ghcr.io/rushik-b/clira:main}
     pull_policy: always
     command: sh -c "npm run start:gmail-pull-worker"
     <<: *shared-env
@@ -74,7 +74,7 @@ services:
 
   cron:
     profiles: ["core"]
-    image: ${CLIRA_IMAGE:-ghcr.io/rushik-b/clira:latest}
+    image: ${CLIRA_IMAGE:-ghcr.io/rushik-b/clira:main}
     pull_policy: always
     command: sh -c "npm run start:cron"
     <<: *shared-env

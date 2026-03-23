@@ -930,7 +930,7 @@ export function buildMessagingTools({
               subject: args.subject,
             });
 
-            let resolvedThreadId = args.threadId ?? historyDraft?.threadId;
+            const resolvedThreadId = args.threadId ?? historyDraft?.threadId;
             let resolvedInReplyTo = args.inReplyTo;
             let resolvedReferences = args.references;
 

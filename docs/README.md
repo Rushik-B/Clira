@@ -7,6 +7,7 @@
 3. `docs/gmail-pubsub.md` - Gmail ingestion provisioning and validation
 4. `docs/ai-providers.md` - Google defaults plus OpenAI-compatible endpoints
 5. `docs/troubleshooting.md` - install and runtime failures grouped by stage
+6. `docs/releases.md` - GHCR tag strategy and release channel behavior
 
 ## Core Runbooks
 

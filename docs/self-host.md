@@ -60,6 +60,15 @@ Google is the default AI provider. If you use an OpenAI-compatible endpoint, kee
 
 ## 4. Start Clira
 
+Image version policy:
+
+- `ghcr.io/rushik-b/clira:main` follows the latest successful `main` branch build
+- `ghcr.io/rushik-b/clira:sha-<commit>` pins an exact branch build
+- `ghcr.io/rushik-b/clira:vX.Y.Z` pins a release
+- `latest` only moves on release tags
+
+For anything stable, set `CLIRA_IMAGE` in `.env` to an exact release tag before you start the stack.
+
 Default launch profile:
 
 ```bash
