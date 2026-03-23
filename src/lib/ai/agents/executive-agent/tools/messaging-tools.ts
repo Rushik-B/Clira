@@ -4,6 +4,7 @@ import { logger } from '@/lib/logger';
 import { readPromptFile } from '@/lib/prompts';
 import { createGmailServiceForUser } from '@/lib/security/getUserGmailCredentials';
 import { deliverContentReference } from '@/lib/services/media-delivery/service';
+import { parseReminderDescription } from '@/lib/services/reminderMetadata';
 import { parseReminderTime } from '@/lib/utils/timeParser';
 import { formatDateTimeInTimeZone } from '@/lib/utils/timezone';
 import { getSupermemoryClient, isSupermemoryConfigured } from '@/lib/services/supermemory/client';
@@ -452,6 +453,13 @@ export function buildMessagingTools({
           'Parallelism: call this in the same step as any other independent tool calls. Every sequential step adds latency.',
         inputSchema: z.object({
           title: z.string().min(1).max(200).describe('Short reminder title'),
+          description: z
+            .string()
+            .max(200)
+            .optional()
+            .describe(
+              'Internal reminder-plan metadata. Start with sequence like "1/1" or "2/5", then a stage like "single", "early", "mid", or "final". Example: "2/5 mid progress-check".',
+            ),
           scheduledAt: z.string().min(1).max(200).describe('Reminder time (natural language preferred; ISO UTC allowed)'),
           context: z.string().max(1000).optional().describe('Additional context or urgency notes'),
           recurrence: reminderRecurrenceSchema.optional(),
@@ -460,6 +468,7 @@ export function buildMessagingTools({
         }),
         execute: async (args: {
           title: string;
+          description?: string;
           scheduledAt: string;
           context?: string;
           recurrence?: z.infer<typeof reminderRecurrenceSchema>;
@@ -497,6 +506,7 @@ export function buildMessagingTools({
             data: {
               userId: input.userId,
               title,
+              description: args.description?.trim() || undefined,
               context: args.context?.trim() || undefined,
               scheduledAt: parsed.date,
               recurrence: args.recurrence ?? undefined,
@@ -514,6 +524,7 @@ export function buildMessagingTools({
               actionSummary: `Reminder created: ${title}`,
               actionDetails: {
                 reminderId: reminder.id,
+                description: reminder.description,
                 scheduledAt: reminder.scheduledAt.toISOString(),
                 scheduledAtLocal,
                 recurrence: args.recurrence ?? undefined,
@@ -562,12 +573,17 @@ export function buildMessagingTools({
               const dueAt = reminder.status === 'SNOOZED' && reminder.snoozedUntil
                 ? reminder.snoozedUntil
                 : reminder.scheduledAt;
+              const metadata = parseReminderDescription(reminder.description);
               return {
                 id: reminder.id,
                 title: reminder.title,
+                description: reminder.description,
                 status: reminder.status,
                 scheduledAt: dueAt.toISOString(),
                 scheduledAtLocal: formatDateTimeInTimeZone(dueAt, userTimezone),
+                sequenceLabel: metadata.sequenceLabel,
+                escalationStage: metadata.escalationStage,
+                planNote: metadata.planNote,
               };
             }),
           };

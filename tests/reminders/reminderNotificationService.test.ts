@@ -155,6 +155,7 @@ describe('reminder notification failure handling', () => {
           id: 'reminder-1',
           userId: 'user-1',
           title: 'Pay rent',
+          description: '2/5 mid progress-check',
           status: 'SNOOZED',
           scheduledAt: new Date('2026-03-22T11:00:00.000Z'),
           snoozedUntil: new Date('2026-03-22T12:05:00.000Z'),
@@ -165,7 +166,7 @@ describe('reminder notification failure handling', () => {
           id: 'reminder-1',
           userId: 'user-1',
           title: 'Pay rent',
-          description: null,
+          description: '2/5 mid progress-check',
           context: null,
           status: 'DELIVERING',
           scheduledAt: new Date('2026-03-22T11:00:00.000Z'),
@@ -233,7 +234,19 @@ describe('reminder notification failure handling', () => {
         content: expect.stringContaining('Scheduled for: 2026-03-22T12:05:00.000Z'),
       }),
     );
-    expect(prisma.actionHistory.create).toHaveBeenCalledWith({
+    expect(addMessage).toHaveBeenCalledWith(
+      'wa-conversation-1',
+      expect.objectContaining({
+        content: expect.stringContaining('Sequence: 2/5'),
+      }),
+    );
+    expect(addMessage).toHaveBeenCalledWith(
+      'wa-conversation-1',
+      expect.objectContaining({
+        content: expect.stringContaining('Escalation: mid'),
+      }),
+    );
+  expect(prisma.actionHistory.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         userId: 'user-1',
         actionType: 'REMINDER_DELIVERED',

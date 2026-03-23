@@ -22,7 +22,7 @@ import {
   formatReplyPipelineInstruction,
 } from './replyPipelineContext';
 
-export const EXECUTIVE_AGENT_PROMPT_VERSION = 'ea-prompt-v19';
+export const EXECUTIVE_AGENT_PROMPT_VERSION = 'ea-prompt-v20';
 
 // Injected only when the exec agent is activated by a system trigger (alert or reminder),
 // not by a user message. Tells the agent to reason with full context but output selectively.
@@ -34,6 +34,7 @@ Output contract for this turn:
 - Your final output is the notification itself: what happened, and why it matters to this user specifically.
 - Target length: for a single reminder, 1-2 sentences. For a batch (multiple reminders in one delivery), cover every listed item in one message. Prefer a short numbered or bulleted list when there are several distinct items. Do not drop or merge items into vague prose; each item deserves a clear line or sentence.
 - Duplicate or overlapping reminders: if two or more items clearly refer to the same thing (same meeting or link, same deadline, same person to contact, same subscription), recognize that and say it once. Merge redundant lines into a single clear nudge instead of repeating nearly identical text. If titles differ slightly but the substance is the same, pick one phrasing and do not enumerate duplicates as separate items.
+- If reminder metadata includes a sequence like 1/5 and an escalation stage like early, mid, or final, use that to shape tone progression. Earlier steps should feel lighter. Later steps should feel firmer and more urgent. Do not parrot the metadata unless it is genuinely useful in the user-facing text.
 - Do not mention the Reply Pipeline, reply queue counts, or unrelated email backlog in your output.
 - Do not offer follow-up actions unless you can complete them this turn with currently available tools and they are directly relevant to this specific notification.
 - Match confidence to evidence. For financial or security alerts, prefer "looks like", "matches", or "probably" over "definitely" or "it's yours". For confirmed facts, state them plainly.
