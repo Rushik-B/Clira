@@ -1,146 +1,101 @@
 # Troubleshooting
 
-Common setup and runtime issues with direct checks and fixes.
-
-## App Starts But Login Fails
+## App Will Not Boot
 
 Checks:
 
-- `NEXTAUTH_SECRET` is set and stable
-- `NEXTAUTH_URL` matches actual app URL
-- Docker deploys: `APP_PUBLIC_URL` matches the real external VM/domain URL
-- Google OAuth callback URL is correctly configured
+- `npm run selfhost:doctor`
+- Docker daemon is running
+- required ports are not already occupied
+- `.env` exists
+- `NEXTAUTH_SECRET`, `CRON_SECRET`, `EMAIL_ENCRYPT_SECRET`, and `EMAIL_ENCRYPT_SALT` are populated
 
 Actions:
 
-- If using `docker compose`, set `APP_PUBLIC_URL` in `.env`, then recreate `app`, `worker`, `gmail-pull-worker`, `backfill-worker`, and `cron`
-- Re-check Google OAuth callback configuration after any public URL change
+- Run `npm run selfhost:init`
+- Re-run `npm run selfhost:doctor`
+- If ports `13000`, `15432`, or `16379` are already in use, free them or change your local mapping strategy
 
-## Gmail Push Not Processing New Mail
+## Login Fails
 
 Checks:
 
-- Pub/Sub topic exists and matches runtime topic name
-- Ingestion mode is correct (`GMAIL_INGESTION_MODE`)
-- Pull mode: `gmail-pull-worker` process is running
-- Push mode: webhook endpoint is reachable over HTTPS
-- Mailbox status is `CONNECTED`
-- Gmail watch renewal cron is running
+- `APP_PUBLIC_URL` matches the browser URL users open
+- `NEXTAUTH_URL` is correct for your current mode
+- Google OAuth callback URLs are configured for both localhost and your public domain if applicable
+- `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` are set
 
 Actions:
 
-- Re-run `/api/gmail-push/setup`
-- Trigger `/api/cron/renew-gmail-watches` with cron auth header
-- Verify `GET /api/health` includes healthy Gmail ingestion checks
+- For Docker self-host, prefer `http://localhost:13000` locally
+- Re-check the callback URL in Google Cloud after any public URL change
 
-## Queue UI Not Updating
-
-Checks:
-
-- SSE endpoint `/api/queue/stream` is authorized
-- App logs show event emission from queue event bus
-- Network path allows long-lived SSE connections
-
-## Worker Not Processing Jobs
+## Mailbox Connect Fails
 
 Checks:
 
-- `REDIS_URL` is reachable
-- Worker process (`npm run start:worker`) is running
-- Job enqueue logs appear in API routes
-
-Docker-specific checks:
-
-- Containers use `redis://redis:6379`, not `redis://localhost:16379`
-- The cron container also resolves `db` and `redis` by service name, not localhost
-
-## Replies Not Generated
-
-Checks:
-
-- User onboarding state complete (`masterPromptGenerated`)
-- Email passed filtering rules
-- The active language-model provider is configured. For Gemini that means `GOOGLE_GENERATIVE_AI_API_KEY` or `GOOGLE_API_KEY`; for OpenRouter that means `OPENROUTER_API_KEY`
-- If `/api/health` reports missing provider config, compare `AI_PROVIDER` and any per-model overrides with `docs/ai-providers.md`
-
-## Pub/Sub Webhook Retries Continuously
-
-Checks:
-
-- Endpoint returns fast 200 responses
-- Reverse proxy/load balancer timeout is long enough
-- JSON payload parsing errors are not being thrown before response
-- Confirm `GMAIL_INGESTION_MODE=push` (webhook returns 404 in pull mode)
-
-## Pull Worker Not Receiving Messages
-
-Checks:
-
-- `GMAIL_INGESTION_MODE=pull`
-- `GMAIL_PUBSUB_PULL_SUBSCRIPTION` is fully qualified and correct
-- Pull worker process (`npm run start:gmail-pull-worker`) is running
-- Pub/Sub subscription retry + dead-letter policy configured
+- `EMAIL_ENCRYPT_SECRET` and `EMAIL_ENCRYPT_SALT` are set
+- `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` are valid
+- Google OAuth consent screen and scopes are configured
 
 Actions:
 
-- Re-run `npm run setup:google -- --project-id <id> --mode pull`
-- Check pull worker logs for nack/retry loops and payload validation failures
-- Inspect DLQ subscription for poison or persistent-failure messages
+- Re-run `npm run selfhost:init` if encryption secrets were missing
+- Disconnect and reconnect the mailbox after fixing auth config
 
-## Twilio Or WhatsApp Webhook Rejections
-
-Checks:
-
-- Signature secrets are correct
-- Public webhook URL matches provider-side configuration exactly
-- Proxy forwarded headers are correct for signature reconstruction
-
-## Telegram Messages Not Reaching Clira
+## Gmail Ingestion Is Not Working
 
 Checks:
 
-- Worker process is running (`npm run start:worker`)
-- `TELEGRAM_BOT_TOKEN` is set and valid
-- `TELEGRAM_ENABLED` is not explicitly set to `false`
-- Settings API (`GET /api/settings/telegram`) reports `telegramConfigured: true`
+- `GMAIL_INGESTION_MODE=pull` unless you intentionally configured push
+- `GMAIL_PUBSUB_TOPIC` is fully qualified
+- `GMAIL_PUBSUB_PULL_SUBSCRIPTION` is fully qualified
+- `GOOGLE_APPLICATION_CREDENTIALS` points at a readable file
+- `gmail-pull-worker` is running
+- `/api/health?deep=1` reports a healthy pull-worker heartbeat
 
 Actions:
 
-- Restart worker and verify Telegram monitor startup log
-- Send a fresh DM to bot and verify pairing instruction is returned for unknown sender
-- Re-link using pairing code in Settings -> Text Clira if link is inactive
+- Run `npm run setup:google -- --project-id <id> --mode pull --write-env`
+- Check `.clira-runtime/google-service-account.json`
+- Review `npm run selfhost:logs`
 
-## Telegram Pairing Code Fails
+## Worker, Cron, or Backfill Problems
 
 Checks:
 
-- Code is exactly 8 chars (no spaces)
-- Code has not expired (TTL is 1 hour)
-- Account is not already actively linked to another user
+- `worker` is running
+- `cron` is running
+- `backfill-worker` was only enabled if you intended to run it
+- Redis is reachable
 
 Actions:
 
-- Request a new code by sending another DM to the bot
-- Retry approval through `POST /api/settings/telegram`
-- Unlink stale mappings with `DELETE /api/settings/telegram` and re-link
+- For the default launch path, use `npm run selfhost:up`
+- For inbox-search backfill, use `npm run selfhost:up:full`
+- If cron is running but jobs fail, confirm the app container is healthy and internal container networking is intact
 
-## Reminders/Alerts Delivered To Wrong Channel
+## Health Endpoint Confusion
 
 Checks:
 
-- `notificationDeliveryChannel` in user settings is correct (`WHATSAPP`, `TELEGRAM`, `BOTH`)
-- At least one eligible channel link exists for the selected preference
-- WhatsApp numbers are verified if WhatsApp is selected
+- `/api/health` is liveness only
+- `/api/health?deep=1` is strict readiness
 
 Actions:
 
-- Update preference via `PATCH /api/settings/messaging-channels`
-- Use consolidated read endpoint `GET /api/settings/text-channels` to verify current state
+- Use `/api/health` to confirm the app process is serving traffic
+- Use `/api/health?deep=1` to debug DB, env, model config, and Gmail pull-worker readiness
 
-## Database Errors On Boot
+## AI Provider Errors
 
 Checks:
 
-- `DATABASE_URL` points to live Postgres
-- `npm run migrate:deploy` succeeded
-- No pending migration drift (`npm run migrate:status`)
+- `AI_PROVIDER` matches the credentials you configured
+- For Google, either `GOOGLE_GENERATIVE_AI_API_KEY` or `GOOGLE_API_KEY` is set
+- For compatible endpoints, `AI_PROVIDER=openrouter`, `OPENROUTER_API_KEY`, and `OPENROUTER_BASE_URL` are set
+
+Actions:
+
+- Compare your `.env` with [docs/ai-providers.md](/Users/Rushik/Downloads/clira-os/Clira/docs/ai-providers.md)
+- Re-run `npm run selfhost:doctor` after any provider change

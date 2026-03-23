@@ -1,184 +1,116 @@
 # Clira
 
-Clira is a self-hosted AI email assistant focused on safe automation and draft-first workflows. Your data stays in your infrastructure.
+Clira is a self-hosted AI email assistant built around draft-first workflows, deterministic filtering, and separate worker processes for ingestion and reply generation.
 
-## Why Clira
+## Fast Self-Host
 
-- Self-hosted by default (app + worker + Postgres + Redis)
-- Draft-first pipeline with deterministic filtering before LLM generation
-- Multi-mailbox aware Gmail integration
-- Provider-aware AI model layer with Gemini defaults and OpenRouter support
-- Optional conversational channels (Twilio SMS, WhatsApp Cloud API, Telegram)
-- Optional long-term memory via Supermemory
+This is the default launch path. It assumes Docker and Docker Compose are installed.
 
-## Current Product Scope
-
-- Implemented: Gmail ingestion, queue review UI, staged reply generation, smart folders, onboarding pipeline
-- Implemented: Optional Twilio, WhatsApp, and Telegram assistant channels
-- Implemented: Worker-based background processing and cron endpoints
-- Not implemented: Outlook pipeline parity
-
-## Architecture At A Glance
-
-```text
-Gmail Pub/Sub Topic
-   |                         (mode=push only)
-   |--> gmail-pull-worker --> /api/gmail-push/webhook
-                 |                    |
-                 +---------+----------+
-                           v
-                    GmailPushService
-  -> filtering (deterministic)
-  -> routing and queue state
-  -> reply-generation jobs (BullMQ)
-        |
-        v
-ReplyGeneratorService
-  Stage 1: Planner Agent (tools/context)
-  Stage 2: Style Agent (voice only, no new facts)
-        |
-        v
-Draft + queue UI + optional channel delivery
-```
-
-## Quick Start (Local)
-
-Prerequisites:
-
-- Node.js 22.x
-- npm 10.x
-- Docker + Docker Compose
-- Google Cloud project with Gmail API + Pub/Sub
-
-1. Install dependencies
-
-```bash
-npm install
-```
-
-2. Configure environment
+1. Clone the repo and copy the environment template.
 
 ```bash
 cp .env.example .env
 ```
 
-Fill all required variables in `.env`.
-
-3. Start infrastructure
+2. Initialize local runtime state and generated secrets.
 
 ```bash
-docker compose up -d db redis
+npm run selfhost:init
 ```
 
-4. Run migrations
+If you do not want to use `npm`, run `bash scripts/selfhost-init.sh` directly.
+
+3. Configure Gmail Pub/Sub and write the generated values back into `.env`.
 
 ```bash
-npm run migrate:deploy
+npm run setup:google -- --project-id YOUR_PROJECT_ID --mode pull --write-env
 ```
 
-5. Start app, worker, Gmail pull worker, and local cron (separate terminals)
+4. Fill in the remaining required values in `.env`.
+
+- `GOOGLE_CLIENT_ID`
+- `GOOGLE_CLIENT_SECRET`
+- your AI provider key
+
+5. Pull and start the launch default stack.
 
 ```bash
-npm run dev
-npm run start:worker
-npm run start:gmail-pull-worker
-npm run start:cron
+npm run selfhost:up
 ```
 
-6. Open the app
+6. Open Clira.
 
-- http://localhost:3000
+- App: [http://localhost:13000](http://localhost:13000)
+- Liveness: [http://localhost:13000/api/health](http://localhost:13000/api/health)
+- Deep readiness: [http://localhost:13000/api/health?deep=1](http://localhost:13000/api/health?deep=1)
 
-## Full Docker Path
+## What Starts By Default
+
+`npm run selfhost:up` starts the `core` profile:
+
+- `app`
+- `worker`
+- `gmail-pull-worker`
+- `cron`
+- `db`
+- `redis`
+
+`backfill-worker` is intentionally not part of the default launch profile. Add it only when you want inbox search backfill:
 
 ```bash
-docker compose up --build
+npm run selfhost:up:full
 ```
 
-This starts `app`, `worker`, `cron`, `db`, and `redis` using the production image build.
+## Required Environment Values
 
-Before running on a VM, set `APP_PUBLIC_URL` in `.env` to the real externally reachable app URL.
-Examples:
+Minimum first-run values live at the top of [`.env.example`](/Users/Rushik/Downloads/clira-os/Clira/.env.example). The important ones are:
 
-- `APP_PUBLIC_URL=http://<vm-ip>:13000`
-- `APP_PUBLIC_URL=https://app.example.com`
+- `APP_PUBLIC_URL`
+- `NEXTAUTH_SECRET`
+- `CRON_SECRET`
+- `EMAIL_ENCRYPT_SECRET`
+- `EMAIL_ENCRYPT_SALT`
+- `GOOGLE_CLIENT_ID`
+- `GOOGLE_CLIENT_SECRET`
+- `GMAIL_PUBSUB_TOPIC`
+- `GMAIL_PUBSUB_PULL_SUBSCRIPTION`
+- `GOOGLE_APPLICATION_CREDENTIALS`
+- `AI_PROVIDER`
+- provider auth for the selected model backend
 
-If you want unauthenticated users redirected to a separate landing page, also set `APP_LANDING_PAGE_URL`.
+Clira stores local runtime secrets under `.clira-runtime/`. The default Gmail service-account file path is `./.clira-runtime/google-service-account.json`.
 
-## Required Environment Variables
-
-| Variable | Purpose |
-| --- | --- |
-| `DATABASE_URL` | Postgres connection string |
-| `CLIRA_DB_APP_USER` / `CLIRA_DB_APP_PASSWORD` | Dedicated app DB role used by local + Docker workflows |
-| `REDIS_URL` | Redis connection for BullMQ + runtime cache |
-| `NEXTAUTH_SECRET` | Auth/session signing secret |
-| `NEXTAUTH_URL` | Canonical app URL |
-| `APP_PUBLIC_URL` | Docker/VM public app URL used to populate `NEXTAUTH_URL` inside containers |
-| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Google OAuth for mailbox auth |
-| `AI_PROVIDER` | Language-model provider selector (`google` default, `openrouter` optional) |
-| `GOOGLE_GENERATIVE_AI_API_KEY` / `GOOGLE_API_KEY` | Gemini auth when `AI_PROVIDER=google` |
-| `OPENROUTER_API_KEY` | OpenRouter auth when `AI_PROVIDER=openrouter` |
-| `EXA_API_KEY` | Enables executive-agent public web search via the `search_web` tool |
-| `GMAIL_INGESTION_MODE` | `pull` (default) or `push` |
-| `GMAIL_PUBSUB_TOPIC` | Gmail watch Pub/Sub topic (source of truth) |
-| `GMAIL_PUBSUB_PULL_SUBSCRIPTION` | Required when `GMAIL_INGESTION_MODE=pull` |
-
-## Optional Integrations And Flags
-
-- Twilio channel: `TWILIO_*`
-- WhatsApp Cloud API: `WHATSAPP_*`
-- Telegram Bot API: `TELEGRAM_*`
-- Supermemory: `SUPERMEMORY_*`
-- Executive-agent public web search: `EXA_API_KEY` (optional, only needed for `search_web`)
-- KMS encryption toggles: `ENABLE_KMS_OAUTH_ENCRYPTION`, `ENABLE_KMS_EMAIL_ENCRYPTION`, `KMS_KEY_ID`
-- Always-on sorting toggles: `FEATURE_FLAG_ALWAYS_ON_SORTING`, `ALWAYS_ON_SORT_*`, `MAPPING_*`
-- Model routing overrides: see `docs/ai-providers.md`
-
-## Core Commands
+## Self-Host Commands
 
 | Command | What it does |
 | --- | --- |
-| `npm run dev` | Start Next.js app |
-| `npm run start:worker` | Start BullMQ worker process |
-| `npm run start:gmail-pull-worker` | Start Gmail pull ingestion worker |
-| `npm run start:cron` | Start local cron scheduler that triggers `/api/cron/*` |
-| `npm run build` | Build app + worker bundle |
-| `npm run lint` | Run lint checks |
-| `npm test` | Run Jest tests |
-| `npm run setup:google` | Bootstrap Gmail Pub/Sub resources |
-| `npm run benchmark` | Run benchmark scaffold |
-| `npm run migrate:status` | Show Prisma migration status |
+| `npm run selfhost:init` | Creates `.env` if missing, generates secrets, creates `.clira-runtime`, and runs diagnostics |
+| `npm run selfhost:doctor` | Read-only diagnostics for env, Docker, ports, Gmail credentials, and AI provider config |
+| `npm run selfhost:up` | Pulls and starts the default `core` self-host profile |
+| `npm run selfhost:up:full` | Pulls and starts `core` plus `backfill-worker` |
+| `npm run selfhost:down` | Stops the self-host stack |
+| `npm run selfhost:logs` | Tails the main self-host services |
+| `npm run setup:google` | Provisions Gmail Pub/Sub resources and optional `.env` updates |
 
-## Operational Endpoints
+## Contributor Workflow
 
-- `GET /api/health` - app health + env validation + active language-model provider config + Gmail ingestion mode/heartbeat
-- `POST /api/cron/sort` - always-on sorting trigger (requires `Authorization: Bearer $CRON_SECRET`)
-- `POST /api/cron/reminders` - enqueue due reminders (same auth)
-- `GET /api/cron/renew-gmail-watches` - renew Gmail watch subscriptions (same auth)
-- `POST /api/gmail-push/webhook` - only active when `GMAIL_INGESTION_MODE=push`
+If you are developing Clira rather than just hosting it, use [docs/setup.md](/Users/Rushik/Downloads/clira-os/Clira/docs/setup.md). That doc covers:
+
+- local `npm run dev`
+- worker processes in separate terminals
+- local builds with `docker-compose.dev.yml`
+- contributor-oriented verification
+
+## AI Provider Notes
+
+Google remains the default provider. The OpenRouter env names are still used for compatibility, but `OPENROUTER_BASE_URL` can point at any OpenAI-compatible endpoint. That includes OpenRouter, LM Studio, vLLM, and similar gateways. Details live in [docs/ai-providers.md](/Users/Rushik/Downloads/clira-os/Clira/docs/ai-providers.md).
 
 ## Documentation
 
-- Setup: `docs/setup.md`
-- Architecture: `docs/architecture.md`
-- Operations Runbook: `docs/operations.md`
-- Gmail Pub/Sub: `docs/gmail-pubsub.md`
-- Executive Agent Channels: `docs/executive-agent.md`
-- Folder And Routing System: `docs/folders.md`
-- MasterPrompt System: `docs/masterprompt.md`
-- Supermemory Integration: `docs/supermemory.md`
-- AI Providers: `docs/ai-providers.md`
-- Benchmarks: `docs/benchmarks.md`
-- Security: `docs/security.md`
-- Troubleshooting: `docs/troubleshooting.md`
-- Docs index: `docs/README.md`
-- API Reference: `docs/api-reference.md`
-
-## Security
-
-See `docs/security.md` and `SECURITY.md` for deployment hardening, credential handling, and vulnerability reporting guidance.
-
-## Contributing
-
-See `CONTRIBUTING.md`.
+- Self-host guide: [docs/self-host.md](/Users/Rushik/Downloads/clira-os/Clira/docs/self-host.md)
+- Contributor setup: [docs/setup.md](/Users/Rushik/Downloads/clira-os/Clira/docs/setup.md)
+- Gmail Pub/Sub: [docs/gmail-pubsub.md](/Users/Rushik/Downloads/clira-os/Clira/docs/gmail-pubsub.md)
+- AI providers: [docs/ai-providers.md](/Users/Rushik/Downloads/clira-os/Clira/docs/ai-providers.md)
+- Troubleshooting: [docs/troubleshooting.md](/Users/Rushik/Downloads/clira-os/Clira/docs/troubleshooting.md)
+- Operations: [docs/operations.md](/Users/Rushik/Downloads/clira-os/Clira/docs/operations.md)
+- Full docs index: [docs/README.md](/Users/Rushik/Downloads/clira-os/Clira/docs/README.md)

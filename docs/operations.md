@@ -18,9 +18,10 @@ Telegram v1 runtime model:
 
 ## Health Checks
 
-- App health: `GET /api/health`
+- Liveness: `GET /api/health`
+- Deep readiness: `GET /api/health?deep=1`
 - Queue stream auth check: `GET /api/queue/stream` (requires session)
-- Health response includes `gmailIngestionMode` and pull-worker heartbeat status
+- Deep health includes `gmailIngestionMode` and pull-worker heartbeat status
 
 ## Cron Endpoints
 
@@ -73,6 +74,7 @@ Telegram-specific checks:
 ## Deployment Checklist
 
 - Strong secrets (`NEXTAUTH_SECRET`, `CRON_SECRET`)
+- Token encryption secrets (`EMAIL_ENCRYPT_SECRET`, `EMAIL_ENCRYPT_SALT`)
 - HTTPS for all webhook endpoints
 - Persistent volumes for Postgres/Redis
 - Separate process supervision for app and worker

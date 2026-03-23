@@ -1,31 +1,28 @@
 # Clira Documentation
 
-Use this index to navigate the codebase runbooks quickly.
-
 ## Start Here
 
-1. `docs/setup.md` - local setup and first successful run
-2. `docs/gmail-pubsub.md` - Gmail push delivery configuration
-3. `docs/architecture.md` - pipeline and component layout
-4. `docs/operations.md` - production-style operations and cron runbook
-5. `docs/ai-providers.md` - language-model provider selection and OpenRouter setup
+1. `docs/self-host.md` - launch-oriented Docker self-host path
+2. `docs/setup.md` - contributor workflow and local development
+3. `docs/gmail-pubsub.md` - Gmail ingestion provisioning and validation
+4. `docs/ai-providers.md` - Google defaults plus OpenAI-compatible endpoints
+5. `docs/troubleshooting.md` - install and runtime failures grouped by stage
+
+## Core Runbooks
+
+- `docs/operations.md` - production-style topology and health semantics
+- `docs/api-reference.md` - API routes and operational endpoints
+- `docs/architecture.md` - pipeline and component overview
 
 ## Feature Guides
 
-- `docs/api-reference.md` - complete API route and method reference
-- `docs/folders.md` - folder generation, mapping, and learning pipeline
-- `docs/masterprompt.md` - voice profile generation and usage
-- `docs/supermemory.md` - optional memory integration
-- `docs/executive-agent.md` - optional Twilio, WhatsApp, and Telegram channels
+- `docs/folders.md`
+- `docs/masterprompt.md`
+- `docs/supermemory.md`
+- `docs/executive-agent.md`
 
 ## Quality And Governance
 
-- `docs/benchmarks.md` - benchmark harness
-- `docs/security.md` - security model and hardening checklist
-- `docs/troubleshooting.md` - common failures and fixes
-
-## Repository Root Docs
-
-- `README.md` - project overview and fast-start
-- `CONTRIBUTING.md` - contribution workflow
-- `SECURITY.md` - vulnerability reporting process
+- `docs/benchmarks.md`
+- `docs/security.md`
+- `SECURITY.md`
