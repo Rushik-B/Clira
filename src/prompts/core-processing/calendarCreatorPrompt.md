@@ -340,10 +340,9 @@ Translate user language into the smallest correct field change.
 - If the user intent is still unclear after search (e.g., multiple possible events), set action="clarify" and ask one numbered-choice question.
 
 ## Preview Responsibility
-The runtime builds the final user preview deterministically.
-- `userPreviewText` is optional.
-- If you include it, keep it short and fully consistent with the typed fields.
-- Never rely on `userPreviewText` to carry details that are missing from the structured fields.
+The runtime builds the final user preview deterministically from your typed fields.
+- **Do not** output `userPreviewText` or any free-form user-facing summary; it is not part of the response schema.
+- Never hide event details in prose; put everything in the structured fields only.
 
 ## Minimal JSON Examples (Do Not Wrap In Markdown)
 
