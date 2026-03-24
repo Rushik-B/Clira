@@ -1,13 +1,13 @@
 <p align="center">
   <a href="https://tryclira.com">
-    <img src="public/Github/empty-queue.png" alt="Clira queue empty state" width="100%" />
+    <img src="public/Github/CLIRA.png" alt="Clira brand banner" width="100%" />
   </a>
 </p>
 
-<h1 align="center">Clira - Your AI chief of staff. Always on, never unsupervised.</h1>
+<h1 align="center">Clira — Your open-source AI chief of staff.</h1>
 
 <p align="center">
-  Self-hosted AI email assistant for draft-first workflows, deterministic filtering, and worker-driven reply generation.
+  An AI assistant that can read, search, draft, plan, and act across your email, calendar, files, and connected tools. Nothing executes without your say. Open source and self-hostable.
 </p>
 
 <p align="center">
@@ -55,7 +55,7 @@ Clira is an email-first assistant built for people who want AI help without givi
 Clira is easiest to understand as two tightly connected systems: a draft-first email reply pipeline, and a multi-channel executive agent that can act on inbox, calendar, memory, and messaging context without bypassing approvals.
 
 <p align="center">
-  <img src="public/Github/clira-system-overview.png" alt="Clira system overview architecture diagram" width="100%" />
+  <img src="docs/diagrams/03-system-overview.svg" alt="Clira system overview architecture diagram" width="100%" />
 </p>
 
 <p align="center">
@@ -67,7 +67,7 @@ Clira is easiest to understand as two tightly connected systems: a draft-first e
 This path is intentionally strict: deterministic filtering first, then a schema-validated LLM gate, then a planner/style split where the style stage is not allowed to add facts.
 
 <p align="center">
-  <img src="public/Github/Clira-reply-pipeline.png" alt="Clira reply pipeline architecture diagram" width="100%" />
+  <img src="docs/diagrams/01-reply-pipeline.svg" alt="Clira reply pipeline architecture diagram" width="100%" />
 </p>
 
 <p align="center">
@@ -79,7 +79,7 @@ This path is intentionally strict: deterministic filtering first, then a schema-
 The executive agent is not just "chat with tools." It runs inside a deterministic policy envelope that decides what tools can exist, when the agent must pause for approval, and when a rerun is allowed with broader capabilities.
 
 <p align="center">
-  <img src="public/Github/exec-agent-diagram.png" alt="Clira executive agent runtime diagram" width="100%" />
+  <img src="docs/diagrams/02-executive-agent-architecture.svg" alt="Clira executive agent runtime diagram" width="100%" />
 </p>
 
 <p align="center">
