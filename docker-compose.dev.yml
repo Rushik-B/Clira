@@ -1,0 +1,21 @@
+services:
+  app:
+    build: .
+    image: clira-app:local
+    pull_policy: never
+
+  worker:
+    image: clira-app:local
+    pull_policy: never
+
+  backfill-worker:
+    image: clira-app:local
+    pull_policy: never
+
+  gmail-pull-worker:
+    image: clira-app:local
+    pull_policy: never
+
+  cron:
+    image: clira-app:local
+    pull_policy: never

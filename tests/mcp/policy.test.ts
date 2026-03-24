@@ -10,20 +10,44 @@ const {
   isMcpEnabledMock,
   isMcpChannelEnabledMock,
   getLatestPendingMcpActionMock,
+  buildMcpPackDescriptionMock,
 } = vi.hoisted(() => ({
   loadMcpRegistrySnapshotMock: vi.fn(),
   isMcpEnabledMock: vi.fn(),
   isMcpChannelEnabledMock: vi.fn(),
   getLatestPendingMcpActionMock: vi.fn(),
+  buildMcpPackDescriptionMock: vi.fn(
+    (
+      displayName: string,
+      manifests: Array<{ displayTitle: string; actionClass: 'read' | 'write' | 'delete' | 'side_effectful' }>,
+    ) => {
+      if (manifests.length === 0) {
+        return `${displayName}: no tools synced yet`;
+      }
+
+      const readTools = manifests.filter((manifest) => manifest.actionClass === 'read');
+      const writeTools = manifests.filter((manifest) => manifest.actionClass !== 'read');
+      const toolNames = manifests.slice(0, 8).map((manifest) => manifest.displayTitle);
+      const parts = [`${displayName}:`];
+
+      if (readTools.length > 0) {
+        parts.push(`${readTools.length} read tools`);
+      }
+
+      if (writeTools.length > 0) {
+        parts.push(`${writeTools.length} mutation tools`);
+      }
+
+      parts.push(`(${toolNames.join(', ')}${manifests.length > 8 ? ', ...' : ''})`);
+      return parts.join(' ');
+    },
+  ),
 }));
 
-vi.mock('@/lib/services/mcp/registry/service', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/services/mcp/registry/service')>();
-  return {
-    ...actual,
-    loadMcpRegistrySnapshot: loadMcpRegistrySnapshotMock,
-  };
-});
+vi.mock('@/lib/services/mcp/registry/service', () => ({
+  buildMcpPackDescription: buildMcpPackDescriptionMock,
+  loadMcpRegistrySnapshot: loadMcpRegistrySnapshotMock,
+}));
 
 vi.mock('@/lib/services/mcp/config/featureFlags', () => ({
   isMcpEnabled: isMcpEnabledMock,

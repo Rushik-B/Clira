@@ -1,23 +1,38 @@
 # AI Providers
 
-Clira's language-model layer is provider-aware. The current defaults preserve the existing Gemini setup, but you can switch the whole app or individual model roles to OpenRouter through environment variables.
+Clira defaults to Google Gemini-backed models. The runtime also supports OpenAI-compatible chat endpoints through the existing `openrouter` provider wiring.
 
-## Default Behavior
+## Default Google Path
 
-- `AI_PROVIDER=google` is the default.
-- `GOOGLE_GENERATIVE_AI_API_KEY` or `GOOGLE_API_KEY` continues to authenticate Gemini-backed calls.
-- Existing role-level model env vars still work and keep their previous defaults.
-- `USE_LITE_MODEL=true` still forces the flash/pro default to the lighter Gemini variant used for test and low-cost flows.
+```env
+AI_PROVIDER=google
+GOOGLE_GENERATIVE_AI_API_KEY=your_key
+```
 
-## OpenRouter Setup
+`GOOGLE_API_KEY` is also accepted as an alias.
 
-- Set `AI_PROVIDER=openrouter`.
-- Set `OPENROUTER_API_KEY`.
-- Optional transport and attribution env vars: `OPENROUTER_BASE_URL`, `OPENROUTER_HTTP_REFERER`, `OPENROUTER_X_TITLE`, `OPENROUTER_SUPPORTS_STRUCTURED_OUTPUTS`.
+## OpenAI-Compatible Path
+
+Keep `AI_PROVIDER=openrouter` and set:
+
+```env
+AI_PROVIDER=openrouter
+OPENROUTER_API_KEY=your_key
+OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+```
+
+Despite the env name, `OPENROUTER_BASE_URL` can point at any OpenAI-compatible endpoint, including:
+
+- OpenRouter
+- LM Studio
+- vLLM gateways
+- compatible local or private inference endpoints
+
+If your compatible endpoint needs a placeholder key, set `OPENROUTER_API_KEY` to whatever that endpoint expects.
 
 ## Per-Model Overrides
 
-Each role can be overridden independently, and per-model provider settings take precedence over the global `AI_PROVIDER`:
+Each model role can override both provider and model id:
 
 - `FLASH_MODEL` / `FLASH_MODEL_PROVIDER`
 - `PRO_MODEL` / `PRO_MODEL_PROVIDER`
@@ -28,9 +43,8 @@ Each role can be overridden independently, and per-model provider settings take 
 - `CALENDAR_SEARCH_MODEL` / `CALENDAR_SEARCH_MODEL_PROVIDER`
 - `REPLY_ROUTER_MODEL` / `REPLY_ROUTER_MODEL_PROVIDER`
 
-## Behavior Notes
+## Important Notes
 
-- Google-specific `thinkingConfig` hints are only applied when the active provider is Google.
-- Health checks report the configured provider set so runtime mismatches are visible.
-- Inbox-search embeddings are still Google-backed for now and still require Google credentials.
-
+- Google remains the launch default because it is the known-good path across the rest of the stack.
+- Health deep checks report which provider set is configured.
+- Inbox-search embeddings still depend on Google-backed configuration today.

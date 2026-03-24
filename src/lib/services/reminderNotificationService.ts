@@ -20,6 +20,7 @@ import {
 } from '@/lib/services/telegram';
 import { resolveMessagingTargets } from '@/lib/services/messagingDeliveryTargets';
 import { buildNotificationProgressContext } from '@/lib/services/notificationProgressContext';
+import { parseReminderDescription } from '@/lib/services/reminderMetadata';
 import { convertUserLocalTimeToUtc, getZonedTimeComponents } from '@/lib/utils/timezone';
 import type { ReminderNotificationJobData } from '@/lib/services/utils/queues';
 import type { NotificationDeliveryChannel, Prisma, ReminderStatus } from '@prisma/client';
@@ -541,25 +542,42 @@ async function releaseClaimedReminderBatch(params: {
 }
 
 function buildBatchReminderSystemMessage(reminders: ReminderDeliveryRow[]): string {
+  const buildReminderLines = (reminder: ReminderDeliveryRow): string[] => {
+    const dueAt = reminderDueAt(reminder);
+    const metadata = parseReminderDescription(reminder.description);
+    const lines = [`Title: "${reminder.title}"`];
+
+    if (metadata.sequenceLabel) {
+      lines.push(`Sequence: ${metadata.sequenceLabel}`);
+    }
+    if (metadata.escalationStage) {
+      lines.push(`Escalation: ${metadata.escalationStage}`);
+    }
+    if (metadata.planNote) {
+      lines.push(`Plan note: ${metadata.planNote}`);
+    } else if (metadata.rawDescription && !metadata.sequenceLabel) {
+      lines.push(`Description: ${metadata.rawDescription}`);
+    }
+    if (reminder.context) {
+      lines.push(`Context: ${reminder.context}`);
+    }
+    lines.push(`Scheduled for: ${dueAt.toISOString()}`);
+
+    return lines;
+  };
+
   const n = reminders.length;
   if (n === 1) {
-    const r = reminders[0];
-    const dueAt = reminderDueAt(r);
-    return (
-      `REMINDER DELIVERY\n` +
-      `Title: "${r.title}"\n` +
-      (r.context ? `Context: ${r.context}\n` : '') +
-      `Scheduled for: ${dueAt.toISOString()}`
-    );
+    return `REMINDER DELIVERY\n${buildReminderLines(reminders[0]).join('\n')}`;
   }
 
   const lines = reminders.map((r, i) => {
-    const dueAt = reminderDueAt(r);
-    return (
-      `${i + 1}) Title: "${r.title}"\n` +
-      (r.context ? `   Context: ${r.context}\n` : '') +
-      `   Scheduled for: ${dueAt.toISOString()}`
-    );
+    const reminderLines = buildReminderLines(r);
+    const [headline, ...detailLines] = reminderLines;
+    return [
+      `${i + 1}) ${headline}`,
+      ...detailLines.map((line) => `   ${line}`),
+    ].join('\n');
   });
   return (
     `REMINDER DELIVERY (batch: ${n} reminders due this minute)\n\n` +

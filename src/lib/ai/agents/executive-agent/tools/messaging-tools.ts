@@ -4,6 +4,7 @@ import { logger } from '@/lib/logger';
 import { readPromptFile } from '@/lib/prompts';
 import { createGmailServiceForUser } from '@/lib/security/getUserGmailCredentials';
 import { deliverContentReference } from '@/lib/services/media-delivery/service';
+import { parseReminderDescription } from '@/lib/services/reminderMetadata';
 import { parseReminderTime } from '@/lib/utils/timeParser';
 import { formatDateTimeInTimeZone } from '@/lib/utils/timezone';
 import { getSupermemoryClient, isSupermemoryConfigured } from '@/lib/services/supermemory/client';
@@ -16,6 +17,9 @@ import {
   generateMemoryCustomId,
   truncate,
 } from '../helpers';
+import {
+  findPendingEmailDraftInHistory,
+} from '../emailDraftThreading';
 import type {
   ExecutiveRuntimeContext,
 } from '../types';
@@ -366,7 +370,77 @@ export function buildMessagingTools({
       },
 
       // ─────────────────────────────────────────────────────────────────────────
-      // Tool 11: Remove Email Alert
+      // Tool 11: Update Email Alert
+      // ─────────────────────────────────────────────────────────────────────────
+      update_email_alert: {
+        description:
+          'Update an email alert by ID or find by description. ' +
+          'Use list_email_alerts first to see active alerts.',
+        inputSchema: z.object({
+          alertId: z.string().optional().describe('Alert ID to update'),
+          descriptionMatch: z.string().optional().describe('Find alert by partial description match'),
+          description: z
+            .string()
+            .min(5)
+            .max(300)
+            .describe('Updated alert description (natural language)'),
+        }),
+        execute: async (args: {
+          alertId?: string;
+          descriptionMatch?: string;
+          description: string;
+        }) => {
+          const stale = await ensureCurrentRun('update_email_alert');
+          if (stale) return stale;
+
+          if (!args.alertId && !args.descriptionMatch) {
+            return { success: false, message: 'Provide an alertId or descriptionMatch.' };
+          }
+
+          const description = args.description.trim();
+          if (description.length < 5) {
+            return { success: false, message: 'Please provide a longer alert description.' };
+          }
+
+          let alert: { id: string; description: string } | null = null;
+
+          if (args.alertId) {
+            alert = await prisma.emailAlert.findFirst({
+              where: { id: args.alertId, userId: input.userId },
+              select: { id: true, description: true },
+            });
+          } else if (args.descriptionMatch) {
+            alert = await prisma.emailAlert.findFirst({
+              where: {
+                userId: input.userId,
+                isActive: true,
+                description: { contains: args.descriptionMatch, mode: 'insensitive' },
+              },
+              select: { id: true, description: true },
+            });
+          }
+
+          if (!alert) {
+            return { success: false, message: 'Alert not found.' };
+          }
+
+          const updatedAlert = await prisma.emailAlert.update({
+            where: { id: alert.id },
+            data: { description },
+          });
+          logger.info(`[executiveAgent] Updated email alert: ${updatedAlert.id}`);
+
+          return {
+            success: true,
+            alertId: updatedAlert.id,
+            description: updatedAlert.description,
+            message: `Updated alert: "${updatedAlert.description}"`,
+          };
+        },
+      },
+
+      // ─────────────────────────────────────────────────────────────────────────
+      // Tool 12: Remove Email Alert
       // ─────────────────────────────────────────────────────────────────────────
       remove_email_alert: {
         description:
@@ -418,7 +492,7 @@ export function buildMessagingTools({
       },
 
       // ─────────────────────────────────────────────────────────────────────────
-      // Tool 12: List Email Alerts
+      // Tool 13: List Email Alerts
       // ─────────────────────────────────────────────────────────────────────────
       list_email_alerts: {
         description: 'List all active email alerts. Parallelism: call this in the same step as any other independent tool calls. Every sequential step adds latency.',
@@ -442,7 +516,7 @@ export function buildMessagingTools({
       },
 
       // ─────────────────────────────────────────────────────────────────────────
-      // Tool 13: Add Reminder
+      // Tool 14: Add Reminder
       // ─────────────────────────────────────────────────────────────────────────
       add_reminder: {
         description:
@@ -452,6 +526,13 @@ export function buildMessagingTools({
           'Parallelism: call this in the same step as any other independent tool calls. Every sequential step adds latency.',
         inputSchema: z.object({
           title: z.string().min(1).max(200).describe('Short reminder title'),
+          description: z
+            .string()
+            .max(200)
+            .optional()
+            .describe(
+              'Internal reminder-plan metadata. Start with sequence like "1/1" or "2/5", then a stage like "single", "early", "mid", or "final". Example: "2/5 mid progress-check".',
+            ),
           scheduledAt: z.string().min(1).max(200).describe('Reminder time (natural language preferred; ISO UTC allowed)'),
           context: z.string().max(1000).optional().describe('Additional context or urgency notes'),
           recurrence: reminderRecurrenceSchema.optional(),
@@ -460,6 +541,7 @@ export function buildMessagingTools({
         }),
         execute: async (args: {
           title: string;
+          description?: string;
           scheduledAt: string;
           context?: string;
           recurrence?: z.infer<typeof reminderRecurrenceSchema>;
@@ -497,6 +579,7 @@ export function buildMessagingTools({
             data: {
               userId: input.userId,
               title,
+              description: args.description?.trim() || undefined,
               context: args.context?.trim() || undefined,
               scheduledAt: parsed.date,
               recurrence: args.recurrence ?? undefined,
@@ -514,6 +597,7 @@ export function buildMessagingTools({
               actionSummary: `Reminder created: ${title}`,
               actionDetails: {
                 reminderId: reminder.id,
+                description: reminder.description,
                 scheduledAt: reminder.scheduledAt.toISOString(),
                 scheduledAtLocal,
                 recurrence: args.recurrence ?? undefined,
@@ -562,12 +646,17 @@ export function buildMessagingTools({
               const dueAt = reminder.status === 'SNOOZED' && reminder.snoozedUntil
                 ? reminder.snoozedUntil
                 : reminder.scheduledAt;
+              const metadata = parseReminderDescription(reminder.description);
               return {
                 id: reminder.id,
                 title: reminder.title,
+                description: reminder.description,
                 status: reminder.status,
                 scheduledAt: dueAt.toISOString(),
                 scheduledAtLocal: formatDateTimeInTimeZone(dueAt, userTimezone),
+                sequenceLabel: metadata.sequenceLabel,
+                escalationStage: metadata.escalationStage,
+                planNote: metadata.planNote,
               };
             }),
           };
@@ -835,14 +924,51 @@ export function buildMessagingTools({
               };
             }
 
+            const historyDraft = findPendingEmailDraftInHistory({
+              history: input.conversationHistory,
+              to: args.to,
+              subject: args.subject,
+            });
+
+            const resolvedThreadId = args.threadId ?? historyDraft?.threadId;
+            let resolvedInReplyTo = args.inReplyTo;
+            let resolvedReferences = args.references;
+
+            if (resolvedThreadId && (!resolvedInReplyTo || !resolvedReferences)) {
+              try {
+                const threadEmails = await gmailContext.gmail.fetchFullThread(resolvedThreadId);
+                const latestThreadEmail = Array.isArray(threadEmails)
+                  ? [...threadEmails]
+                      .filter((email) => Boolean(email?.rfc2822MessageId))
+                      .sort((left, right) => right.date.getTime() - left.date.getTime())[0]
+                  : null;
+
+                if (latestThreadEmail?.rfc2822MessageId) {
+                  resolvedInReplyTo = resolvedInReplyTo ?? latestThreadEmail.rfc2822MessageId;
+                  resolvedReferences = resolvedReferences ?? latestThreadEmail.references ?? undefined;
+                }
+              } catch (error) {
+                const message = error instanceof Error ? error.message : 'Unknown error';
+                logger.warn(
+                  `[executiveAgent] Failed to recover reply headers for thread ${resolvedThreadId}: ${message}`,
+                );
+              }
+            }
+
+            if (resolvedThreadId && !args.threadId) {
+              logger.info(
+                `[executiveAgent] Recovered Gmail thread for send_email: threadId=${resolvedThreadId}`,
+              );
+            }
+
             const result = await gmailContext.gmail.sendEmail({
               to: args.to,
               cc: args.cc,
               subject: args.subject,
               body: args.body,
-              inReplyTo: args.inReplyTo,
-              references: args.references,
-              threadId: args.threadId,
+              inReplyTo: resolvedInReplyTo,
+              references: resolvedReferences,
+              threadId: resolvedThreadId,
             });
 
             logger.info(`[executiveAgent] Email sent: messageId=${result.id}`);

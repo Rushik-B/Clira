@@ -20,6 +20,7 @@ export const EXECUTIVE_TOOL_NAMES = [
   'plan_calendar_change',
   'commit_calendar_change',
   'add_email_alert',
+  'update_email_alert',
   'remove_email_alert',
   'list_email_alerts',
   'deliver_content_reference',
@@ -55,6 +56,7 @@ const ACTION_PACK_TOOLS = {
   ],
   reminder_alert_pack: [
     'add_email_alert',
+    'update_email_alert',
     'remove_email_alert',
     'list_email_alerts',
     'add_reminder',

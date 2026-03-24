@@ -976,7 +976,7 @@ export const TextChannelsIntegrationPage: React.FC<TextChannelsIntegrationPagePr
 
           <SettingsSectionCard
             title="Telegram link"
-            description="Paste the 8-character pairing code sent by the Telegram bot."
+            description="Admin enables the bot once for this server. Each user links their own account with a pairing code."
             icon={<TelegramOfficialIcon className="h-5 w-5 text-[#229ED9]" />}
           >
             {loading ? (
@@ -989,7 +989,15 @@ export const TextChannelsIntegrationPage: React.FC<TextChannelsIntegrationPagePr
               <div className="space-y-4">
                 {!telegramSettings.telegramConfigured ? (
                   <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
-                    Telegram bot token is not configured in this environment.
+                    <p className="font-medium text-amber-50">Telegram is not enabled on this server yet.</p>
+                    <p className="mt-1 text-amber-100/90">
+                      This page does not create the bot or store the bot token. A server admin must configure Telegram once, then users can link their own accounts here.
+                    </p>
+                    <div className="mt-3 space-y-1 text-xs text-amber-100/80">
+                      <p>1. Create a bot with BotFather and copy the bot token.</p>
+                      <p>2. Set <span className="font-mono text-amber-50">TELEGRAM_BOT_TOKEN</span> on the server.</p>
+                      <p>3. Restart the worker, then come back here to pair your Telegram account.</p>
+                    </div>
                   </div>
                 ) : (
                   <div className="rounded-xl border border-white/10 bg-black/30 px-4 py-3">
@@ -1017,6 +1025,15 @@ export const TextChannelsIntegrationPage: React.FC<TextChannelsIntegrationPagePr
                     </div>
                   </div>
                 )}
+
+                <div className="rounded-xl border border-white/10 bg-black/25 px-4 py-3">
+                  <p className="text-sm font-medium text-white">How Telegram setup works</p>
+                  <div className="mt-2 space-y-1 text-sm text-gray-400">
+                    <p>1. A server admin enables the Telegram bot once for this Clira deployment.</p>
+                    <p>2. You DM the bot from your own Telegram account.</p>
+                    <p>3. The bot sends you an 8-character pairing code to paste here.</p>
+                  </div>
+                </div>
 
                 <div className="rounded-xl border border-white/10 bg-black/25 px-4 py-3">
                   <p className="text-sm font-medium text-white">Linked account</p>

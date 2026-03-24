@@ -446,6 +446,7 @@ function summarizeWorkingStateCoverage(
       step === 'dismiss_reminder' ||
       step === 'cancel_reminder' ||
       step === 'add_email_alert' ||
+      step === 'update_email_alert' ||
       step === 'remove_email_alert' ||
       step === 'list_email_alerts'
     ) {
@@ -1353,6 +1354,7 @@ const DEFER_ON_STALE_TOOLS = new Set([
   'dismiss_reminder',
   'cancel_reminder',
   'add_email_alert',
+  'update_email_alert',
   'remove_email_alert',
 ]);
 

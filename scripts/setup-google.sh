@@ -7,10 +7,13 @@ DOMAIN=""
 TOPIC_NAME="clira-email-updates"
 SUB_NAME="clira-gmail-pull-sub"
 SERVICE_ACCOUNT_NAME="clira-gmail-sa"
-KEY_OUT="./google-service-account.json"
+KEY_OUT="./.clira-runtime/google-service-account.json"
 DLQ_TOPIC_NAME=""
 DLQ_SUB_NAME=""
 MAX_DELIVERY_ATTEMPTS="20"
+WRITE_ENV="false"
+OVERWRITE_KEY="false"
+ENV_FILE=".env"
 
 RETRY_MIN="10s"
 RETRY_MAX="600s"
@@ -31,7 +34,10 @@ Options:
   --topic <topic-name>            Pub/Sub topic (default: clira-email-updates)
   --subscription <name>           Subscription name (default: clira-gmail-pull-sub)
   --service-account <name>        Service account name (default: clira-gmail-sa)
-  --key-out <path>                Service account key output (default: ./google-service-account.json)
+  --key-out <path>                Service account key output (default: ./.clira-runtime/google-service-account.json)
+  --write-env                     Upsert generated values into .env
+  --env-file <path>               Env file to update when --write-env is set (default: .env)
+  --overwrite-key                 Replace the existing service-account key file instead of reusing it
   --dlq-topic <name>              DLQ topic name for pull mode (default: <subscription>-dlq)
   --dlq-subscription <name>       DLQ subscription name for pull mode (default: <dlq-topic>-sub)
   --max-delivery-attempts <n>     DLQ max delivery attempts for pull mode (default: 20)
@@ -40,6 +46,7 @@ Options:
 Notes:
   - Requires authenticated gcloud CLI.
   - Applies retry policy (min=${RETRY_MIN}, max=${RETRY_MAX}) on created subscription.
+  - Prints the OAuth callback URLs that must exist in the Google console.
 USAGE
 }
 
@@ -48,6 +55,30 @@ require_cmd() {
     echo "$1 is required"
     exit 1
   fi
+}
+
+upsert_env() {
+  local env_file="$1"
+  local key="$2"
+  local value="$3"
+  local tmp_file
+
+  tmp_file="$(mktemp)"
+  awk -v target="${key}" -v replacement="${value}" '
+    BEGIN { replaced = 0 }
+    $0 ~ "^[[:space:]]*" target "=" {
+      print target "=" replacement
+      replaced = 1
+      next
+    }
+    { print }
+    END {
+      if (!replaced) {
+        print target "=" replacement
+      }
+    }
+  ' "$env_file" > "$tmp_file"
+  mv "$tmp_file" "$env_file"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -59,6 +90,9 @@ while [[ $# -gt 0 ]]; do
     --subscription) SUB_NAME="$2"; shift 2 ;;
     --service-account) SERVICE_ACCOUNT_NAME="$2"; shift 2 ;;
     --key-out) KEY_OUT="$2"; shift 2 ;;
+    --write-env) WRITE_ENV="true"; shift ;;
+    --env-file) ENV_FILE="$2"; shift 2 ;;
+    --overwrite-key) OVERWRITE_KEY="true"; shift ;;
     --dlq-topic) DLQ_TOPIC_NAME="$2"; shift 2 ;;
     --dlq-subscription) DLQ_SUB_NAME="$2"; shift 2 ;;
     --max-delivery-attempts) MAX_DELIVERY_ATTEMPTS="$2"; shift 2 ;;
@@ -95,7 +129,14 @@ if [[ -z "$DLQ_SUB_NAME" ]]; then
   DLQ_SUB_NAME="${DLQ_TOPIC_NAME}-sub"
 fi
 
+if [[ "$WRITE_ENV" == "true" && ! -f "$ENV_FILE" ]]; then
+  echo "Env file not found: $ENV_FILE"
+  exit 1
+fi
+
 require_cmd gcloud
+
+mkdir -p "$(dirname "$KEY_OUT")"
 
 echo "Setting gcloud project..."
 gcloud config set project "$PROJECT_ID" >/dev/null
@@ -127,9 +168,16 @@ gcloud projects add-iam-policy-binding "$PROJECT_ID" \
   --member="serviceAccount:${SA_EMAIL}" \
   --role="roles/pubsub.viewer" >/dev/null
 
-echo "Creating service account key..."
-gcloud iam service-accounts keys create "$KEY_OUT" \
-  --iam-account "$SA_EMAIL" >/dev/null
+if [[ -f "$KEY_OUT" && "$OVERWRITE_KEY" != "true" ]]; then
+  echo "Reusing existing service account key at ${KEY_OUT}"
+else
+  if [[ -f "$KEY_OUT" && "$OVERWRITE_KEY" == "true" ]]; then
+    rm -f "$KEY_OUT"
+  fi
+  echo "Creating service account key..."
+  gcloud iam service-accounts keys create "$KEY_OUT" \
+    --iam-account "$SA_EMAIL" >/dev/null
+fi
 
 if [[ "$MODE" == "pull" ]]; then
   echo "Creating DLQ topic/subscription for pull mode (idempotent)..."
@@ -182,6 +230,18 @@ fi
 
 ABS_KEY_OUT="$(cd "$(dirname "$KEY_OUT")" && pwd)/$(basename "$KEY_OUT")"
 
+if [[ "$WRITE_ENV" == "true" ]]; then
+  echo "Writing Google configuration into ${ENV_FILE}..."
+  upsert_env "$ENV_FILE" "GMAIL_INGESTION_MODE" "${MODE}"
+  upsert_env "$ENV_FILE" "GMAIL_PUBSUB_TOPIC" "projects/${PROJECT_ID}/topics/${TOPIC_NAME}"
+  upsert_env "$ENV_FILE" "GMAIL_PUBSUB_PULL_SUBSCRIPTION" "projects/${PROJECT_ID}/subscriptions/${SUB_NAME}"
+  upsert_env "$ENV_FILE" "GMAIL_PUBSUB_PULL_MAX_MESSAGES" "25"
+  upsert_env "$ENV_FILE" "GMAIL_PUBSUB_PULL_MAX_BYTES" "10485760"
+  upsert_env "$ENV_FILE" "GMAIL_PUBSUB_PULL_SHUTDOWN_TIMEOUT_MS" "15000"
+  upsert_env "$ENV_FILE" "GOOGLE_CLOUD_PROJECT_ID" "${PROJECT_ID}"
+  upsert_env "$ENV_FILE" "GOOGLE_APPLICATION_CREDENTIALS" "${KEY_OUT}"
+fi
+
 cat <<ENV_OUT
 
 Setup complete.
@@ -194,7 +254,10 @@ GMAIL_PUBSUB_PULL_MAX_MESSAGES=25
 GMAIL_PUBSUB_PULL_MAX_BYTES=10485760
 GMAIL_PUBSUB_PULL_SHUTDOWN_TIMEOUT_MS=15000
 GOOGLE_CLOUD_PROJECT_ID=${PROJECT_ID}
-GOOGLE_APPLICATION_CREDENTIALS=${ABS_KEY_OUT}
+GOOGLE_APPLICATION_CREDENTIALS=${KEY_OUT}
+
+Resolved service account file:
+${ABS_KEY_OUT}
 ENV_OUT
 
 if [[ "$MODE" == "push" ]]; then
@@ -212,3 +275,16 @@ Pull mode configured:
 - Dead-letter subscription: projects/${PROJECT_ID}/subscriptions/${DLQ_SUB_NAME}
 PULL_OUT
 fi
+
+cat <<OAUTH_OUT
+
+Google OAuth callback checklist:
+- Local self-host callback: http://localhost:13000/api/auth/callback/google
+- Public self-host callback: https://<your-domain>/api/auth/callback/google
+- Add your current APP_PUBLIC_URL domain to the authorized JavaScript origins as well.
+
+Recommended next steps:
+1. Ensure GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are set in ${ENV_FILE}.
+2. Start Clira with: npm run selfhost:up
+3. Verify deep readiness at: http://localhost:13000/api/health?deep=1
+OAUTH_OUT

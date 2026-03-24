@@ -399,7 +399,8 @@ export const CalendarCreatorLlmSchema = z
     sendUpdates: z.enum(['none', 'all', 'externalOnly']).optional(),
     createMeetLink: z.boolean().optional(),
     calendarId: z.string().optional(),
-    userPreviewText: z.string().min(1).max(1200).optional(),
+    // Intentionally omitted: user preview is built deterministically in mapLlmOutputToPlan.
+    // Letting the model emit preview text caused MAX_TOKENS loops (repetitive prose in JSON).
     createItems: z
       .array(CalendarCreateEventDraftSchema)
       .min(0)

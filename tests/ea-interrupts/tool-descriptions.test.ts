@@ -12,8 +12,8 @@ describe('tool progress descriptions', () => {
   });
 
   test('varies repeated updates within the same run', () => {
-    const first = getToolProgressDescription('list_reminders', { variationIndex: 0 });
-    const second = getToolProgressDescription('list_reminders', { variationIndex: 1 });
+    const first = getToolProgressDescription('list_inbox_emails', { variationIndex: 0 });
+    const second = getToolProgressDescription('list_inbox_emails', { variationIndex: 1 });
 
     expect(first).toBeTruthy();
     expect(second).toBeTruthy();
@@ -100,5 +100,42 @@ describe('tool progress descriptions', () => {
   test('suppresses progress text for internal wrapper tools', () => {
     expect(getToolProgressDescription('send_progress_update')).toBeNull();
     expect(getToolProgressDescription('request_mcp_server_tools')).toBeNull();
+  });
+
+  test('suppresses auto progress text for reminder tools', () => {
+    expect(getToolProgressDescription('add_reminder')).toBeNull();
+    expect(getToolProgressDescription('list_reminders')).toBeNull();
+    expect(getToolProgressDescription('snooze_reminder')).toBeNull();
+    expect(getToolProgressDescription('dismiss_reminder')).toBeNull();
+    expect(getToolProgressDescription('cancel_reminder')).toBeNull();
+  });
+
+  test('suppresses progress text for append_to_supermemory', () => {
+    expect(getToolProgressDescription('append_to_supermemory')).toBeNull();
+    expect(
+      getToolProgressDescription('append_to_supermemory', {
+        variationIndex: 1,
+        sentCount: 1,
+        elapsedMs: 30_000,
+      }),
+    ).toBeNull();
+  });
+
+  test('suppresses progress text for email alert tools', () => {
+    for (const tool of [
+      'add_email_alert',
+      'update_email_alert',
+      'remove_email_alert',
+      'list_email_alerts',
+    ] as const) {
+      expect(getToolProgressDescription(tool)).toBeNull();
+      expect(
+        getToolProgressDescription(tool, {
+          variationIndex: 1,
+          sentCount: 1,
+          elapsedMs: 30_000,
+        }),
+      ).toBeNull();
+    }
   });
 });
