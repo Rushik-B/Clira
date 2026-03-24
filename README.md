@@ -1,6 +1,6 @@
 <p align="center">
   <a href="https://tryclira.com">
-    <img src="public/Github/CLIRA.png" alt="Clira brand banner" width="100%" />
+    <img src="public/Github/Clira-header.png" alt="Clira brand banner" width="100%" />
   </a>
 </p>
 
