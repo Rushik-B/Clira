@@ -807,7 +807,6 @@ export class ExecutiveAgent {
           requestedSkillIds.length > 0 ||
           requestedMcpConnectionIds.length > 0
         ) {
-          repairAttempted = true;
           expandedPackIds = requestedPackIds;
           expandedMcpConnectionIds = requestedMcpConnectionIds;
           nextRepairReason =
@@ -843,7 +842,6 @@ export class ExecutiveAgent {
             passResult.responseSource !== 'model';
 
           if (passResult.outOfPackToolNames.size > 0 || zeroToolActionStall) {
-            repairAttempted = true;
             nextRepairReason =
               passResult.outOfPackToolNames.size > 0
                 ? 'out_of_pack_tool_reference'
@@ -887,6 +885,7 @@ export class ExecutiveAgent {
           break;
         }
 
+        repairAttempted = true;
         repairReason = nextRepairReason;
         repairExpandedPacks = mergeUnique(repairExpandedPacks, expandedPackIds);
         repairExpandedMcpConnectionIds = mergeUnique(

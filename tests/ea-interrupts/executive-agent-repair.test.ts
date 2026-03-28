@@ -253,11 +253,11 @@ describe('Executive agent repair rerun', () => {
       }),
     );
 
-    expect(callTextWithToolsMock).toHaveBeenCalledTimes(2);
-    expect(Object.keys(callTextWithToolsMock.mock.calls[1]![0].tools)).toContain('send_email');
+    expect(buildCount).toBe(1);
+    expect(callTextWithToolsMock).toHaveBeenCalledTimes(1);
     expect(result.metadata?.harness).toMatchObject({
-      repairAttempted: true,
-      repairReason: 'out_of_pack_tool_reference',
+      repairAttempted: false,
+      packIds: expect.arrayContaining(['email_send_pack']),
     });
   });
 
