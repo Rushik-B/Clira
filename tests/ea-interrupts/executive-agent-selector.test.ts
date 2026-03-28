@@ -149,7 +149,21 @@ describe('Executive agent exposure planner', () => {
     ).toBe(false);
   });
 
-  test('explicit send approval with an unsent draft stays in safe context until requested', async () => {
+  test('explicit send approval recognizes wrapped reply confirmations', () => {
+    expect(
+      extractExecutiveTurnFeatures({
+        input: buildInput({
+          userRequest:
+            'User is replying to an earlier Assistant message on Telegram.\n' +
+            'Replied-to message: draft ready\n\n' +
+            'yes',
+        }),
+        pendingCalendarChangePresent: false,
+      }).explicitSendApproval,
+    ).toBe(true);
+  });
+
+  test('explicit send approval with an unsent draft deterministically exposes email send', async () => {
     const input = buildInput({
       userRequest: 'send it',
       history: [
@@ -169,8 +183,8 @@ describe('Executive agent exposure planner', () => {
       features,
     });
 
-    expect(selection.primaryPack).toBe('safe_context_pack');
-    expect(selection.packIds).toEqual(['safe_context_pack']);
+    expect(selection.primaryPack).toBe('email_send_pack');
+    expect(selection.packIds).toEqual(['safe_context_pack', 'email_send_pack']);
     expect(selection.repairAttempted).toBe(false);
   });
 

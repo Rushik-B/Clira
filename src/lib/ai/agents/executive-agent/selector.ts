@@ -34,6 +34,31 @@ function normalizeText(value: string): string {
   return value.trim().toLowerCase().replace(/[.!?]+$/g, '');
 }
 
+function extractActionableUserText(value: string): string {
+  const trimmed = value.trim();
+  if (!/^User is replying to an earlier .* message on (?:Telegram|WhatsApp|Twilio)\./i.test(trimmed)) {
+    return trimmed;
+  }
+
+  const blocks = trimmed
+    .split(/\n{2,}/)
+    .map((block) => block.trim())
+    .filter(Boolean);
+
+  for (let index = blocks.length - 1; index >= 0; index -= 1) {
+    const block = blocks[index]!;
+    if (/^(?:Replied-to message|Quoted excerpt):/i.test(block)) {
+      continue;
+    }
+    if (/^User is replying to an earlier /i.test(block)) {
+      continue;
+    }
+    return block;
+  }
+
+  return trimmed;
+}
+
 function normalizeMcpMatchText(value: string): string {
   return value
     .trim()
@@ -160,7 +185,9 @@ export function extractExecutiveTurnFeatures(params: {
   input: ExecutiveAgentInput;
   pendingCalendarChangePresent: boolean;
 }): ExecutiveTurnFeatures {
-  const latestMessage = normalizeText(params.input.userRequest);
+  const latestMessage = normalizeText(
+    extractActionableUserText(params.input.userRequest),
+  );
   const draftCandidate = detectDraftCandidate(params.input.conversationHistory);
   const pendingPreviewPresent = hasRecentPendingCalendarPreview(
     params.input.conversationHistory,
@@ -264,6 +291,25 @@ export function extractExecutiveTurnFeatures(params: {
     pendingCalendarCancelIntent,
     draftCandidateReason: draftCandidate.reason,
   };
+}
+
+function getDeterministicActionPackIds(
+  features: ExecutiveTurnFeatures,
+): ToolPackId[] {
+  const packIds: ToolPackId[] = [];
+
+  if (
+    features.pendingCalendarChangePresent &&
+    (features.pendingCalendarConfirmIntent || features.pendingCalendarCancelIntent)
+  ) {
+    packIds.push('calendar_mutation_pack');
+  }
+
+  if (features.explicitSendApproval && features.draftCandidatePresent) {
+    packIds.push('email_send_pack');
+  }
+
+  return packIds;
 }
 
 function uniquePackIds(packIds: readonly ToolPackId[]): ToolPackId[] {
@@ -472,6 +518,7 @@ export async function selectExecutiveToolPackForTurn(params: {
     'Safe context tools for inbox, calendar, memory, PDF reads, progress updates, and reply preference reads are available every turn.',
     'Action packs stay hidden until the executive agent explicitly requests them.',
   ];
+  const deterministicActionPackIds = getDeterministicActionPackIds(params.features);
 
   if (params.features.pendingCalendarChangePresent) {
     reminders.push('A pending calendar change exists; confirm it, cancel it, or explicitly modify it.');
@@ -488,7 +535,7 @@ export async function selectExecutiveToolPackForTurn(params: {
   }
 
   return buildSelection({
-    packIds: [],
+    packIds: deterministicActionPackIds,
     reasons,
     reminders,
     mcpConnectionIds: mcpSelection.connectionIds,

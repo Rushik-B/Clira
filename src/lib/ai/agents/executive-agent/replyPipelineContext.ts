@@ -104,7 +104,7 @@ export function formatReplyPipelineInstruction(
       );
     }
     parts.push(
-      'Do NOT offer to draft replies for these emails — drafts already exist. Direct the user to review them in the Reply Queue instead.',
+      'Do NOT offer to draft replies from scratch for these emails — drafts already exist. Reuse the existing draft when the user is asking to send or edit it, otherwise direct them to the Reply Queue.',
     );
   }
 
