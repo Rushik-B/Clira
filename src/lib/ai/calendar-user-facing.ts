@@ -290,3 +290,29 @@ export function buildCalendarCompletionMessage(params: {
 
   return `**All set.**\n\nI ${pluralVerb} these ${items.length} ${eventLabel}:\n\n${list}`;
 }
+
+export function buildCalendarBundleCompletionMessage(params: {
+  items: string[];
+  failureCount?: number;
+}): string {
+  const { items, failureCount = 0 } = params;
+
+  if (items.length === 0) {
+    return 'No calendar changes were applied.';
+  }
+
+  if (items.length === 1 && failureCount === 0) {
+    return `**All set.**\n\n${items[0]}.`;
+  }
+
+  const list = formatListItems(items);
+  const changeLabel = items.length === 1 ? 'change' : 'changes';
+
+  if (failureCount > 0) {
+    const failureLabel =
+      failureCount === 1 ? '1 other change did not go through' : `${failureCount} other changes did not go through`;
+    return `**Partially done.**\n\nI applied ${items.length} calendar ${changeLabel}, but ${failureLabel}:\n\n${list}`;
+  }
+
+  return `**All set.**\n\nI applied these ${items.length} calendar ${changeLabel}:\n\n${list}`;
+}

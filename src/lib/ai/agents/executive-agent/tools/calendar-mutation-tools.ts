@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 import { z } from 'zod';
-import { type Prisma, ActionHistoryType, PendingCalendarChangeStatus } from '@prisma/client';
+import { Prisma, ActionHistoryType, PendingCalendarChangeStatus } from '@prisma/client';
 import { logger } from '@/lib/logger';
 import { prisma } from '@/lib/prisma';
 import { CalendarService } from '@/lib/services/core/calendarService';
@@ -11,22 +11,26 @@ import {
 import { runCalendarSearch } from '@/lib/ai/agents/calendarSearchSubagent';
 import { runCalendarCreatorAgent, type AvailableCalendar } from '@/lib/ai/agents/calendarCreatorAgent';
 import {
-  buildCalendarCompletionMessage,
+  buildCalendarBundleCompletionMessage,
   describeGoogleCalendarEvent,
 } from '@/lib/ai/calendar-user-facing';
 import { formatDateTimeInTimeZone } from '@/lib/utils/timezone';
 import {
   type CalendarMutationTarget,
   buildMutationCandidates,
+  coercePlanToBundle,
   createClarifyCalendarPlan,
   isCalendarTargetById,
   isCalendarTargetLookup,
   parsePendingCalendarChangeRecord,
   resolveMutationSearchRange,
+  type PendingCalendarFailure,
 } from '@/lib/ai/agents/executiveCalendarMutationHelpers';
 import { generateReauthUrl, REQUIRED_SCOPES } from '@/lib/auth/scope-utils';
 import {
   type CalendarCreatorPlanDTO,
+  type CalendarMutationBundlePlanDTO,
+  type CalendarMutationOperationDTO,
   type CalendarTargetDTO,
 } from '@/lib/ai/schemas/calendarCreatorSchemas';
 import {
@@ -79,6 +83,46 @@ export function buildCalendarMutationTools({
 
     logger.info(`[executiveAgent] ${toolName} deferred due to stale run`);
     return staleToolResult();
+  };
+
+  const buildUserSafeCalendarFailureMessage = (error: unknown) => {
+    const rawMessage = error instanceof Error ? error.message : 'Unknown error';
+    if (/bad request/i.test(rawMessage)) {
+      return {
+        rawMessage,
+        userMessage: 'Google Calendar rejected one of those changes. I kept the staged bundle closed so we can re-plan it cleanly.',
+      };
+    }
+
+    if (/not found/i.test(rawMessage)) {
+      return {
+        rawMessage,
+        userMessage: 'One of those calendar events no longer exists. I did not reopen the staged bundle.',
+      };
+    }
+
+    return {
+      rawMessage,
+      userMessage: `I couldn't apply those calendar changes cleanly. ${rawMessage}`,
+    };
+  };
+
+  const describeBundleSuccess = (
+    op: CalendarMutationOperationDTO,
+    event: {
+      summary: string;
+      start: GoogleEventTime | null | undefined;
+      end: GoogleEventTime | null | undefined;
+    },
+  ) => {
+    const eventText = describeGoogleCalendarEvent(event, userTimezone);
+    if (op.kind === 'create') {
+      return `Added ${eventText}`;
+    }
+    if (op.kind === 'update') {
+      return `Updated ${eventText}`;
+    }
+    return `Deleted ${eventText}`;
   };
 
   return {
@@ -147,6 +191,7 @@ export function buildCalendarMutationTools({
               id: true,
               plan: true,
               resolvedTarget: true,
+              failure: true,
               userTimezone: true,
               userRequest: true,
               expiresAt: true,
@@ -155,49 +200,18 @@ export function buildCalendarMutationTools({
             },
           });
 
-          if (existingPending && !args.forceNewPlan) {
-            if (existingPending.status === PendingCalendarChangeStatus.IN_PROGRESS) {
-              const pendingPayload = parsePendingCalendarChangeRecord(existingPending as PendingCalendarChangeRecord);
-              return {
-                ok: false,
-                message: 'A calendar change is currently being processed. Please wait a moment.',
-                pendingChange: {
-                  pendingId: existingPending.id,
-                  createdAt: formatDateTimeInTimeZone(existingPending.createdAt, userTimezone),
-                  expiresAt: formatDateTimeInTimeZone(existingPending.expiresAt, userTimezone),
-                  status: existingPending.status,
-                  action: pendingPayload?.plan.action,
-                },
-              };
-            }
-
+          if (existingPending?.status === PendingCalendarChangeStatus.IN_PROGRESS) {
             const pendingPayload = parsePendingCalendarChangeRecord(existingPending as PendingCalendarChangeRecord);
-            if (!pendingPayload) {
-              return {
-                ok: false,
-                error: 'invalid_pending_change',
-                message:
-                  'I found an existing pending calendar change, but it looks corrupted. Please ask me to plan it again.',
-              };
-            }
-
-            const existingPlan = pendingPayload.plan;
-            const previewText =
-              existingPlan?.userPreviewText ??
-              'I already have a pending calendar change. Reply "yes" to confirm or "no" to cancel.';
-
             return {
-              ok: true,
-              plan: existingPlan,
-              previewText,
+              ok: false,
+              message: 'A calendar change is currently being processed. Please wait a moment.',
               pendingChange: {
                 pendingId: existingPending.id,
                 createdAt: formatDateTimeInTimeZone(existingPending.createdAt, userTimezone),
                 expiresAt: formatDateTimeInTimeZone(existingPending.expiresAt, userTimezone),
-                action: existingPlan?.action,
+                status: existingPending.status,
+                action: pendingPayload?.plan.action,
               },
-              note:
-                'Pending calendar change already exists. Confirm/cancel it, or explicitly ask to modify the plan.',
             };
           }
 
@@ -285,9 +299,16 @@ export function buildCalendarMutationTools({
             };
           }
 
-          let resolvedTarget: CalendarMutationTarget | undefined;
-          let resolvedTargets: CalendarMutationTarget[] | undefined;
-          let resolvedPlan: CalendarCreatorPlanDTO = plan;
+          const bundlePlan = coercePlanToBundle(plan);
+          if (!bundlePlan) {
+            return {
+              ok: false,
+              error: 'invalid_plan',
+              message: 'Calendar change is not ready to stage.',
+            };
+          }
+
+          let resolvedPlan: CalendarMutationBundlePlanDTO = bundlePlan;
 
           type LookupResolvedRange = {
             startDate: Date;
@@ -341,6 +362,7 @@ export function buildCalendarMutationTools({
 
           const resolveLookupTarget = async (
             target: Extract<CalendarTargetDTO, { lookupQuery: string }>,
+            opKind: 'update' | 'delete',
             batchIndex?: number,
             options?: {
               resolvedRange?: LookupResolvedRange;
@@ -455,7 +477,7 @@ export function buildCalendarMutationTools({
 
               if (uniqueCandidates.length === 0) {
                 const clarifyPlan = createClarifyCalendarPlan(
-                  plan,
+                  bundlePlan,
                   [`Which event should I change${itemSuffix}?`],
                   `I couldn’t find a matching event${itemSuffix}. Which event should I update or delete?`,
                 );
@@ -472,10 +494,10 @@ export function buildCalendarMutationTools({
                   const dayNote = candidate.isAllDay ? ' (all day)' : '';
                   return `${index + 1}) ${candidate.summary} — ${candidate.start}${dayNote}`;
                 });
-                const question = `Which event should I ${plan.action}${itemSuffix}? Reply with the number.`;
+                const question = `Which event should I ${opKind}${itemSuffix}? Reply with the number.`;
                 const previewText = `I found multiple matches. ${question}\n${lines.join('\n')}`;
 
-                const clarifyPlan = createClarifyCalendarPlan(plan, [question], previewText);
+                const clarifyPlan = createClarifyCalendarPlan(bundlePlan, [question], previewText);
 
                 return {
                   kind: 'clarify',
@@ -498,221 +520,145 @@ export function buildCalendarMutationTools({
                 },
               };
           };
+          const resolvedOps: CalendarMutationOperationDTO[] = [...bundlePlan.ops];
+          const lookupTargets: LookupTargetResolution[] = [];
+          const lookupOpsByIndex = new Map<number, Extract<CalendarMutationOperationDTO, { kind: 'update' | 'delete' }>>();
 
-          if (plan.action === 'update' || plan.action === 'delete') {
-            if (plan.targets?.length) {
-              const batchResolvedTargets: CalendarMutationTarget[] = [];
-              const batchPlanTargets: Array<{ calendarId: string; eventId: string }> = [];
-              const lookupTargets: LookupTargetResolution[] = [];
+          for (const [index, op] of bundlePlan.ops.entries()) {
+            if (op.kind === 'create') {
+              continue;
+            }
 
-              for (const [index, target] of plan.targets.entries()) {
-                if (isCalendarTargetById(target)) {
-                  continue;
-                }
+            if (isCalendarTargetById(op.target)) {
+              resolvedOps[index] = {
+                ...op,
+                target: {
+                  calendarId: op.target.calendarId ?? bundlePlan.calendarId ?? 'primary',
+                  eventId: op.target.eventId,
+                },
+              };
+              continue;
+            }
 
-                if (isCalendarTargetLookup(target)) {
-                  const rangeResult = resolveMutationSearchRange({
-                    startDate: target.lookupRange?.startDate ?? args.startDate,
-                    endDate: target.lookupRange?.endDate ?? args.endDate,
-                    userTimezone,
-                  });
+            const rangeResult = resolveMutationSearchRange({
+              startDate: op.target.lookupRange?.startDate ?? args.startDate,
+              endDate: op.target.lookupRange?.endDate ?? args.endDate,
+              userTimezone,
+            });
 
-                  if ('error' in rangeResult) {
-                    const itemSuffix = ` for item ${index + 1}`;
-                    const clarifyPlan = createClarifyCalendarPlan(
-                      plan,
-                      [`Which dates should I search${itemSuffix}?`],
-                      `I need a clearer date range to find that event${itemSuffix}. ${rangeResult.error}`,
-                    );
-
-                    return {
-                      ok: true,
-                      plan: clarifyPlan,
-                      previewText: clarifyPlan.userPreviewText,
-                    };
-                  }
-
-                  lookupTargets.push({
-                    index,
-                    target,
-                    range: rangeResult,
-                  });
-                }
-              }
-
-              const lookupSnapshotsByIndex = new Map<number, CalendarMutationSnapshotResult>();
-              if (lookupTargets.length > 0) {
-                const lookupGroups = buildOverlappingLookupGroups(lookupTargets);
-                const groupSnapshots = await Promise.all(
-                  lookupGroups.map(async (group) => ({
-                    group,
-                    mutationSnapshot: await getCalendarMutationSnapshot({
-                      userId: input.userId,
-                      startDate: group.startDate,
-                      endDate: group.endDate,
-                    }),
-                  })),
-                );
-
-                for (const { group, mutationSnapshot } of groupSnapshots) {
-                  if (!mutationSnapshot.success) {
-                    return {
-                      ok: false,
-                      error: 'calendar_unavailable',
-                      message: mutationSnapshot.error || 'Calendar access unavailable.',
-                    };
-                  }
-
-                  for (const item of group.items) {
-                    lookupSnapshotsByIndex.set(item.index, mutationSnapshot);
-                  }
-                }
-              }
-
-              const lookupRangeByIndex = new Map<number, LookupResolvedRange>(
-                lookupTargets.map((item) => [item.index, item.range]),
-              );
-              const lookupTargetByIndex = new Map<number, LookupTargetResolution>(
-                lookupTargets.map((item) => [item.index, item]),
+            if ('error' in rangeResult) {
+              const itemSuffix = ` for item ${index + 1}`;
+              const clarifyPlan = createClarifyCalendarPlan(
+                bundlePlan,
+                [`Which dates should I search${itemSuffix}?`],
+                `I need a clearer date range to find that event${itemSuffix}. ${rangeResult.error}`,
               );
 
-              const lookupResolutions = await Promise.all(
-                lookupTargets.map(async (item) => {
-                  const lookupResolution = await resolveLookupTarget(item.target, item.index, {
-                    resolvedRange: item.range,
-                    mutationSnapshot: lookupSnapshotsByIndex.get(item.index),
-                  });
-                  return { index: item.index, lookupResolution };
+              return {
+                ok: true,
+                plan: clarifyPlan,
+                previewText: clarifyPlan.userPreviewText,
+              };
+            }
+
+            lookupTargets.push({
+              index,
+              target: op.target,
+              range: rangeResult,
+            });
+            lookupOpsByIndex.set(index, op);
+          }
+
+          const lookupSnapshotsByIndex = new Map<number, CalendarMutationSnapshotResult>();
+          if (lookupTargets.length > 0) {
+            const lookupGroups = buildOverlappingLookupGroups(lookupTargets);
+            const groupSnapshots = await Promise.all(
+              lookupGroups.map(async (group) => ({
+                group,
+                mutationSnapshot: await getCalendarMutationSnapshot({
+                  userId: input.userId,
+                  startDate: group.startDate,
+                  endDate: group.endDate,
                 }),
-              );
+              })),
+            );
 
-              const firstLookupFailure = lookupResolutions
-                .filter(({ lookupResolution }) => lookupResolution.kind !== 'resolved')
-                .sort((a, b) => a.index - b.index)[0];
-
-              if (firstLookupFailure) {
-                const { lookupResolution } = firstLookupFailure;
-                if (lookupResolution.kind === 'error') {
-                  return {
-                    ok: false,
-                    error: lookupResolution.error,
-                    message: lookupResolution.message,
-                  };
-                }
-
-                if (lookupResolution.kind === 'clarify') {
-                  return {
-                    ok: true,
-                    plan: lookupResolution.plan,
-                    previewText: lookupResolution.previewText,
-                  };
-                }
-
+            for (const { group, mutationSnapshot } of groupSnapshots) {
+              if (!mutationSnapshot.success) {
                 return {
                   ok: false,
-                  error: 'lookup_resolution_failed',
-                  message: 'I could not resolve one of the target events. Please try again.',
+                  error: 'calendar_unavailable',
+                  message: mutationSnapshot.error || 'Calendar access unavailable.',
                 };
               }
 
-              const lookupResolutionByIndex = new Map(
-                lookupResolutions.map(({ index, lookupResolution }) => [index, lookupResolution]),
-              );
-
-              for (const [index, target] of plan.targets.entries()) {
-                if (isCalendarTargetById(target)) {
-                  const calendarId = target.calendarId ?? plan.calendarId ?? 'primary';
-                  batchResolvedTargets.push({
-                    calendarId,
-                    eventId: target.eventId,
-                  });
-                  batchPlanTargets.push({
-                    calendarId,
-                    eventId: target.eventId,
-                  });
-                  continue;
-                }
-
-                if (isCalendarTargetLookup(target)) {
-                  const lookupResolution = lookupResolutionByIndex.get(index);
-                  if (!lookupResolution || lookupResolution.kind !== 'resolved') {
-                    const lookupItem = lookupTargetByIndex.get(index);
-                    const lookupRange = lookupRangeByIndex.get(index);
-                    logger.warn(
-                      '[executiveAgent] Missing resolved lookup target during batch plan resolution',
-                      {
-                        lookupQuery: lookupItem?.target.lookupQuery ?? target.lookupQuery,
-                        hasRange: Boolean(lookupRange),
-                        index,
-                      },
-                    );
-                    return {
-                      ok: false,
-                      error: 'lookup_resolution_failed',
-                      message: 'I could not resolve one of the target events. Please try again.',
-                    };
-                  }
-                  batchResolvedTargets.push(lookupResolution.target);
-                  batchPlanTargets.push(lookupResolution.planTarget);
-                }
-              }
-
-              resolvedTargets = batchResolvedTargets;
-              resolvedPlan = {
-                ...plan,
-                target: undefined,
-                targets: batchPlanTargets,
-              };
-            } else if (plan.target) {
-              if (isCalendarTargetById(plan.target)) {
-                resolvedTarget = {
-                  calendarId: plan.target.calendarId ?? plan.calendarId ?? 'primary',
-                  eventId: plan.target.eventId,
-                };
-              } else if (isCalendarTargetLookup(plan.target)) {
-                const lookupResolution = await resolveLookupTarget(plan.target);
-                if (lookupResolution.kind === 'error') {
-                  return {
-                    ok: false,
-                    error: lookupResolution.error,
-                    message: lookupResolution.message,
-                  };
-                }
-                if (lookupResolution.kind === 'clarify') {
-                  return {
-                    ok: true,
-                    plan: lookupResolution.plan,
-                    previewText: lookupResolution.previewText,
-                  };
-                }
-
-                resolvedTarget = lookupResolution.target;
-                resolvedPlan = {
-                  ...plan,
-                  targets: undefined,
-                  target: lookupResolution.planTarget,
-                };
+              for (const item of group.items) {
+                lookupSnapshotsByIndex.set(item.index, mutationSnapshot);
               }
             }
           }
 
-          if (
-            (plan.action === 'update' || plan.action === 'delete') &&
-            !resolvedTarget &&
-            (!resolvedTargets || resolvedTargets.length === 0)
-          ) {
-            const clarifyPlan = createClarifyCalendarPlan(
-              plan,
-              ['Which event should I change?'],
-              'Which event should I update or delete?',
-            );
+          const lookupResolutionByIndex = new Map<
+            number,
+            Awaited<ReturnType<typeof resolveLookupTarget>>
+          >();
+          for (const item of lookupTargets) {
+            const op = lookupOpsByIndex.get(item.index);
+            if (!op) continue;
+            if (!isCalendarTargetLookup(op.target)) {
+              continue;
+            }
+            const lookupResolution = await resolveLookupTarget(op.target, op.kind, item.index, {
+              resolvedRange: item.range,
+              mutationSnapshot: lookupSnapshotsByIndex.get(item.index),
+            });
+            lookupResolutionByIndex.set(item.index, lookupResolution);
+          }
 
-            return {
-              ok: true,
-              plan: clarifyPlan,
-              previewText: clarifyPlan.userPreviewText,
+          for (const [index, op] of bundlePlan.ops.entries()) {
+            if (op.kind === 'create') {
+              continue;
+            }
+
+            if (isCalendarTargetById(op.target)) {
+              continue;
+            }
+
+            const lookupResolution = lookupResolutionByIndex.get(index);
+            if (!lookupResolution) {
+              return {
+                ok: false,
+                error: 'lookup_resolution_failed',
+                message: 'I could not resolve one of the target events. Please try again.',
+              };
+            }
+
+            if (lookupResolution.kind === 'error') {
+              return {
+                ok: false,
+                error: lookupResolution.error,
+                message: lookupResolution.message,
+              };
+            }
+
+            if (lookupResolution.kind === 'clarify') {
+              return {
+                ok: true,
+                plan: lookupResolution.plan,
+                previewText: lookupResolution.previewText,
+              };
+            }
+
+            resolvedOps[index] = {
+              ...op,
+              target: lookupResolution.planTarget,
             };
           }
+
+          resolvedPlan = {
+            ...bundlePlan,
+            ops: resolvedOps,
+          };
 
           const now = new Date();
           const expiresAt = new Date(now.getTime() + PENDING_CALENDAR_CHANGE_TTL_MS);
@@ -726,14 +672,10 @@ export function buildCalendarMutationTools({
               status: PendingCalendarChangeStatus.PENDING,
             },
             data: {
-              status: PendingCalendarChangeStatus.CANCELLED,
-              cancelledAt: now,
+              status: PendingCalendarChangeStatus.SUPERSEDED,
+              supersededAt: now,
             },
           });
-
-          const resolvedTargetPayload = resolvedTargets?.length
-            ? resolvedTargets
-            : resolvedTarget ?? null;
 
           const staleBeforePendingWrite = await ensureCurrentRun('plan_calendar_change');
           if (staleBeforePendingWrite) return staleBeforePendingWrite;
@@ -743,7 +685,8 @@ export function buildCalendarMutationTools({
               userId: input.userId,
               conversationId: input.conversationId,
               plan: resolvedPlan as Prisma.InputJsonValue,
-              resolvedTarget: resolvedTargetPayload as Prisma.InputJsonValue,
+              resolvedTarget: Prisma.JsonNull,
+              failure: Prisma.JsonNull,
               userTimezone,
               userRequest: request,
               expiresAt,
@@ -752,31 +695,19 @@ export function buildCalendarMutationTools({
           });
 
           try {
-            const eventCount = resolvedPlan.eventDrafts?.length
-              ? resolvedPlan.eventDrafts.length
-              : resolvedPlan.eventDraft
-                ? 1
-                : 0;
             await prisma.actionHistory.create({
               data: {
                 userId: input.userId,
                 actionType: ActionHistoryType.CALENDAR_CHANGE_PROPOSED,
-                actionSummary: `Proposed calendar ${resolvedPlan.action}`,
+                actionSummary: 'Proposed calendar mutation bundle',
                 actionDetails: {
                   pendingId: pendingRecord.id,
                   action: resolvedPlan.action,
-                  calendarId:
-                    resolvedTarget?.calendarId ??
-                    resolvedTargets?.[0]?.calendarId ??
-                    resolvedPlan.calendarId ??
-                    'primary',
-                  eventId: resolvedTarget?.eventId ?? null,
-                  eventIds: resolvedTargets?.map((target) => target.eventId) ?? undefined,
+                  calendarId: resolvedPlan.calendarId ?? 'primary',
                   sendUpdates: resolvedPlan.sendUpdates,
                   createMeetLink: resolvedPlan.createMeetLink,
-                  summary: resolvedPlan.eventDraft?.summary ?? null,
-                  eventCount,
-                  targetCount: resolvedTargets?.length ?? (resolvedTarget ? 1 : 0),
+                  opCount: resolvedPlan.ops.length,
+                  opKinds: resolvedPlan.ops.map((op) => op.kind),
                   expiresAt: formatDateTimeInTimeZone(expiresAt, userTimezone),
                 },
                 undoable: false,
@@ -921,15 +852,18 @@ export function buildCalendarMutationTools({
               data: {
                 status: PendingCalendarChangeStatus.CONSUMED,
                 consumedAt: new Date(),
+                failure: Prisma.JsonNull,
               },
             });
           };
 
-          const releasePending = async () => {
+          const markPendingFailed = async (failure: PendingCalendarFailure) => {
             await prisma.pendingCalendarChange.update({
               where: { id: latestPending.id },
               data: {
-                status: PendingCalendarChangeStatus.PENDING,
+                status: PendingCalendarChangeStatus.FAILED,
+                failedAt: new Date(),
+                failure: failure as Prisma.InputJsonValue,
               },
             });
           };
@@ -940,6 +874,7 @@ export function buildCalendarMutationTools({
               data: {
                 status: PendingCalendarChangeStatus.CANCELLED,
                 cancelledAt: new Date(),
+                failure: Prisma.JsonNull,
               },
             });
           };
@@ -957,7 +892,7 @@ export function buildCalendarMutationTools({
           }
 
           const plan = pendingPayload.plan;
-          const calendarId = pendingPayload.resolvedTarget?.calendarId ?? plan.calendarId ?? 'primary';
+          const calendarId = plan.calendarId ?? 'primary';
 
           const calendarService = await CalendarService.create({
             userId: input.userId,
@@ -966,7 +901,11 @@ export function buildCalendarMutationTools({
           });
 
           if (!calendarService) {
-            await releasePending();
+            await markPendingFailed({
+              code: 'calendar_unavailable',
+              message: 'No calendar access available. Please reconnect your calendar.',
+              retryable: true,
+            });
             return {
               ok: false,
               error: 'calendar_unavailable',
@@ -983,47 +922,47 @@ export function buildCalendarMutationTools({
           };
 
           try {
-            if (plan.action === 'create') {
-              const drafts = plan.eventDrafts?.length
-                ? plan.eventDrafts
-                : plan.eventDraft
-                  ? [plan.eventDraft]
-                  : [];
+            const bundlePlan = coercePlanToBundle(pendingPayload.plan);
+            if (!bundlePlan) {
+              await cancelPending();
+              return {
+                ok: false,
+                error: 'invalid_plan',
+                message: 'Calendar change is not ready to commit.',
+              };
+            }
 
-              if (drafts.length === 0) {
-                await cancelPending();
-                return { ok: false, error: 'invalid_plan', message: 'Missing event details for creation.' };
+            const appliedItems: string[] = [];
+            const failures: Array<{
+              index: number;
+              kind: CalendarMutationOperationDTO['kind'];
+              summary: string;
+              message: string;
+              rawMessage: string;
+            }> = [];
+
+            for (const [index, op] of bundlePlan.ops.entries()) {
+              const staleInLoop = await ensureCurrentRun('commit_calendar_change');
+              if (staleInLoop) {
+                return staleInLoop;
               }
 
-              const createdEvents: Array<{
-                eventId: string | null | undefined;
-                htmlLink?: string | null;
-                summary: string;
-                start: GoogleEventTime | null | undefined;
-                end: GoogleEventTime | null | undefined;
-              }> = [];
-              const failures: Array<{ index: number; summary: string; message: string }> = [];
-
-              for (const [index, draft] of drafts.entries()) {
-                const staleInLoop = await ensureCurrentRun('commit_calendar_change');
-                if (staleInLoop) {
-                  return staleInLoop;
-                }
-
+              if (op.kind === 'create') {
+                const draft = op.eventDraft;
                 const timeValidation = validateEventDraftTimes(draft, 'create');
                 if (!timeValidation.ok) {
                   failures.push({
                     index,
+                    kind: op.kind,
                     summary: draft.summary ?? `Event ${index + 1}`,
                     message: timeValidation.message,
+                    rawMessage: timeValidation.message,
                   });
                   continue;
                 }
 
-                // Per-draft calendarId overrides plan-level default
                 const draftCalendarId = (draft as { calendarId?: string }).calendarId ?? calendarId;
-
-                const conferenceData = plan.createMeetLink
+                const conferenceData = (op.createMeetLink ?? bundlePlan.createMeetLink)
                   ? {
                       createRequest: {
                         requestId: crypto.randomUUID(),
@@ -1032,11 +971,8 @@ export function buildCalendarMutationTools({
                     }
                   : undefined;
 
-                // Strip calendarId from the draft before building requestBody
-                // (calendarId is a path param for Google API, not an event field)
                 const draftForApi = applyGoogleReminderLimit(draft);
                 const { calendarId: _draftCalId, ...draftWithoutCalendarId } = draftForApi as Record<string, unknown>;
-
                 const requestBody = stripUndefined({
                   ...draftWithoutCalendarId,
                   extendedProperties: {
@@ -1053,19 +989,17 @@ export function buildCalendarMutationTools({
                     calendarId: draftCalendarId,
                     requestBody,
                     conferenceDataVersion: conferenceData ? 1 : undefined,
-                    sendUpdates: plan.sendUpdates,
+                    sendUpdates: bundlePlan.sendUpdates,
                   });
-
                   const event = response.data;
                   const summary = event.summary ?? draft.summary ?? '(No title)';
-
-                  createdEvents.push({
-                    eventId: event.id,
-                    htmlLink: event.htmlLink,
-                    summary,
-                    start: event.start as GoogleEventTime | null | undefined,
-                    end: event.end as GoogleEventTime | null | undefined,
-                  });
+                  appliedItems.push(
+                    describeBundleSuccess(op, {
+                      summary,
+                      start: event.start as GoogleEventTime | null | undefined,
+                      end: event.end as GoogleEventTime | null | undefined,
+                    }),
+                  );
 
                   await prisma.actionHistory.create({
                     data: {
@@ -1076,8 +1010,8 @@ export function buildCalendarMutationTools({
                         calendarId: draftCalendarId,
                         eventId: event.id,
                         htmlLink: event.htmlLink,
-                        sendUpdates: plan.sendUpdates,
-                        createMeetLink: plan.createMeetLink,
+                        sendUpdates: bundlePlan.sendUpdates,
+                        createMeetLink: op.createMeetLink ?? bundlePlan.createMeetLink,
                         start: event.start as Prisma.InputJsonValue,
                         end: event.end as Prisma.InputJsonValue,
                         attendees: summarizeAttendees(event.attendees),
@@ -1086,645 +1020,298 @@ export function buildCalendarMutationTools({
                       metadata: {
                         source: 'executive-agent',
                         pendingId: latestPending.id,
+                        opIndex: index,
                       },
                     },
                   });
                 } catch (error) {
-                  const message = error instanceof Error ? error.message : 'Unknown error';
+                  const { rawMessage, userMessage } = buildUserSafeCalendarFailureMessage(error);
                   failures.push({
                     index,
+                    kind: op.kind,
                     summary: draft.summary ?? `Event ${index + 1}`,
-                    message,
+                    message: userMessage,
+                    rawMessage,
                   });
                 }
+
+                continue;
               }
 
-              if (createdEvents.length > 0) {
-                await markPendingConsumed();
-                const status = failures.length > 0 ? 'partial' : 'created';
-                const message = buildCalendarCompletionMessage({
-                  action: 'create',
-                  items: createdEvents.map((event) =>
-                    describeGoogleCalendarEvent(
-                      {
-                        summary: event.summary,
-                        start: event.start,
-                        end: event.end,
-                      },
-                      userTimezone,
-                    ),
-                  ),
-                  failureCount: failures.length,
+              if (!isCalendarTargetById(op.target)) {
+                failures.push({
+                  index,
+                  kind: op.kind,
+                  summary: `Event ${index + 1}`,
+                  message: 'That staged bundle is missing a concrete event target. Please re-plan it.',
+                  rawMessage: 'missing_concrete_target',
                 });
-                return {
-                  ok: failures.length === 0,
-                  status,
-                  message,
-                  createdCount: createdEvents.length,
-                  failedCount: failures.length,
-                  createdEvents,
-                  failures,
-                };
+                continue;
               }
 
-              await releasePending();
-              const firstFailure = failures[0]?.message ?? 'No events were created.';
-              return {
-                ok: false,
-                error: 'calendar_commit_failed',
-                message: `Could not create the event(s): ${firstFailure}`,
-                failedCount: failures.length,
-                failures,
+              const target = {
+                calendarId: op.target.calendarId ?? bundlePlan.calendarId ?? 'primary',
+                eventId: op.target.eventId,
               };
-            }
 
-            if (plan.action === 'update') {
-              if (pendingPayload.resolvedTargets?.length) {
-                if (!plan.eventDrafts || plan.eventDrafts.length !== pendingPayload.resolvedTargets.length) {
-                  await cancelPending();
-                  return {
-                    ok: false,
-                    error: 'invalid_plan',
-                    message: 'Batch updates require matching targets and eventDrafts.',
-                  };
-                }
+              if (op.kind === 'update') {
+                const hasDraftChanges = hasMeaningfulUpdateDraft(op.eventDraft);
+                const shouldMoveCalendars = Boolean(
+                  op.destinationCalendarId && op.destinationCalendarId !== target.calendarId,
+                );
 
-                const updatedEvents: Array<{
-                  eventId: string | null | undefined;
-                  htmlLink?: string | null;
-                  summary: string;
-                  start: GoogleEventTime | null | undefined;
-                  end: GoogleEventTime | null | undefined;
-                }> = [];
-                const failures: Array<{ index: number; summary: string; message: string }> = [];
-
-                for (const [index, target] of pendingPayload.resolvedTargets.entries()) {
-                  const staleInLoop = await ensureCurrentRun('commit_calendar_change');
-                  if (staleInLoop) {
-                    return staleInLoop;
-                  }
-
-                  const draft = plan.eventDrafts[index];
-                  const requestedDestinationCalendarId = plan.destinationCalendarIds?.[index];
-                  const hasDraftChanges = hasMeaningfulUpdateDraft(draft);
-                  const shouldMoveCalendars = Boolean(
-                    requestedDestinationCalendarId &&
-                      requestedDestinationCalendarId !== target.calendarId,
-                  );
-                  if (!draft) {
-                    failures.push({
-                      index,
-                      summary: `Event ${index + 1}`,
-                      message: 'Missing update fields for this target.',
-                    });
-                    continue;
-                  }
-
-                  if (
-                    !hasDraftChanges &&
-                    !shouldMoveCalendars &&
-                    !plan.createMeetLink
-                  ) {
-                    failures.push({
-                      index,
-                      summary: draft.summary ?? `Event ${index + 1}`,
-                      message: requestedDestinationCalendarId
-                        ? 'That event is already on the requested calendar.'
-                        : 'No update fields were provided.',
-                    });
-                    continue;
-                  }
-
-                  try {
-                    const currentEventResponse = await calendarService.getEvent({
-                      calendarId: target.calendarId,
-                      eventId: target.eventId,
-                    });
-
-                    const currentEvent = currentEventResponse.data;
-                    let latestEvent = currentEvent;
-                    let latestCalendarId = target.calendarId;
-                    let latestEventId = currentEvent.id ?? target.eventId;
-
-                    if (hasDraftChanges || plan.createMeetLink) {
-                      const normalizedDraft = normalizeUpdateDraftTimesForPatch({
-                        draft,
-                        currentEvent: {
-                          start: currentEvent.start as GoogleEventTime | null | undefined,
-                          end: currentEvent.end as GoogleEventTime | null | undefined,
-                        },
-                      });
-
-                      if (!normalizedDraft.ok) {
-                        failures.push({
-                          index,
-                          summary: draft.summary ?? `Event ${index + 1}`,
-                          message: normalizedDraft.message,
-                        });
-                        continue;
-                      }
-
-                      const timeValidation = validateEventDraftTimes(normalizedDraft.patch, 'update');
-                      if (!timeValidation.ok) {
-                        failures.push({
-                          index,
-                          summary: draft.summary ?? `Event ${index + 1}`,
-                          message: timeValidation.message,
-                        });
-                        continue;
-                      }
-
-                      const conferenceData = plan.createMeetLink
-                        ? {
-                            createRequest: {
-                              requestId: crypto.randomUUID(),
-                              conferenceSolutionKey: { type: 'hangoutsMeet' },
-                            },
-                          }
-                        : undefined;
-
-                      const patchForApi = applyGoogleReminderLimit(normalizedDraft.patch);
-                      const requestBody = stripUndefined({
-                        ...patchForApi,
-                        extendedProperties: {
-                          private: {
-                            ...(currentEvent.extendedProperties?.private ?? {}),
-                            cliraPendingId: latestPending.id,
-                            cliraSource: 'calendarCreatorAgent',
-                          },
-                        },
-                        conferenceData,
-                      } satisfies Record<string, unknown>);
-
-                      const response = await calendarService.patchEvent({
-                        calendarId: target.calendarId,
-                        eventId: target.eventId,
-                        requestBody,
-                        conferenceDataVersion: conferenceData ? 1 : undefined,
-                        sendUpdates: plan.sendUpdates,
-                        ifMatchEtag: currentEvent.etag ?? target.etag,
-                      });
-
-                      latestEvent = response.data;
-                      latestEventId = response.data.id ?? latestEventId;
-                    }
-
-                    if (shouldMoveCalendars && requestedDestinationCalendarId) {
-                      const response = await calendarService.moveEvent({
-                        calendarId: latestCalendarId,
-                        eventId: latestEventId,
-                        destinationCalendarId: requestedDestinationCalendarId,
-                        sendUpdates: plan.sendUpdates,
-                      });
-                      latestEvent = response.data;
-                      latestCalendarId = requestedDestinationCalendarId;
-                      latestEventId = response.data.id ?? latestEventId;
-                    }
-
-                    const summary = latestEvent.summary ?? currentEvent.summary ?? draft.summary ?? '(No title)';
-
-                    updatedEvents.push({
-                      eventId: latestEvent.id,
-                      htmlLink: latestEvent.htmlLink,
-                      summary,
-                      start: (latestEvent.start ?? currentEvent.start) as GoogleEventTime | null | undefined,
-                      end: (latestEvent.end ?? currentEvent.end) as GoogleEventTime | null | undefined,
-                    });
-
-                    await prisma.actionHistory.create({
-                      data: {
-                        userId: input.userId,
-                        actionType: ActionHistoryType.CALENDAR_EVENT_UPDATED,
-                        actionSummary: `Updated calendar event: ${summary}`,
-                        actionDetails: {
-                          calendarId: latestCalendarId,
-                          sourceCalendarId: target.calendarId,
-                          destinationCalendarId: shouldMoveCalendars
-                            ? requestedDestinationCalendarId
-                            : undefined,
-                          eventId: latestEventId,
-                          htmlLink: latestEvent.htmlLink,
-                          sendUpdates: plan.sendUpdates,
-                          createMeetLink: plan.createMeetLink,
-                          start: (latestEvent.start ?? currentEvent.start) as Prisma.InputJsonValue,
-                          end: (latestEvent.end ?? currentEvent.end) as Prisma.InputJsonValue,
-                          attendees: summarizeAttendees(latestEvent.attendees ?? currentEvent.attendees),
-                        },
-                        undoable: false,
-                        metadata: {
-                          source: 'executive-agent',
-                          pendingId: latestPending.id,
-                        },
-                      },
-                    });
-                  } catch (error) {
-                    const message = error instanceof Error ? error.message : 'Unknown error';
-                    failures.push({
-                      index,
-                      summary: draft.summary ?? `Event ${index + 1}`,
-                      message,
-                    });
-                  }
-                }
-
-                if (updatedEvents.length > 0) {
-                  await markPendingConsumed();
-                  const status = failures.length > 0 ? 'partial' : 'updated';
-                  const message = buildCalendarCompletionMessage({
-                    action: 'update',
-                    items: updatedEvents.map((event) =>
-                      describeGoogleCalendarEvent(
-                        {
-                          summary: event.summary,
-                          start: event.start,
-                          end: event.end,
-                        },
-                        userTimezone,
-                      ),
-                    ),
-                    failureCount: failures.length,
+                if (!hasDraftChanges && !shouldMoveCalendars && !op.createMeetLink) {
+                  failures.push({
+                    index,
+                    kind: op.kind,
+                    summary: op.eventDraft.summary ?? `Event ${index + 1}`,
+                    message: op.destinationCalendarId
+                      ? 'That event is already on the requested calendar.'
+                      : 'No update fields were provided.',
+                    rawMessage: 'no_update_fields',
                   });
-                  return {
-                    ok: failures.length === 0,
-                    status,
-                    message,
-                    updatedCount: updatedEvents.length,
-                    failedCount: failures.length,
-                    updatedEvents,
-                    failures,
-                  };
+                  continue;
                 }
 
-                await releasePending();
-                const firstFailure = failures[0]?.message ?? 'No events were updated.';
-                return {
-                  ok: false,
-                  error: 'calendar_commit_failed',
-                  message: `Could not update the event(s): ${firstFailure}`,
-                  failedCount: failures.length,
-                  failures,
-                };
-              }
-
-              if (!pendingPayload.resolvedTarget) {
-                await cancelPending();
-                return {
-                  ok: false,
-                  error: 'missing_target',
-                  message: 'No event target found for this update.',
-                };
-              }
-
-              if (!plan.eventDraft) {
-                await cancelPending();
-                return { ok: false, error: 'invalid_plan', message: 'Missing fields to update.' };
-              }
-
-              const hasDraftChanges = hasMeaningfulUpdateDraft(plan.eventDraft);
-              const shouldMoveCalendars = Boolean(
-                plan.destinationCalendarId &&
-                  plan.destinationCalendarId !== pendingPayload.resolvedTarget.calendarId,
-              );
-
-              if (
-                !hasDraftChanges &&
-                !shouldMoveCalendars &&
-                !plan.createMeetLink
-              ) {
-                await cancelPending();
-                return {
-                  ok: false,
-                  error: 'invalid_plan',
-                  message: plan.destinationCalendarId
-                    ? 'That event is already on the requested calendar.'
-                    : 'No update fields were provided.',
-                };
-              }
-
-              const staleSingleUpdate = await ensureCurrentRun('commit_calendar_change');
-              if (staleSingleUpdate) {
-                await releasePending();
-                return staleSingleUpdate;
-              }
-
-              const currentEventResponse = await calendarService.getEvent({
-                calendarId: pendingPayload.resolvedTarget.calendarId,
-                eventId: pendingPayload.resolvedTarget.eventId,
-              });
-
-              const currentEvent = currentEventResponse.data;
-              let latestEvent = currentEvent;
-              let latestCalendarId = pendingPayload.resolvedTarget.calendarId;
-              let latestEventId = currentEvent.id ?? pendingPayload.resolvedTarget.eventId;
-
-              if (hasDraftChanges || plan.createMeetLink) {
-                const normalizedDraft = normalizeUpdateDraftTimesForPatch({
-                  draft: plan.eventDraft,
-                  currentEvent: {
-                    start: currentEvent.start as GoogleEventTime | null | undefined,
-                    end: currentEvent.end as GoogleEventTime | null | undefined,
-                  },
-                });
-
-                if (!normalizedDraft.ok) {
-                  await cancelPending();
-                  return { ok: false, error: 'invalid_event_time', message: normalizedDraft.message };
-                }
-
-                const timeValidation = validateEventDraftTimes(normalizedDraft.patch, 'update');
-                if (!timeValidation.ok) {
-                  await cancelPending();
-                  return { ok: false, error: 'invalid_event_time', message: timeValidation.message };
-                }
-
-                const conferenceData = plan.createMeetLink
-                  ? {
-                      createRequest: {
-                        requestId: crypto.randomUUID(),
-                        conferenceSolutionKey: { type: 'hangoutsMeet' },
-                      },
-                    }
-                  : undefined;
-
-                const patchForApi = applyGoogleReminderLimit(normalizedDraft.patch);
-                const requestBody = stripUndefined({
-                  ...patchForApi,
-                  extendedProperties: {
-                    private: {
-                      ...(currentEvent.extendedProperties?.private ?? {}),
-                      cliraPendingId: latestPending.id,
-                      cliraSource: 'calendarCreatorAgent',
-                    },
-                  },
-                  conferenceData,
-                } satisfies Record<string, unknown>);
-
-                const response = await calendarService.patchEvent({
-                  calendarId: pendingPayload.resolvedTarget.calendarId,
-                  eventId: pendingPayload.resolvedTarget.eventId,
-                  requestBody,
-                  conferenceDataVersion: conferenceData ? 1 : undefined,
-                  sendUpdates: plan.sendUpdates,
-                  ifMatchEtag: currentEvent.etag ?? pendingPayload.resolvedTarget.etag,
-                });
-
-                latestEvent = response.data;
-                latestEventId = response.data.id ?? latestEventId;
-              }
-
-              if (shouldMoveCalendars && plan.destinationCalendarId) {
-                const response = await calendarService.moveEvent({
-                  calendarId: latestCalendarId,
-                  eventId: latestEventId,
-                  destinationCalendarId: plan.destinationCalendarId,
-                  sendUpdates: plan.sendUpdates,
-                });
-                latestEvent = response.data;
-                latestCalendarId = plan.destinationCalendarId;
-                latestEventId = response.data.id ?? latestEventId;
-              }
-
-              await markPendingConsumed();
-
-              await prisma.actionHistory.create({
-                data: {
-                  userId: input.userId,
-                  actionType: ActionHistoryType.CALENDAR_EVENT_UPDATED,
-                  actionSummary: `Updated calendar event: ${latestEvent.summary ?? currentEvent.summary ?? '(No title)'}`,
-                  actionDetails: {
-                    calendarId: latestCalendarId,
-                    sourceCalendarId: pendingPayload.resolvedTarget.calendarId,
-                    destinationCalendarId: shouldMoveCalendars
-                      ? plan.destinationCalendarId
-                      : undefined,
-                    eventId: latestEventId,
-                    htmlLink: latestEvent.htmlLink,
-                    sendUpdates: plan.sendUpdates,
-                    createMeetLink: plan.createMeetLink,
-                    start: (latestEvent.start ?? currentEvent.start) as Prisma.InputJsonValue,
-                    end: (latestEvent.end ?? currentEvent.end) as Prisma.InputJsonValue,
-                    attendees: summarizeAttendees(latestEvent.attendees ?? currentEvent.attendees),
-                  },
-                  undoable: false,
-                  metadata: {
-                    source: 'executive-agent',
-                    pendingId: latestPending.id,
-                  },
-                },
-              });
-
-              return {
-                ok: true,
-                status: 'updated',
-                message: buildCalendarCompletionMessage({
-                  action: 'update',
-                  items: [
-                    describeGoogleCalendarEvent(
-                      {
-                        summary: latestEvent.summary ?? currentEvent.summary ?? '(No title)',
-                        start: (latestEvent.start ?? currentEvent.start) as GoogleEventTime | null | undefined,
-                        end: (latestEvent.end ?? currentEvent.end) as GoogleEventTime | null | undefined,
-                      },
-                      userTimezone,
-                    ),
-                  ],
-                }),
-                eventId: latestEvent.id,
-                htmlLink: latestEvent.htmlLink,
-                summary: latestEvent.summary ?? currentEvent.summary ?? '(No title)',
-              };
-            }
-
-            if (plan.action === 'delete') {
-              if (pendingPayload.resolvedTargets?.length) {
-                const deletedEvents: Array<{
-                  eventId: string;
-                  summary: string;
-                  start: GoogleEventTime | null | undefined;
-                  end: GoogleEventTime | null | undefined;
-                }> = [];
-                const failures: Array<{ index: number; summary: string; message: string }> = [];
-
-                for (const [index, target] of pendingPayload.resolvedTargets.entries()) {
-                  const staleInLoop = await ensureCurrentRun('commit_calendar_change');
-                  if (staleInLoop) {
-                    return staleInLoop;
-                  }
-
-                  try {
-                    const currentEventResponse = await calendarService.getEvent({
-                      calendarId: target.calendarId,
-                      eventId: target.eventId,
-                    });
-                    const currentEvent = currentEventResponse.data;
-
-                    await calendarService.deleteEvent({
-                      calendarId: target.calendarId,
-                      eventId: target.eventId,
-                      sendUpdates: plan.sendUpdates,
-                      ifMatchEtag: currentEvent.etag ?? target.etag,
-                    });
-
-                    const summary = currentEvent.summary ?? '(No title)';
-                    deletedEvents.push({
-                      eventId: target.eventId,
-                      summary,
-                      start: currentEvent.start as GoogleEventTime | null | undefined,
-                      end: currentEvent.end as GoogleEventTime | null | undefined,
-                    });
-
-                    await prisma.actionHistory.create({
-                      data: {
-                        userId: input.userId,
-                        actionType: ActionHistoryType.CALENDAR_EVENT_DELETED,
-                        actionSummary: `Deleted calendar event: ${summary}`,
-                        actionDetails: {
-                          calendarId: target.calendarId,
-                          eventId: target.eventId,
-                          sendUpdates: plan.sendUpdates,
-                          createMeetLink: plan.createMeetLink,
-                          start: currentEvent.start as Prisma.InputJsonValue,
-                          end: currentEvent.end as Prisma.InputJsonValue,
-                          attendees: summarizeAttendees(currentEvent.attendees),
-                        } as Prisma.InputJsonObject,
-                        undoable: false,
-                        metadata: {
-                          source: 'executive-agent',
-                          pendingId: latestPending.id,
-                        },
-                      },
-                    });
-                  } catch (error) {
-                    const message = error instanceof Error ? error.message : 'Unknown error';
-                    failures.push({
-                      index,
-                      summary: `Event ${index + 1}`,
-                      message,
-                    });
-                  }
-                }
-
-                if (deletedEvents.length > 0) {
-                  await markPendingConsumed();
-                  const status = failures.length > 0 ? 'partial' : 'deleted';
-                  const message = buildCalendarCompletionMessage({
-                    action: 'delete',
-                    items: deletedEvents.map((event) =>
-                      describeGoogleCalendarEvent(
-                        {
-                          summary: event.summary,
-                          start: event.start,
-                          end: event.end,
-                        },
-                        userTimezone,
-                      ),
-                    ),
-                    failureCount: failures.length,
+                try {
+                  const currentEventResponse = await calendarService.getEvent({
+                    calendarId: target.calendarId,
+                    eventId: target.eventId,
                   });
-                  return {
-                    ok: failures.length === 0,
-                    status,
-                    message,
-                    deletedCount: deletedEvents.length,
-                    failedCount: failures.length,
-                    deletedEvents,
-                    failures,
-                  };
-                }
+                  const currentEvent = currentEventResponse.data;
+                  let latestEvent = currentEvent;
+                  let latestCalendarId = target.calendarId;
+                  let latestEventId = currentEvent.id ?? target.eventId;
 
-                await releasePending();
-                const firstFailure = failures[0]?.message ?? 'No events were deleted.';
-                return {
-                  ok: false,
-                  error: 'calendar_commit_failed',
-                  message: `Could not delete the event(s): ${firstFailure}`,
-                  failedCount: failures.length,
-                  failures,
-                };
-              }
-
-              if (!pendingPayload.resolvedTarget) {
-                await cancelPending();
-                return {
-                  ok: false,
-                  error: 'missing_target',
-                  message: 'No event target found for this deletion.',
-                };
-              }
-
-              const staleSingleDelete = await ensureCurrentRun('commit_calendar_change');
-              if (staleSingleDelete) {
-                await releasePending();
-                return staleSingleDelete;
-              }
-
-              const currentEventResponse = await calendarService.getEvent({
-                calendarId: pendingPayload.resolvedTarget.calendarId,
-                eventId: pendingPayload.resolvedTarget.eventId,
-              });
-              const currentEvent = currentEventResponse.data;
-
-              await calendarService.deleteEvent({
-                calendarId: pendingPayload.resolvedTarget.calendarId,
-                eventId: pendingPayload.resolvedTarget.eventId,
-                sendUpdates: plan.sendUpdates,
-                ifMatchEtag: currentEvent.etag ?? pendingPayload.resolvedTarget.etag,
-              });
-
-              await markPendingConsumed();
-
-              await prisma.actionHistory.create({
-                data: {
-                  userId: input.userId,
-                  actionType: ActionHistoryType.CALENDAR_EVENT_DELETED,
-                  actionSummary: `Deleted calendar event: ${currentEvent.summary ?? '(No title)'}`,
-                  actionDetails: {
-                    calendarId: pendingPayload.resolvedTarget.calendarId,
-                    eventId: pendingPayload.resolvedTarget.eventId,
-                    sendUpdates: plan.sendUpdates,
-                    createMeetLink: plan.createMeetLink,
-                    start: currentEvent.start as Prisma.InputJsonValue,
-                    end: currentEvent.end as Prisma.InputJsonValue,
-                    attendees: summarizeAttendees(currentEvent.attendees),
-                  } as Prisma.InputJsonObject,
-                  undoable: false,
-                  metadata: {
-                    source: 'executive-agent',
-                    pendingId: latestPending.id,
-                  },
-                },
-              });
-
-              return {
-                ok: true,
-                status: 'deleted',
-                message: buildCalendarCompletionMessage({
-                  action: 'delete',
-                  items: [
-                    describeGoogleCalendarEvent(
-                      {
-                        summary: currentEvent.summary ?? '(No title)',
+                  if (hasDraftChanges || op.createMeetLink) {
+                    const normalizedDraft = normalizeUpdateDraftTimesForPatch({
+                      draft: op.eventDraft,
+                      currentEvent: {
                         start: currentEvent.start as GoogleEventTime | null | undefined,
                         end: currentEvent.end as GoogleEventTime | null | undefined,
                       },
-                      userTimezone,
-                    ),
-                  ],
+                    });
+
+                    if (!normalizedDraft.ok) {
+                      failures.push({
+                        index,
+                        kind: op.kind,
+                        summary: op.eventDraft.summary ?? `Event ${index + 1}`,
+                        message: normalizedDraft.message,
+                        rawMessage: normalizedDraft.message,
+                      });
+                      continue;
+                    }
+
+                    const timeValidation = validateEventDraftTimes(normalizedDraft.patch, 'update');
+                    if (!timeValidation.ok) {
+                      failures.push({
+                        index,
+                        kind: op.kind,
+                        summary: op.eventDraft.summary ?? `Event ${index + 1}`,
+                        message: timeValidation.message,
+                        rawMessage: timeValidation.message,
+                      });
+                      continue;
+                    }
+
+                    const conferenceData = op.createMeetLink
+                      ? {
+                          createRequest: {
+                            requestId: crypto.randomUUID(),
+                            conferenceSolutionKey: { type: 'hangoutsMeet' },
+                          },
+                        }
+                      : undefined;
+
+                    const patchForApi = applyGoogleReminderLimit(normalizedDraft.patch);
+                    const requestBody = stripUndefined({
+                      ...patchForApi,
+                      extendedProperties: {
+                        private: {
+                          ...(currentEvent.extendedProperties?.private ?? {}),
+                          cliraPendingId: latestPending.id,
+                          cliraSource: 'calendarCreatorAgent',
+                        },
+                      },
+                      conferenceData,
+                    } satisfies Record<string, unknown>);
+
+                    const response = await calendarService.patchEvent({
+                      calendarId: target.calendarId,
+                      eventId: target.eventId,
+                      requestBody,
+                      conferenceDataVersion: conferenceData ? 1 : undefined,
+                      sendUpdates: bundlePlan.sendUpdates,
+                      ifMatchEtag: currentEvent.etag ?? undefined,
+                    });
+
+                    latestEvent = response.data;
+                    latestEventId = response.data.id ?? latestEventId;
+                  }
+
+                  if (shouldMoveCalendars && op.destinationCalendarId) {
+                    const response = await calendarService.moveEvent({
+                      calendarId: latestCalendarId,
+                      eventId: latestEventId,
+                      destinationCalendarId: op.destinationCalendarId,
+                      sendUpdates: bundlePlan.sendUpdates,
+                    });
+                    latestEvent = response.data;
+                    latestCalendarId = op.destinationCalendarId;
+                    latestEventId = response.data.id ?? latestEventId;
+                  }
+
+                  const summary = latestEvent.summary ?? currentEvent.summary ?? op.eventDraft.summary ?? '(No title)';
+                  appliedItems.push(
+                    describeBundleSuccess(op, {
+                      summary,
+                      start: (latestEvent.start ?? currentEvent.start) as GoogleEventTime | null | undefined,
+                      end: (latestEvent.end ?? currentEvent.end) as GoogleEventTime | null | undefined,
+                    }),
+                  );
+
+                  await prisma.actionHistory.create({
+                    data: {
+                      userId: input.userId,
+                      actionType: ActionHistoryType.CALENDAR_EVENT_UPDATED,
+                      actionSummary: `Updated calendar event: ${summary}`,
+                      actionDetails: {
+                        calendarId: latestCalendarId,
+                        sourceCalendarId: target.calendarId,
+                        destinationCalendarId: shouldMoveCalendars ? op.destinationCalendarId : undefined,
+                        eventId: latestEventId,
+                        htmlLink: latestEvent.htmlLink,
+                        sendUpdates: bundlePlan.sendUpdates,
+                        createMeetLink: op.createMeetLink ?? false,
+                        start: (latestEvent.start ?? currentEvent.start) as Prisma.InputJsonValue,
+                        end: (latestEvent.end ?? currentEvent.end) as Prisma.InputJsonValue,
+                        attendees: summarizeAttendees(latestEvent.attendees ?? currentEvent.attendees),
+                      },
+                      undoable: false,
+                      metadata: {
+                        source: 'executive-agent',
+                        pendingId: latestPending.id,
+                        opIndex: index,
+                      },
+                    },
+                  });
+                } catch (error) {
+                  const { rawMessage, userMessage } = buildUserSafeCalendarFailureMessage(error);
+                  failures.push({
+                    index,
+                    kind: op.kind,
+                    summary: op.eventDraft.summary ?? `Event ${index + 1}`,
+                    message: userMessage,
+                    rawMessage,
+                  });
+                }
+
+                continue;
+              }
+
+              try {
+                const currentEventResponse = await calendarService.getEvent({
+                  calendarId: target.calendarId,
+                  eventId: target.eventId,
+                });
+                const currentEvent = currentEventResponse.data;
+
+                await calendarService.deleteEvent({
+                  calendarId: target.calendarId,
+                  eventId: target.eventId,
+                  sendUpdates: bundlePlan.sendUpdates,
+                  ifMatchEtag: currentEvent.etag ?? undefined,
+                });
+
+                const summary = currentEvent.summary ?? '(No title)';
+                appliedItems.push(
+                  describeBundleSuccess(op, {
+                    summary,
+                    start: currentEvent.start as GoogleEventTime | null | undefined,
+                    end: currentEvent.end as GoogleEventTime | null | undefined,
+                  }),
+                );
+
+                await prisma.actionHistory.create({
+                  data: {
+                    userId: input.userId,
+                    actionType: ActionHistoryType.CALENDAR_EVENT_DELETED,
+                    actionSummary: `Deleted calendar event: ${summary}`,
+                    actionDetails: {
+                      calendarId: target.calendarId,
+                      eventId: target.eventId,
+                      sendUpdates: bundlePlan.sendUpdates,
+                      createMeetLink: false,
+                      start: currentEvent.start as Prisma.InputJsonValue,
+                      end: currentEvent.end as Prisma.InputJsonValue,
+                      attendees: summarizeAttendees(currentEvent.attendees),
+                    } as Prisma.InputJsonObject,
+                    undoable: false,
+                    metadata: {
+                      source: 'executive-agent',
+                      pendingId: latestPending.id,
+                      opIndex: index,
+                    },
+                  },
+                });
+              } catch (error) {
+                const { rawMessage, userMessage } = buildUserSafeCalendarFailureMessage(error);
+                failures.push({
+                  index,
+                  kind: op.kind,
+                  summary: `Event ${index + 1}`,
+                  message: userMessage,
+                  rawMessage,
+                });
+              }
+            }
+
+            if (failures.length === 0) {
+              await markPendingConsumed();
+              return {
+                ok: true,
+                status: 'completed',
+                message: buildCalendarBundleCompletionMessage({
+                  items: appliedItems,
                 }),
-                eventId: pendingPayload.resolvedTarget.eventId,
-                summary: currentEvent.summary ?? '(No title)',
+                appliedCount: appliedItems.length,
+                appliedItems,
               };
             }
 
-            await cancelPending();
+            const firstFailure = failures[0];
+            await markPendingFailed({
+              code: 'calendar_commit_failed',
+              message: firstFailure?.rawMessage ?? 'Calendar mutation failed.',
+              retryable: false,
+              failedOpIndex: firstFailure?.index,
+              partialSuccessCount: appliedItems.length,
+            });
+
             return {
               ok: false,
-              error: 'invalid_plan',
-              message: 'Calendar change is not ready to commit.',
+              error: 'calendar_commit_failed',
+              status: appliedItems.length > 0 ? 'partial' : 'failed',
+              message:
+                appliedItems.length > 0
+                  ? buildCalendarBundleCompletionMessage({
+                      items: appliedItems,
+                      failureCount: failures.length,
+                    })
+                  : firstFailure?.message ?? 'I could not apply those calendar changes.',
+              appliedCount: appliedItems.length,
+              failedCount: failures.length,
+              appliedItems,
+              failures,
             };
           } catch (error) {
             if (isCalendarScopeError(error)) {
-              await releasePending();
+              await markPendingFailed({
+                code: 'calendar_scope_missing',
+                message: error instanceof Error ? error.message : 'Calendar write access missing.',
+                retryable: true,
+              });
               return {
                 ok: false,
                 error: 'calendar_scope_missing',
@@ -1733,12 +1320,16 @@ export function buildCalendarMutationTools({
               };
             }
 
-            const message = error instanceof Error ? error.message : 'Unknown error';
-            await releasePending();
+            const failure = buildUserSafeCalendarFailureMessage(error);
+            await markPendingFailed({
+              code: 'calendar_commit_failed',
+              message: failure.rawMessage,
+              retryable: false,
+            });
             return {
               ok: false,
               error: 'calendar_commit_failed',
-              message,
+              message: failure.userMessage,
             };
           }
         },
