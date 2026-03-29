@@ -269,6 +269,7 @@ export function extractExecutiveTurnFeatures(params: {
 
   const pendingCalendarConfirmIntent =
     params.pendingCalendarChangePresent &&
+    pendingPreviewPresent &&
     explicitCalendarApproval;
 
   const pendingCalendarCancelIntent =

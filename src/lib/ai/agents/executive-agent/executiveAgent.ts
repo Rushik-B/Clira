@@ -263,6 +263,7 @@ export class ExecutiveAgent {
           id: true,
           plan: true,
           resolvedTarget: true,
+          failure: true,
           userTimezone: true,
           userRequest: true,
           expiresAt: true,
