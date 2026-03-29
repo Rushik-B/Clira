@@ -3,6 +3,7 @@ import {
   CalendarCreatorLlmSchema,
   CalendarCreatorPlanSchema,
   type CalendarCreatorPlanDTO,
+  type CalendarMutationOperationDTO,
   type CalendarTargetDTO,
 } from '@/lib/ai/schemas/calendarCreatorSchemas';
 import { normalizeIsoDateInputToUtc } from '@/lib/utils/timezone';
@@ -106,6 +107,37 @@ function createClarifyPlan(
   return CalendarCreatorPlanSchema.parse(plan);
 }
 
+function buildBundlePlan(
+  shared: {
+    confidence: number;
+    sendUpdates: 'none' | 'all' | 'externalOnly';
+    createMeetLink: boolean;
+    calendarId: string;
+  },
+  ops: CalendarMutationOperationDTO[],
+  context: Pick<
+    CalendarCreatorContext,
+    'availableCalendars' | 'resolvedEvents' | 'currentTime'
+  >,
+): CalendarCreatorPlanDTO {
+  const plan: CalendarCreatorPlanDTO = {
+    action: 'bundle',
+    confidence: shared.confidence,
+    requiresConfirmation: true,
+    sendUpdates: shared.sendUpdates,
+    createMeetLink: shared.createMeetLink,
+    calendarId: shared.calendarId,
+    ops,
+    userPreviewText: '',
+  };
+
+  const previewText = buildCalendarPlanPreview(plan, context);
+  return CalendarCreatorPlanSchema.parse({
+    ...plan,
+    userPreviewText: previewText,
+  });
+}
+
 export function mapLlmOutputToPlan(
   raw: LlmPlanOutput,
   context: Pick<
@@ -137,174 +169,156 @@ export function mapLlmOutputToPlan(
     );
   }
 
-  if (raw.action === 'create') {
-    const drafts = (raw.createItems ?? []).map((draft) => {
+  const requestLooksLikeCalendarContainerChange =
+    /\bcalendar\b|\bmove\b|\bmoved\b|\bwrong\b/i.test(context.request);
+
+  const normalizedOps: CalendarMutationOperationDTO[] = [];
+
+  if (raw.action === 'bundle') {
+    for (const op of raw.ops ?? []) {
+      if (op.kind === 'create') {
+        const itemCalendarId = resolveCalendarId(
+          op.eventDraft.calendarId ?? shared.calendarId,
+          context.availableCalendars,
+          shared.calendarId,
+        );
+
+        normalizedOps.push({
+          kind: 'create',
+          eventDraft:
+            itemCalendarId === shared.calendarId
+              ? op.eventDraft
+              : {
+                  ...op.eventDraft,
+                  calendarId: itemCalendarId,
+                },
+          createMeetLink: op.createMeetLink ?? shared.createMeetLink,
+        });
+        continue;
+      }
+
+      if (op.kind === 'update') {
+        const destinationCalendarId = op.destinationCalendarId
+          ? findCalendarId(op.destinationCalendarId, context.availableCalendars)
+          : undefined;
+
+        if (destinationCalendarId === null) {
+          return createClarifyPlan(
+            shared,
+            'I could not match one of those destination calendars. Tell me the exact calendar name you want for each event.',
+          );
+        }
+
+        if (
+          requestLooksLikeCalendarContainerChange &&
+          typeof op.eventDraft.location === 'string' &&
+          /\bcalendar\b/i.test(op.eventDraft.location.trim())
+        ) {
+          return createClarifyPlan(
+            shared,
+            'Tell me which calendar each event should go to. Calendar choice is separate from the event details.',
+          );
+        }
+
+        normalizedOps.push({
+          kind: 'update',
+          target: resolveTargetFromPreResolvedEvents(
+            op.target,
+            context.resolvedEvents,
+            shared.calendarId,
+            context.currentTime.userTimezone,
+          ),
+          eventDraft: op.eventDraft,
+          destinationCalendarId: destinationCalendarId ?? undefined,
+          createMeetLink: op.createMeetLink ?? shared.createMeetLink,
+        });
+        continue;
+      }
+
+      normalizedOps.push({
+        kind: 'delete',
+        target: resolveTargetFromPreResolvedEvents(
+          op.target,
+          context.resolvedEvents,
+          shared.calendarId,
+          context.currentTime.userTimezone,
+        ),
+      });
+    }
+  } else if (raw.action === 'create') {
+    for (const draft of raw.createItems ?? []) {
       const itemCalendarId = resolveCalendarId(
         draft.calendarId ?? shared.calendarId,
         context.availableCalendars,
         shared.calendarId,
       );
-      return itemCalendarId === shared.calendarId
-        ? draft
-        : {
-            ...draft,
-            calendarId: itemCalendarId,
-          };
-    });
 
-    if (drafts.length === 0) {
-      return createClarifyPlan(shared, 'What event should I create?');
+      normalizedOps.push({
+        kind: 'create',
+        eventDraft:
+          itemCalendarId === shared.calendarId
+            ? draft
+            : {
+                ...draft,
+                calendarId: itemCalendarId,
+              },
+        createMeetLink: shared.createMeetLink,
+      });
     }
-
-    const plan: CalendarCreatorPlanDTO =
-      drafts.length === 1
-        ? {
-            action: 'create',
-            confidence: shared.confidence,
-            requiresConfirmation: true,
-            sendUpdates: shared.sendUpdates,
-            createMeetLink: shared.createMeetLink,
-            calendarId: shared.calendarId,
-            eventDraft: drafts[0],
-            userPreviewText: '',
-          }
-        : {
-            action: 'create',
-            confidence: shared.confidence,
-            requiresConfirmation: true,
-            sendUpdates: shared.sendUpdates,
-            createMeetLink: shared.createMeetLink,
-            calendarId: shared.calendarId,
-            eventDrafts: drafts,
-            userPreviewText: '',
-          };
-
-    const previewText = buildCalendarPlanPreview(plan, context);
-    return CalendarCreatorPlanSchema.parse({
-      ...plan,
-      userPreviewText: previewText,
-    });
-  }
-
-  if (raw.action === 'update') {
-    const requestLooksLikeCalendarContainerChange =
-      /\bcalendar\b|\bmove\b|\bmoved\b|\bwrong\b/i.test(context.request);
-
-    const updates = (raw.updateItems ?? []).map((item) => ({
-      target: resolveTargetFromPreResolvedEvents(
-        item.target,
-        context.resolvedEvents,
-        shared.calendarId,
-        context.currentTime.userTimezone,
-      ),
-      eventDraft: item.eventDraft,
-      destinationCalendarId: item.destinationCalendarId
+  } else if (raw.action === 'update') {
+    for (const item of raw.updateItems ?? []) {
+      const destinationCalendarId = item.destinationCalendarId
         ? findCalendarId(item.destinationCalendarId, context.availableCalendars)
-        : undefined,
-    }));
+        : undefined;
 
-    if (updates.length === 0) {
-      return createClarifyPlan(shared, 'Which event should I update, and what should change?');
-    }
+      if (destinationCalendarId === null) {
+        return createClarifyPlan(
+          shared,
+          'I could not match one of those destination calendars. Tell me the exact calendar name you want for each event.',
+        );
+      }
 
-    const hasSuspiciousCalendarAsLocation = updates.some((item) => {
-      const location = item.eventDraft.location?.trim();
-      return (
+      if (
         requestLooksLikeCalendarContainerChange &&
-        typeof location === 'string' &&
-        /\bcalendar\b/i.test(location)
-      );
-    });
+        typeof item.eventDraft.location === 'string' &&
+        /\bcalendar\b/i.test(item.eventDraft.location.trim())
+      ) {
+        return createClarifyPlan(
+          shared,
+          'Tell me which calendar each event should go to. Calendar choice is separate from the event details.',
+        );
+      }
 
-    if (hasSuspiciousCalendarAsLocation) {
-      return createClarifyPlan(
-        shared,
-        'Tell me which calendar each event should go to. Calendar choice is separate from the event details.',
-      );
+      normalizedOps.push({
+        kind: 'update',
+        target: resolveTargetFromPreResolvedEvents(
+          item.target,
+          context.resolvedEvents,
+          shared.calendarId,
+          context.currentTime.userTimezone,
+        ),
+        eventDraft: item.eventDraft,
+        destinationCalendarId: destinationCalendarId ?? undefined,
+        createMeetLink: item.createMeetLink ?? shared.createMeetLink,
+      });
     }
-
-    if (updates.some((item) => item.destinationCalendarId === null)) {
-      return createClarifyPlan(
-        shared,
-        'I could not match one of those destination calendars. Tell me the exact calendar name you want for each event.',
-      );
+  } else if (raw.action === 'delete') {
+    for (const target of raw.deleteTargets ?? []) {
+      normalizedOps.push({
+        kind: 'delete',
+        target: resolveTargetFromPreResolvedEvents(
+          target,
+          context.resolvedEvents,
+          shared.calendarId,
+          context.currentTime.userTimezone,
+        ),
+      });
     }
-
-    const plan: CalendarCreatorPlanDTO =
-      updates.length === 1
-        ? {
-            action: 'update',
-            confidence: shared.confidence,
-            requiresConfirmation: true,
-            sendUpdates: shared.sendUpdates,
-            createMeetLink: shared.createMeetLink,
-            calendarId: shared.calendarId,
-            target: updates[0]!.target,
-            eventDraft: updates[0]!.eventDraft,
-            destinationCalendarId: updates[0]!.destinationCalendarId ?? undefined,
-            userPreviewText: '',
-          }
-        : {
-            action: 'update',
-            confidence: shared.confidence,
-            requiresConfirmation: true,
-            sendUpdates: shared.sendUpdates,
-            createMeetLink: shared.createMeetLink,
-            calendarId: shared.calendarId,
-            targets: updates.map((item) => item.target),
-            eventDrafts: updates.map((item) => item.eventDraft),
-            destinationCalendarIds: updates.some((item) => item.destinationCalendarId !== undefined)
-              ? updates.map((item) => item.destinationCalendarId ?? undefined)
-              : undefined,
-            userPreviewText: '',
-          };
-
-    const previewText = buildCalendarPlanPreview(plan, context);
-    return CalendarCreatorPlanSchema.parse({
-      ...plan,
-      userPreviewText: previewText,
-    });
   }
 
-  const targets = (raw.deleteTargets ?? []).map((target) =>
-    resolveTargetFromPreResolvedEvents(
-      target,
-      context.resolvedEvents,
-      shared.calendarId,
-      context.currentTime.userTimezone,
-    ),
-  );
-
-  if (targets.length === 0) {
-    return createClarifyPlan(shared, 'Which event should I delete?');
+  if (normalizedOps.length === 0) {
+    return createClarifyPlan(shared, 'What should I do on your calendar?');
   }
 
-  const plan: CalendarCreatorPlanDTO =
-    targets.length === 1
-      ? {
-          action: 'delete',
-          confidence: shared.confidence,
-          requiresConfirmation: true,
-          sendUpdates: shared.sendUpdates,
-          createMeetLink: shared.createMeetLink,
-          calendarId: shared.calendarId,
-          target: targets[0],
-          userPreviewText: '',
-        }
-      : {
-          action: 'delete',
-          confidence: shared.confidence,
-          requiresConfirmation: true,
-          sendUpdates: shared.sendUpdates,
-          createMeetLink: shared.createMeetLink,
-          calendarId: shared.calendarId,
-          targets,
-          userPreviewText: '',
-        };
-
-  const previewText = buildCalendarPlanPreview(plan, context);
-  return CalendarCreatorPlanSchema.parse({
-    ...plan,
-    userPreviewText: previewText,
-  });
+  return buildBundlePlan(shared, normalizedOps, context);
 }

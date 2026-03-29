@@ -1,6 +1,7 @@
 import type {
   CalendarCreatorPlanDTO,
   CalendarEventDraftDTO,
+  CalendarMutationOperationDTO,
   CalendarTargetDTO,
 } from '@/lib/ai/schemas/calendarCreatorSchemas';
 import type {
@@ -229,6 +230,86 @@ function summarizeTarget(
   return `"${target.lookupQuery}"`;
 }
 
+function summarizeDeleteTarget(
+  target: CalendarTargetDTO,
+  resolvedEvents: ResolvedCalendarEvent[] | undefined,
+  fallbackTimeZone: string,
+): string {
+  const resolved = findResolvedEvent(target, resolvedEvents);
+  if (!resolved) {
+    return summarizeTarget(target, resolvedEvents);
+  }
+
+  return describeResolvedCalendarEvent(
+    {
+      name: resolved.name,
+      start: resolved.start,
+      end: resolved.end,
+    },
+    fallbackTimeZone,
+  );
+}
+
+function summarizeBundleOperation(
+  op: CalendarMutationOperationDTO,
+  context: Pick<CalendarCreatorContext, 'availableCalendars' | 'resolvedEvents' | 'currentTime'>,
+  fallbackCalendarId: string | undefined,
+): string {
+  const fallbackTimeZone = context.currentTime.userTimezone;
+
+  if (op.kind === 'create') {
+    return `Add ${summarizeCreateDraft(
+      op.eventDraft,
+      context.availableCalendars,
+      fallbackTimeZone,
+      fallbackCalendarId,
+    )}`;
+  }
+
+  if (op.kind === 'update') {
+    return `${summarizeTarget(op.target, context.resolvedEvents)} -> ${summarizeUpdateChanges(
+      op.eventDraft,
+      fallbackTimeZone,
+      context.availableCalendars,
+      op.destinationCalendarId,
+      op.createMeetLink,
+    )}`;
+  }
+
+  return `Delete ${summarizeDeleteTarget(op.target, context.resolvedEvents, fallbackTimeZone)}`;
+}
+
+function buildBundlePreview(
+  ops: CalendarMutationOperationDTO[],
+  context: Pick<CalendarCreatorContext, 'availableCalendars' | 'resolvedEvents' | 'currentTime'>,
+  fallbackCalendarId: string | undefined,
+): string {
+  const items = ops.map((op) => summarizeBundleOperation(op, context, fallbackCalendarId));
+  const allKinds = new Set(ops.map((op) => op.kind));
+
+  if (allKinds.size === 1) {
+    const [kind] = allKinds;
+    if (kind === 'create') {
+      return buildCalendarPreviewMessage(
+        'create',
+        items.map((item) => item.replace(/^Add /, '')),
+      );
+    }
+
+    if (kind === 'update') {
+      return buildCalendarPreviewMessage('update', items);
+    }
+
+    return buildCalendarPreviewMessage(
+      'delete',
+      items.map((item) => item.replace(/^Delete /, '')),
+    );
+  }
+
+  const list = items.map((item) => `- ${item}`).join('\n');
+  return `**Ready to update your calendar**\n\n${list}\n\nReply **confirm** and I'll apply those changes.`;
+}
+
 export function buildCalendarPlanPreview(
   plan: CalendarCreatorPlanDTO,
   context: Pick<CalendarCreatorContext, 'availableCalendars' | 'resolvedEvents' | 'currentTime'>,
@@ -237,6 +318,10 @@ export function buildCalendarPlanPreview(
 
   if (plan.action === 'clarify') {
     return plan.clarifyingQuestions[0] ?? 'What should I do on your calendar?';
+  }
+
+  if (plan.action === 'bundle') {
+    return buildBundlePreview(plan.ops, context, plan.calendarId);
   }
 
   if (plan.action === 'create') {
@@ -258,38 +343,23 @@ export function buildCalendarPlanPreview(
         : [];
     const items = targets.map((target, index) => {
       const draft = drafts[index] ?? plan.eventDraft;
-      const targetSummary = summarizeTarget(target, context.resolvedEvents);
-      const changeSummary = draft
-        ? summarizeUpdateChanges(
-            draft,
-            fallbackTimeZone,
-            context.availableCalendars,
-            destinationCalendarIds[index],
-            plan.createMeetLink,
-          )
-        : 'apply the requested changes';
-      return `${targetSummary} -> ${changeSummary}`;
+      if (!draft) {
+        return `${summarizeTarget(target, context.resolvedEvents)} -> apply the requested changes`;
+      }
+
+      return `${summarizeTarget(target, context.resolvedEvents)} -> ${summarizeUpdateChanges(
+        draft,
+        fallbackTimeZone,
+        context.availableCalendars,
+        destinationCalendarIds[index],
+        plan.createMeetLink,
+      )}`;
     });
 
     return buildCalendarPreviewMessage('update', items);
   }
 
   const targets = plan.targets?.length ? plan.targets : plan.target ? [plan.target] : [];
-  const items = targets.map((target) => {
-    const resolved = findResolvedEvent(target, context.resolvedEvents);
-    if (resolved) {
-      return describeResolvedCalendarEvent(
-        {
-          name: resolved.name,
-          start: resolved.start,
-          end: resolved.end,
-        },
-        fallbackTimeZone,
-      );
-    }
-
-    return summarizeTarget(target, context.resolvedEvents);
-  });
-
+  const items = targets.map((target) => summarizeDeleteTarget(target, context.resolvedEvents, fallbackTimeZone));
   return buildCalendarPreviewMessage('delete', items);
 }

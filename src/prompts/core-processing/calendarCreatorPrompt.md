@@ -18,22 +18,22 @@ User local now: {userLocalNow} ({dayOfWeek})
 
 ## Canonical Payload Shape (Required)
 
-Use exactly one action and the matching canonical payload key:
+Prefer `action="bundle"` for all mutation work. Use ordered `ops` so mixed create/update/delete work stays in one staged preview.
 
-### action="create"
-- **createItems** (REQUIRED): array of 1..100 event drafts.
-- Each item must include summary, start, end.
-- Use one item per independent event. If the user asks for 20 or 100 events, output 20 or 100 separate items.
-- Do not include updateItems/deleteTargets/clarifyingQuestions.
+### action="bundle"
+- **ops** (REQUIRED): array of 1..100 ordered mutation ops.
+- Each op must be one of:
+  - `{ "kind": "create", "eventDraft": { ... }, "createMeetLink": true|false? }`
+  - `{ "kind": "update", "target": { ... }, "eventDraft": { ... }, "destinationCalendarId": "..."?, "createMeetLink": true|false? }`
+  - `{ "kind": "delete", "target": { ... } }`
+- Keep each op independent and explicit.
+- Preserve order when the user describes a sequence.
+- Use one op per independent calendar mutation. Do not merge unrelated creates/updates/deletes into one op.
+- If the user request is only create or only update or only delete, `action="bundle"` with same-kind ops is still preferred.
 
-### action="update"
-- **updateItems** (REQUIRED): array of 1..100 update items.
-- Each item:
-  - target (REQUIRED): identifies which event to modify.
-  - eventDraft (REQUIRED): only the fields to change.
-  - destinationCalendarId (OPTIONAL): the destination calendar when moving an existing event to another calendar.
-- Keep each item's target and eventDraft independent. Do not merge unrelated updates into one item.
-- Do not include createItems/deleteTargets/clarifyingQuestions.
+### Legacy fallback actions
+- `action="create"`, `action="update"`, and `action="delete"` are allowed only if you cannot express the request cleanly as a bundle.
+- When in doubt, use `action="bundle"`.
 - If moving/rescheduling and original duration is unknown:
   - You may set start only (omit end) in eventDraft.
   - If user explicitly gives both new start and new end, include both.
@@ -136,6 +136,53 @@ Translate user language into the smallest correct field change.
 - Good: user says "add a Google Meet link" -> set `createMeetLink` to true
 
 ## Broad Update Examples
+
+### Example: mixed calendar bundle
+{
+  "action": "bundle",
+  "confidence": 92,
+  "sendUpdates": "none",
+  "calendarId": "primary",
+  "ops": [
+    {
+      "kind": "create",
+      "eventDraft": {
+        "summary": "Interview prep block",
+        "start": {
+          "dateTime": "2026-05-06T09:00:00-07:00",
+          "timeZone": "America/Los_Angeles"
+        },
+        "end": {
+          "dateTime": "2026-05-06T10:30:00-07:00",
+          "timeZone": "America/Los_Angeles"
+        }
+      }
+    },
+    {
+      "kind": "update",
+      "target": {
+        "lookupQuery": "Team sync",
+        "lookupRange": {
+          "startDate": "2026-05-06",
+          "endDate": "2026-05-06"
+        }
+      },
+      "eventDraft": {
+        "location": "Zoom"
+      }
+    },
+    {
+      "kind": "delete",
+      "target": {
+        "lookupQuery": "Old reminder block",
+        "lookupRange": {
+          "startDate": "2026-05-06",
+          "endDate": "2026-05-06"
+        }
+      }
+    }
+  ]
+}
 
 ### Example: rename only
 {

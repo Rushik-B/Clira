@@ -2,13 +2,6 @@ import { z } from 'zod';
 
 export const CALENDAR_CREATOR_MAX_ITEMS = 100;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Calendar Creator Subagent Schemas
-//
-// The Calendar Creator Subagent converts natural language requests into
-// structured, confirm-before-execute calendar mutation plans.
-// ─────────────────────────────────────────────────────────────────────────────
-
 const CalendarDateSchema = z
   .object({
     date: z.string().describe('All-day date in YYYY-MM-DD format'),
@@ -31,7 +24,6 @@ export const CalendarAttendeeSchema = z
   })
   .strict();
 
-// Allow up to 365 days (525600 min). Google Calendar accepts reminder minutes in this range.
 const CALENDAR_REMINDER_MAX_MINUTES = 525_600;
 
 const CalendarReminderOverrideSchema = z
@@ -41,7 +33,6 @@ const CalendarReminderOverrideSchema = z
   })
   .strict();
 
-// Google Calendar API allows at most 5 reminder overrides per event.
 export const CALENDAR_REMINDER_MAX_OVERRIDES = 5;
 
 const CalendarRemindersSchema = z
@@ -90,7 +81,7 @@ const CalendarCreateEventDraftSchema = CalendarEventDraftSchema.extend({
     .optional()
     .describe(
       'Target calendar ID for this event. Overrides plan-level calendarId. ' +
-      'Use this when creating multiple events that belong in different calendars.',
+        'Use this when creating multiple events that belong in different calendars.',
     ),
 }).strict();
 
@@ -137,8 +128,51 @@ const CalendarCreatorPlanShared = {
   sendUpdates: z.enum(['none', 'all', 'externalOnly']).default('none'),
   createMeetLink: z.boolean().default(false),
   calendarId: z.string().optional().default('primary'),
-  userPreviewText: z.string().min(1).max(1200),
+  userPreviewText: z.string().min(1).max(2400),
 };
+
+export const CalendarMutationCreateOpSchema = z
+  .object({
+    kind: z.literal('create'),
+    eventDraft: CalendarCreateEventDraftSchema,
+    createMeetLink: z.boolean().optional(),
+  })
+  .strict();
+
+export const CalendarMutationUpdateOpSchema = z
+  .object({
+    kind: z.literal('update'),
+    target: CalendarTargetSchema,
+    eventDraft: CalendarEventPatchSchema,
+    destinationCalendarId: CalendarDestinationCalendarIdSchema.optional(),
+    createMeetLink: z.boolean().optional(),
+  })
+  .strict();
+
+export const CalendarMutationDeleteOpSchema = z
+  .object({
+    kind: z.literal('delete'),
+    target: CalendarTargetSchema,
+  })
+  .strict();
+
+export const CalendarMutationOperationSchema = z.discriminatedUnion('kind', [
+  CalendarMutationCreateOpSchema,
+  CalendarMutationUpdateOpSchema,
+  CalendarMutationDeleteOpSchema,
+]);
+
+const CalendarMutationBundlePlanSchema = z
+  .object({
+    action: z.literal('bundle'),
+    requiresConfirmation: z.boolean().default(true),
+    ops: z
+      .array(CalendarMutationOperationSchema)
+      .min(1)
+      .max(CALENDAR_CREATOR_MAX_ITEMS),
+    ...CalendarCreatorPlanShared,
+  })
+  .strict();
 
 const CalendarCreatorCreatePlanSchema = z
   .object({
@@ -194,11 +228,13 @@ const CalendarCreatorClarifyPlanSchema = z
     targets: z.never().optional(),
     eventDraft: z.never().optional(),
     eventDrafts: z.never().optional(),
+    ops: z.never().optional(),
     ...CalendarCreatorPlanShared,
   })
   .strict();
 
 export const CalendarCreatorPlanBaseSchema = z.discriminatedUnion('action', [
+  CalendarMutationBundlePlanSchema,
   CalendarCreatorCreatePlanSchema,
   CalendarCreatorUpdatePlanSchema,
   CalendarCreatorDeletePlanSchema,
@@ -206,6 +242,30 @@ export const CalendarCreatorPlanBaseSchema = z.discriminatedUnion('action', [
 ]);
 
 export const CalendarCreatorPlanSchema = CalendarCreatorPlanBaseSchema.superRefine((value, ctx) => {
+  if (value.action === 'bundle') {
+    value.ops.forEach((op, index) => {
+      if (op.kind === 'update') {
+        const hasMeaningfulPatch = Object.values(op.eventDraft).some((fieldValue) => fieldValue !== undefined);
+        if (!hasMeaningfulPatch && !op.destinationCalendarId && !op.createMeetLink) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: 'Update ops require event changes, a destination calendar move, or createMeetLink.',
+            path: ['ops', index, 'eventDraft'],
+          });
+        }
+      }
+    });
+
+    if (value.requiresConfirmation !== true) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Mutation bundles must set requiresConfirmation=true.',
+        path: ['requiresConfirmation'],
+      });
+    }
+    return;
+  }
+
   if (value.action === 'create') {
     const hasSingleDraft = value.eventDraft !== undefined;
     const hasBatchDrafts = value.eventDrafts !== undefined;
@@ -235,10 +295,7 @@ export const CalendarCreatorPlanSchema = CalendarCreatorPlanBaseSchema.superRefi
     const hasSingleDraft = value.eventDraft !== undefined;
     const hasBatchDrafts = value.eventDrafts !== undefined;
     const hasMeaningfulPatch = (draft: z.infer<typeof CalendarEventPatchSchema> | undefined) => {
-      if (!draft) {
-        return false;
-      }
-
+      if (!draft) return false;
       return Object.values(draft).some((fieldValue) => fieldValue !== undefined);
     };
 
@@ -258,14 +315,12 @@ export const CalendarCreatorPlanSchema = CalendarCreatorPlanBaseSchema.superRefi
       });
     }
 
-    if (hasBatchTargets && hasBatchDrafts) {
-      if (value.targets!.length !== value.eventDrafts!.length) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: 'Batch update requires targets and eventDrafts arrays of equal length.',
-          path: ['eventDrafts'],
-        });
-      }
+    if (hasBatchTargets && hasBatchDrafts && value.targets!.length !== value.eventDrafts!.length) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Batch update requires targets and eventDrafts arrays of equal length.',
+        path: ['eventDrafts'],
+      });
     }
 
     if (hasSingleTarget && value.destinationCalendarIds !== undefined) {
@@ -364,43 +419,52 @@ export const CalendarCreatorPlanSchema = CalendarCreatorPlanBaseSchema.superRefi
   }
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Flat LLM Schema
-//
-// A simplified, single-object schema for Gemini structured output.
-// The discriminated union above produces JSON Schema with oneOf + { "not": {} }
-// + additionalProperties:false, which causes Gemini to hang during constrained
-// decoding. This flat schema keeps one canonical payload shape per action.
-//
-// Canonical action payloads:
-// - create  -> createItems[]
-// - update  -> updateItems[{ target, eventDraft }]
-// - delete  -> deleteTargets[]
-// - clarify -> clarifyingQuestions[]
-//
-// The agent deterministically maps this canonical shape into the strict
-// CalendarCreatorPlanSchema (single vs batch variants) after generation.
-// ─────────────────────────────────────────────────────────────────────────────
-
 const CalendarLlmUpdateItemSchema = z
   .object({
     target: CalendarTargetSchema,
     eventDraft: CalendarEventPatchSchema,
     destinationCalendarId: CalendarDestinationCalendarIdSchema.optional(),
+    createMeetLink: z.boolean().optional(),
   })
   .strict();
 
-// Allow min(0) for action arrays so model output that includes empty "other action"
-// keys (e.g. updateItems: [] for action create) still validates; mapping ignores them.
+const CalendarLlmOperationSchema = z.discriminatedUnion('kind', [
+  z
+    .object({
+      kind: z.literal('create'),
+      eventDraft: CalendarCreateEventDraftSchema,
+      createMeetLink: z.boolean().optional(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('update'),
+      target: CalendarTargetSchema,
+      eventDraft: CalendarEventPatchSchema,
+      destinationCalendarId: CalendarDestinationCalendarIdSchema.optional(),
+      createMeetLink: z.boolean().optional(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('delete'),
+      target: CalendarTargetSchema,
+    })
+    .strict(),
+]);
+
 export const CalendarCreatorLlmSchema = z
   .object({
-    action: z.enum(['create', 'update', 'delete', 'clarify']),
+    action: z.enum(['bundle', 'create', 'update', 'delete', 'clarify']),
     confidence: z.number().min(0).max(100).optional(),
     sendUpdates: z.enum(['none', 'all', 'externalOnly']).optional(),
     createMeetLink: z.boolean().optional(),
     calendarId: z.string().optional(),
-    // Intentionally omitted: user preview is built deterministically in mapLlmOutputToPlan.
-    // Letting the model emit preview text caused MAX_TOKENS loops (repetitive prose in JSON).
+    ops: z
+      .array(CalendarLlmOperationSchema)
+      .min(0)
+      .max(CALENDAR_CREATOR_MAX_ITEMS)
+      .optional(),
     createItems: z
       .array(CalendarCreateEventDraftSchema)
       .min(0)
@@ -418,8 +482,19 @@ export const CalendarCreatorLlmSchema = z
       .optional(),
     clarifyingQuestions: z.array(z.string().min(1).max(200)).min(0).max(3).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.action === 'bundle' && (!value.ops || value.ops.length === 0)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Bundle action requires ops.',
+        path: ['ops'],
+      });
+    }
+  });
 
 export type CalendarEventDraftDTO = z.infer<typeof CalendarEventDraftSchema>;
-export type CalendarCreatorPlanDTO = z.infer<typeof CalendarCreatorPlanSchema>;
 export type CalendarTargetDTO = z.infer<typeof CalendarTargetSchema>;
+export type CalendarMutationOperationDTO = z.infer<typeof CalendarMutationOperationSchema>;
+export type CalendarMutationBundlePlanDTO = z.infer<typeof CalendarMutationBundlePlanSchema>;
+export type CalendarCreatorPlanDTO = z.infer<typeof CalendarCreatorPlanSchema>;
