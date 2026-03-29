@@ -298,7 +298,7 @@ describe('Executive agent tool packs', () => {
         fetchFullThread,
         sendEmail,
       },
-    } as Awaited<ReturnType<typeof createGmailServiceForUser>>);
+    } as unknown as Awaited<ReturnType<typeof createGmailServiceForUser>>);
 
     const context = buildContext({
       input: buildInput({

@@ -225,7 +225,7 @@ describe('reminder notification failure handling', () => {
       userId: 'user-1',
       userEmail: 'user@example.com',
       dueMinuteEpochMs: new Date('2026-03-22T12:05:00.000Z').getTime(),
-      items: [{ reminderId: 'reminder-1' }],
+      items: [{ reminderId: 'reminder-1', title: 'Pay rent' }],
     });
 
     expect(addMessage).toHaveBeenCalledWith(
@@ -334,7 +334,7 @@ describe('reminder notification failure handling', () => {
       userId: 'user-1',
       userEmail: 'user@example.com',
       dueMinuteEpochMs: new Date('2026-03-22T12:05:00.000Z').getTime(),
-      items: [{ reminderId: 'reminder-1' }],
+      items: [{ reminderId: 'reminder-1', title: 'Pay rent' }],
     })).rejects.toThrow('inbound persist failed');
 
     expect(reminderUpdateMany).toHaveBeenNthCalledWith(

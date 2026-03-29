@@ -47,6 +47,8 @@ fi
 if [[ ! -f "${SELFHOST_ENV_FILE}" ]]; then
   record_issue fatal ".env is missing. Run \`npm run selfhost:init\` first."
 else
+  check_required_env "CLIRA_DB_POSTGRES_PASSWORD"
+  check_required_env "CLIRA_DB_APP_PASSWORD"
   check_required_env "NEXTAUTH_SECRET"
   check_required_env "CRON_SECRET"
   check_required_env "EMAIL_ENCRYPT_SECRET"
@@ -102,7 +104,7 @@ else
   fi
 fi
 
-for port in 13000 15432 16379; do
+for port in 13000; do
   if selfhost_port_status "${port}"; then
     record_issue warning "Port ${port} is already in use. Docker self-host defaults may conflict."
   else

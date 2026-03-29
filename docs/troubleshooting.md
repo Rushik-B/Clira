@@ -14,7 +14,7 @@ Actions:
 
 - Run `npm run selfhost:init`
 - Re-run `npm run selfhost:doctor`
-- If ports `13000`, `15432`, or `16379` are already in use, free them or change your local mapping strategy
+- If port `13000` is already in use, free it or change your local mapping strategy
 
 ## Login Fails
 

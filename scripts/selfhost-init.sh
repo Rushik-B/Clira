@@ -21,6 +21,8 @@ selfhost_ensure_secret "NEXTAUTH_SECRET"
 selfhost_ensure_secret "CRON_SECRET"
 selfhost_ensure_secret "EMAIL_ENCRYPT_SECRET"
 selfhost_ensure_secret "EMAIL_ENCRYPT_SALT"
+selfhost_ensure_secret "CLIRA_DB_POSTGRES_PASSWORD"
+selfhost_ensure_secret "CLIRA_DB_APP_PASSWORD"
 
 selfhost_print_section "Running deployment checks"
 if bash "${SCRIPT_DIR}/selfhost-doctor.sh"; then

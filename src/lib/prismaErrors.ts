@@ -10,3 +10,7 @@ export function getPrismaErrorCode(error: unknown): string | null {
 export function isPrismaAuthenticationFailure(error: unknown): boolean {
   return getPrismaErrorCode(error) === 'P1000';
 }
+
+export function isPrismaConnectionLimitFailure(error: unknown): boolean {
+  return getPrismaErrorCode(error) === 'P2037';
+}

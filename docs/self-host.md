@@ -21,6 +21,8 @@ What `selfhost:init` does:
 
 - creates `.env` if it is missing
 - creates `.clira-runtime/`
+- generates `CLIRA_DB_POSTGRES_PASSWORD`
+- generates `CLIRA_DB_APP_PASSWORD`
 - generates `NEXTAUTH_SECRET`
 - generates `CRON_SECRET`
 - generates `EMAIL_ENCRYPT_SECRET`

@@ -19,3 +19,11 @@ services:
   cron:
     image: clira-app:local
     pull_policy: never
+
+  db:
+    ports:
+      - "15432:5432"
+
+  redis:
+    ports:
+      - "16379:6379"

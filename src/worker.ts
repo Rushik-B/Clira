@@ -55,7 +55,7 @@ import {
   REMINDER_PRE_DELIVERY_MISSABLE_STATUS_LIST,
   triggerReminderNotifications,
 } from '@/lib/services/reminderNotificationService';
-import { isPrismaAuthenticationFailure } from '@/lib/prismaErrors';
+import { isPrismaAuthenticationFailure, isPrismaConnectionLimitFailure } from '@/lib/prismaErrors';
 import {
   isTelegramEnabled,
   startTelegramMonitor,
@@ -650,7 +650,7 @@ const reminderNotificationWorker = new Worker<
   },
   {
     connection: redisConnection,
-    concurrency: 5,
+    concurrency: 2,
   },
 );
 
@@ -660,6 +660,12 @@ reminderNotificationWorker.on('failed', async (job, error) => {
   if (isPrismaAuthenticationFailure(error)) {
     console.error(
       `[REMINDER NOTIFY NON-RETRYABLE] reminders=[${batchIds.join(',')}] skipping retry and missed-state write due to Prisma authentication failure`,
+    );
+    return;
+  }
+  if (isPrismaConnectionLimitFailure(error)) {
+    console.error(
+      `[REMINDER NOTIFY DEFER MISS MARK] reminders=[${batchIds.join(',')}] database connection limit reached; leaving statuses unchanged for later retry`,
     );
     return;
   }
@@ -674,10 +680,19 @@ reminderNotificationWorker.on('failed', async (job, error) => {
   }
 
   const reason = error instanceof Error ? error.message : 'delivery-failed';
-  const remindersToMarkMissed = await getReminderIdsEligibleForTerminalFailureMiss({
-    reminderIds: batchIds,
-    userId: job.data.userId,
-  });
+  let remindersToMarkMissed: string[];
+  try {
+    remindersToMarkMissed = await getReminderIdsEligibleForTerminalFailureMiss({
+      reminderIds: batchIds,
+      userId: job.data.userId,
+    });
+  } catch (lookupError) {
+    console.error(
+      `[REMINDER NOTIFY MISS LOOKUP FAILED] reminders=[${batchIds.join(',')}] unable to reload statuses after terminal failure`,
+      lookupError,
+    );
+    return;
+  }
 
   for (const reminderId of remindersToMarkMissed) {
     try {

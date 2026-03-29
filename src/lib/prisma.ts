@@ -7,13 +7,26 @@ function requireEnv(name: string): string {
   return value
 }
 
+function parsePositiveIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name]
+  if (!raw) return fallback
+
+  const parsed = Number.parseInt(raw, 10)
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback
+  }
+
+  return parsed
+}
+
 const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined
 }
 
-// DIRECT_URL is for connection pooler setups (e.g. PgBouncer). For local/Docker
-// deployments without a pooler, fall back to DATABASE_URL.
-const connectionString = process.env.DIRECT_URL || requireEnv('DATABASE_URL')
+// Runtime traffic should use DATABASE_URL so deployments can point app traffic at a
+// pooled endpoint while keeping DIRECT_URL reserved for migrations and admin tooling.
+const connectionString = requireEnv('DATABASE_URL')
+const poolMax = parsePositiveIntEnv('CLIRA_DB_POOL_MAX', 3)
 
 export const prisma =
   globalForPrisma.prisma ??
@@ -22,6 +35,7 @@ export const prisma =
     // We use the Postgres adapter (requires `@prisma/adapter-pg` + `pg`).
     adapter: new PrismaPg({
       connectionString,
+      max: poolMax,
     }),
   })
 
