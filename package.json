@@ -13,7 +13,7 @@
     "prebuild": "npm run prisma:generate",
     "prebuild:worker": "npm run prisma:generate",
     "dev:worker:watch": "npx nodemon --watch src --ext ts --ignore src/app --ignore src/components --ignore src/hooks --ignore src/lib/mocks --exec \"npm run build:worker\"",
-    "start": "node server.js",
+    "start": "node .next/standalone/server.js",
     "start:worker": "node dist/worker.js",
     "start:backfill-worker": "node dist/backfill-worker.js",
     "start:gmail-pull-worker": "node dist/gmail-pull-worker.js",
