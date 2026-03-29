@@ -106,7 +106,7 @@ describe('runCalendarCreatorAgent', () => {
       },
     );
 
-    expect(result.action).toBe('create');
+    expect(result.action).toBe('bundle');
     expect(result.calendarId).toBe('work-cal');
     expect(result.userPreviewText).toContain('**Ready to add**');
     expect(result.userPreviewText).toContain('Reply **confirm** and I\'ll put it on your calendar.');
@@ -201,10 +201,16 @@ describe('runCalendarCreatorAgent', () => {
       },
     );
 
-    expect(result.action).toBe('update');
-    expect(result.target).toEqual({
-      calendarId: 'work-cal',
-      eventId: 'evt-1',
+    expect(result.action).toBe('bundle');
+    if (result.action !== 'bundle') {
+      throw new Error('Expected bundle result');
+    }
+    expect(result.ops[0]).toMatchObject({
+      kind: 'update',
+      target: {
+        calendarId: 'work-cal',
+        eventId: 'evt-1',
+      },
     });
     expect(result.userPreviewText).toBe(
       '**Ready to update**\n\n"March 16 shift" -> rename to "Work"\n\nReply **confirm** and I\'ll make that change.',
@@ -273,11 +279,14 @@ describe('runCalendarCreatorAgent', () => {
       },
     );
 
-    expect(result.action).toBe('update');
-    if (result.action !== 'update') {
-      throw new Error('Expected update result');
+    expect(result.action).toBe('bundle');
+    if (result.action !== 'bundle') {
+      throw new Error('Expected bundle result');
     }
-    expect(result.destinationCalendarId).toBe('work-cal');
+    expect(result.ops[0]).toMatchObject({
+      kind: 'update',
+      destinationCalendarId: 'work-cal',
+    });
     expect(result.userPreviewText).toContain('set location to "AQ 3145"');
     expect(result.userPreviewText).toContain('update notes');
     expect(result.userPreviewText).toContain('update reminders');
@@ -333,8 +342,14 @@ describe('runCalendarCreatorAgent', () => {
       },
     );
 
-    expect(result.action).toBe('update');
-    expect(result.createMeetLink).toBe(true);
+    expect(result.action).toBe('bundle');
+    if (result.action !== 'bundle') {
+      throw new Error('Expected bundle result');
+    }
+    expect(result.ops[0]).toMatchObject({
+      kind: 'update',
+      createMeetLink: true,
+    });
     expect(result.userPreviewText).toContain('add Google Meet link');
   });
 
@@ -438,7 +453,7 @@ describe('runCalendarCreatorAgent', () => {
       },
     );
 
-    expect(result.action).toBe('delete');
+    expect(result.action).toBe('bundle');
     expect(result.userPreviewText).toContain('**Ready to delete 2 events**');
     expect(result.userPreviewText).toContain('"Work" on Mon, Mar 16 from 9 AM to 5 PM');
     expect(result.userPreviewText).toContain('"Work" on Tue, Mar 17 from 9 AM to 5 PM');

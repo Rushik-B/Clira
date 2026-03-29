@@ -163,6 +163,39 @@ describe('Executive agent exposure planner', () => {
     ).toBe(true);
   });
 
+  test('pending calendar confirmation requires a recent staged preview', () => {
+    const withoutPreview = extractExecutiveTurnFeatures({
+      input: buildInput({ userRequest: 'yes' }),
+      pendingCalendarChangePresent: true,
+    });
+    expect(withoutPreview.pendingCalendarConfirmIntent).toBe(false);
+
+    const withPreview = extractExecutiveTurnFeatures({
+      input: buildInput({
+        userRequest: 'yes',
+        history: [
+          buildAssistantMessage({
+            createdAt: '2026-03-17T00:00:00.000Z',
+            content: 'Ready to update your calendar.',
+            metadata: {
+              toolResults: [
+                {
+                  toolName: 'plan_calendar_change',
+                  result: {
+                    ok: true,
+                    pendingChange: { pendingId: 'pc-1' },
+                  },
+                },
+              ],
+            },
+          }),
+        ],
+      }),
+      pendingCalendarChangePresent: true,
+    });
+    expect(withPreview.pendingCalendarConfirmIntent).toBe(true);
+  });
+
   test('explicit send approval with an unsent draft deterministically exposes email send', async () => {
     const input = buildInput({
       userRequest: 'send it',

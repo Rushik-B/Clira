@@ -42,12 +42,18 @@ describe('calendar creator normalization', () => {
       },
     );
 
-    expect(plan.action).toBe('update');
-    expect(plan.target).toEqual({
-      lookupQuery: 'Work',
-      lookupRange: {
-        startDate: '2026-03-18',
-        endDate: '2026-03-18',
+    expect(plan.action).toBe('bundle');
+    if (plan.action !== 'bundle') {
+      throw new Error('Expected bundle plan');
+    }
+    expect(plan.ops[0]).toMatchObject({
+      kind: 'update',
+      target: {
+        lookupQuery: 'Work',
+        lookupRange: {
+          startDate: '2026-03-18',
+          endDate: '2026-03-18',
+        },
       },
     });
   });

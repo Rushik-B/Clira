@@ -451,7 +451,29 @@ describe('Executive agent tool packs', () => {
 
   test('pending calendar confirm turns expose commit but not plan', () => {
     const context = buildContext({
-      input: buildInput({ userRequest: 'yes' }),
+      input: buildInput({
+        userRequest: 'yes',
+        history: [
+          {
+            id: 'assistant-preview-1',
+            role: 'ASSISTANT',
+            direction: 'OUTBOUND',
+            content: 'Ready to update your calendar.',
+            metadata: {
+              toolResults: [
+                {
+                  toolName: 'plan_calendar_change',
+                  result: {
+                    ok: true,
+                    pendingChange: { pendingId: 'pc-1' },
+                  },
+                },
+              ],
+            },
+            createdAt: new Date('2026-03-02T17:00:00.000Z'),
+          },
+        ],
+      }),
       pendingCalendarChangePresent: true,
       selectedPacks: ['safe_context_pack', 'calendar_mutation_pack'],
     });
