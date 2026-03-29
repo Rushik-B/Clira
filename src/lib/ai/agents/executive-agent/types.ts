@@ -146,6 +146,7 @@ export type PendingCalendarChangeRecord = {
   id: string;
   plan: Prisma.JsonValue;
   resolvedTarget: Prisma.JsonValue | null;
+  failure?: Prisma.JsonValue | null;
   userTimezone: string;
   userRequest: string;
   expiresAt: Date;
