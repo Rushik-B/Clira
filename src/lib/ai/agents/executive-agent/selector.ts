@@ -522,7 +522,7 @@ export async function selectExecutiveToolPackForTurn(params: {
   const deterministicActionPackIds = getDeterministicActionPackIds(params.features);
 
   if (params.features.pendingCalendarChangePresent) {
-    reminders.push('A pending calendar change exists; confirm it, cancel it, or explicitly modify it.');
+    reminders.push('A pending calendar draft exists; use the staged details to decide whether the latest turn confirms it, cancels it, revises it, or changes topic entirely.');
   }
 
   if (params.features.explicitSendApproval && params.features.draftCandidatePresent) {

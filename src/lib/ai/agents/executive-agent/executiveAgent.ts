@@ -23,7 +23,6 @@ import { prisma } from '@/lib/prisma';
 import {
   parsePendingCalendarChangeRecord,
 } from '@/lib/ai/agents/executiveCalendarMutationHelpers';
-import { formatDateTimeInTimeZone } from '@/lib/utils/timezone';
 import {
   MESSAGING_DEADLINE_MS,
   MESSAGING_MAX_REPAIR_PASSES,
@@ -51,6 +50,7 @@ import {
 import { getToolProgressDescription } from './toolDescriptions';
 import {
   buildExecutiveAgentPrompt,
+  buildPendingCalendarInstruction,
   EXECUTIVE_AGENT_PROMPT_VERSION,
   resolveUserCalendarTimezone,
 } from './prompt';
@@ -276,9 +276,16 @@ export class ExecutiveAgent {
         : null;
       const pendingTimezone = pendingRecord?.userTimezone || resolvedUserTimezone;
       const pendingCalendarInstruction = pendingRecord && pendingPayload
-        ? `Active pending calendar change exists (pendingId=${pendingRecord.id}, action=${pendingPayload.plan.action}, expiresAt=${formatDateTimeInTimeZone(pendingRecord.expiresAt, pendingTimezone)}).`
+        ? buildPendingCalendarInstruction({
+          pendingId: pendingRecord.id,
+          status: pendingRecord.status,
+          createdAt: pendingRecord.createdAt,
+          expiresAt: pendingRecord.expiresAt,
+          payload: pendingPayload,
+          fallbackTimeZone: pendingTimezone,
+        })
         : pendingRecord
-          ? `Active pending calendar change exists (pendingId=${pendingRecord.id}), but its details need to be re-planned before execution.`
+          ? `Active pending calendar change exists (pendingId=${pendingRecord.id}), but its stored payload could not be parsed. Re-plan it before execution.`
           : 'No active pending calendar change exists.';
 
       const activeTurnFeatures = extractExecutiveTurnFeatures({
