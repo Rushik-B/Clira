@@ -22,7 +22,7 @@ import {
   formatReplyPipelineInstruction,
 } from './replyPipelineContext';
 
-export const EXECUTIVE_AGENT_PROMPT_VERSION = 'ea-prompt-v20';
+export const EXECUTIVE_AGENT_PROMPT_VERSION = 'ea-prompt-v22';
 
 // Injected only when the exec agent is activated by a system trigger (alert or reminder),
 // not by a user message. Tells the agent to reason with full context but output selectively.

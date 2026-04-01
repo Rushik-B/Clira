@@ -49,6 +49,9 @@ describe('Executive agent prompt', () => {
     });
 
     expect(prompt.systemPrompt).toBe(readPromptFile('whatsapp/executiveAgentPrompt.md'));
+    expect(prompt.systemPrompt).toContain('Action-forward');
+    expect(prompt.systemPrompt).toContain('Reminder awareness in normal conversation');
+    expect(prompt.systemPrompt).toContain('Avoid sentence-final periods by default in short replies');
     expect(prompt.messages).toHaveLength(1);
     expect(prompt.messages[0]?.content).toContain('## Pending Calendar State');
     expect(prompt.messages[0]?.content).toContain('pendingId=pc-1');
