@@ -106,6 +106,7 @@ export type RunSkip = {
 export type OrchestrationDecision = RunStart | RunSkip;
 
 export type FinalizeResult = {
+  shouldSendCurrentResponse: boolean;
   nextRun?: {
     runContext: RunContext;
     userRequest: string;

@@ -660,7 +660,9 @@ export async function processWhatsAppMessage(
       throw error;
     }
 
-    if (result.response && await runContext.isRunCurrent()) {
+    const finalized = await orchestrator.finalizeRun({ runContext });
+
+    if (result.response && finalized.shouldSendCurrentResponse) {
       try {
         const { externalId: waResponseId } = await adapter.sendFinal(result.response);
         const outboundMetadata = buildOrchestrationMessageMetadata(
@@ -697,7 +699,6 @@ export async function processWhatsAppMessage(
       }
     }
 
-    const finalized = await orchestrator.finalizeRun({ runContext });
     if (!finalized.nextRun) {
       break;
     }
@@ -1051,7 +1052,9 @@ export async function processWebChatMessage(
       throw error;
     }
 
-    if (result.response && await runContext.isRunCurrent()) {
+    const finalized = await orchestrator.finalizeRun({ runContext });
+
+    if (result.response && finalized.shouldSendCurrentResponse) {
       await adapter.sendFinal(result.response);
       const outboundMetadata = buildOrchestrationMessageMetadata(
         runContext,
@@ -1077,7 +1080,6 @@ export async function processWebChatMessage(
       });
     }
 
-    const finalized = await orchestrator.finalizeRun({ runContext });
     if (!finalized.nextRun) {
       break;
     }

@@ -957,13 +957,13 @@ export class MessagingOrchestrator {
 
     if (!isEnabled(runContext.channel)) {
       this.clearLocalRun(conversationKey, runContext.runId);
-      return {};
+      return { shouldSendCurrentResponse: true };
     }
 
     const state = await this.deps.readState(conversationKey);
     if (state.activeRunId !== runContext.runId || state.activeRevision !== runContext.revision) {
       this.clearLocalRun(conversationKey, runContext.runId);
-      return {};
+      return { shouldSendCurrentResponse: false };
     }
 
     const queuedText = state.queuedIntentText?.trim() || null;
@@ -989,10 +989,11 @@ export class MessagingOrchestrator {
 
       this.clearLocalRun(conversationKey, runContext.runId);
       if (!start) {
-        return {};
+        return { shouldSendCurrentResponse: false };
       }
 
       return {
+        shouldSendCurrentResponse: false,
         nextRun: {
           runContext: start.runContext,
           userRequest: queuedText,
@@ -1037,7 +1038,7 @@ export class MessagingOrchestrator {
     }
 
     this.clearLocalRun(conversationKey, runContext.runId);
-    return {};
+    return { shouldSendCurrentResponse: true };
   }
 
   private applyInboundToState(

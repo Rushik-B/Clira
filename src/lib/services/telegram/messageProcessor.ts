@@ -643,7 +643,9 @@ export async function processTelegramMessage(
       throw error;
     }
 
-    if (result.response && await runContext.isRunCurrent()) {
+    const finalized = await orchestrator.finalizeRun({ runContext });
+
+    if (result.response && finalized.shouldSendCurrentResponse) {
       try {
         const { externalId: telegramResponseId } = await adapter.sendFinal(result.response);
         const outboundMetadata = buildOrchestrationMessageMetadata(
@@ -679,7 +681,6 @@ export async function processTelegramMessage(
       }
     }
 
-    const finalized = await orchestrator.finalizeRun({ runContext });
     if (!finalized.nextRun) {
       break;
     }

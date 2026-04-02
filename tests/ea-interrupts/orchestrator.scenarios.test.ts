@@ -459,6 +459,7 @@ describe('Classifier revalidation regressions', () => {
 
     const finalized = await harness.orchestrator.finalizeRun({ runContext: first.runContext });
     expect(finalized.nextRun).toBeUndefined();
+    expect(finalized.shouldSendCurrentResponse).toBe(true);
 
     classifierGate.resolve({
       decision: 'followup',
@@ -576,6 +577,7 @@ describe('Channel adapter parity', () => {
       expect(state.queuedIntentText).toBe('Separate task: after this, check calendar conflicts');
 
       const finalized = await harness.orchestrator.finalizeRun({ runContext: first.runContext });
+      expect(finalized.shouldSendCurrentResponse).toBe(false);
       expect(finalized.nextRun?.userRequest).toBe('Separate task: after this, check calendar conflicts');
       expect(finalized.nextRun?.runContext.channel).toBe(channel);
     },

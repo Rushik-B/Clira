@@ -375,7 +375,9 @@ export async function processTwilioMessage(
       throw error;
     }
 
-    if (result.response && await runContext.isRunCurrent()) {
+    const finalized = await orchestrator.finalizeRun({ runContext });
+
+    if (result.response && finalized.shouldSendCurrentResponse) {
       try {
         const { externalId: twilioResponseSid } = await adapter.sendFinal(result.response);
         const outboundMetadata = buildOrchestrationMessageMetadata(
@@ -414,7 +416,6 @@ export async function processTwilioMessage(
       }
     }
 
-    const finalized = await orchestrator.finalizeRun({ runContext });
     if (!finalized.nextRun) {
       break;
     }
@@ -747,7 +748,9 @@ export async function processWebChatMessage(
       throw error;
     }
 
-    if (result.response && await runContext.isRunCurrent()) {
+    const finalized = await orchestrator.finalizeRun({ runContext });
+
+    if (result.response && finalized.shouldSendCurrentResponse) {
       try {
         await adapter.sendFinal(result.response);
         const outboundMetadata = buildOrchestrationMessageMetadata(
@@ -780,7 +783,6 @@ export async function processWebChatMessage(
       }
     }
 
-    const finalized = await orchestrator.finalizeRun({ runContext });
     if (!finalized.nextRun) {
       break;
     }
