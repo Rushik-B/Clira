@@ -40,38 +40,27 @@
   </a>
 </p>
 
-Clira is an email-first assistant built for people who want AI help without giving up control. It organizes inbound mail, drafts replies, keeps deterministic filters ahead of generation, and separates UI, ingestion, and worker execution so self-hosting remains inspectable and reliable.
+Clira is an AI executive agent that handles your email, calendar, and messaging across WhatsApp and Telegram. It prepares actions and drafts, but nothing executes without your approval. Self-hosted, open source, and architecturally designed so the AI cannot hallucinate facts into your outbox.
 
 ## Highlights
 
-- Draft-first queue with human review before send
-- Gmail ingestion in push and pull modes
-- Deterministic filtering before reply generation
-- Worker-based architecture for ingestion, planning, and async jobs
-- Self-hostable stack with Docker Compose and GHCR images
+- Multi-channel agent across WhatsApp, Telegram, SMS, and web chat
+- Nothing sends without explicit approval
+- Planner/style architecture where the style layer cannot introduce facts
+- Extensible through MCP server connections and user-authored skills
+- Self-hosted with Docker Compose so your runtime and data stay under your control
+- Gmail ingestion in push and pull modes with deterministic pre-filtering
 
 ## Architecture At A Glance
 
-Clira is easiest to understand as two tightly connected systems: a draft-first email reply pipeline, and a multi-channel executive agent that can act on inbox, calendar, memory, and messaging context without bypassing approvals.
+Clira is easiest to understand as two tightly connected systems: a multi-channel executive agent runtime that works across inbox, calendar, memory, and messaging context without bypassing approvals, and a draft-first reply pipeline that handles email as one capability inside that broader product.
 
 <p align="center">
   <img src="docs/diagrams/03-system-overview.svg" alt="Clira system overview architecture diagram" width="100%" />
 </p>
 
 <p align="center">
-  <em>High-level system map showing how the reply pipeline, executive agent, shared context, and approval layers fit together.</em>
-</p>
-
-### Reply Pipeline
-
-This path is intentionally strict: deterministic filtering first, then a schema-validated LLM gate, then a planner/style split where the style stage is not allowed to add facts.
-
-<p align="center">
-  <img src="docs/diagrams/01-reply-pipeline.svg" alt="Clira reply pipeline architecture diagram" width="100%" />
-</p>
-
-<p align="center">
-  <em>Incoming Gmail events move through deterministic filtering, reply routing, planner and style stages, then into a human-reviewed draft queue before send.</em>
+  <em>High-level system map showing how the executive agent, reply pipeline, shared context, and approval layers fit together.</em>
 </p>
 
 ### Executive Agent Runtime
@@ -84,6 +73,18 @@ The executive agent is not just "chat with tools." It runs inside a deterministi
 
 <p align="center">
   <em>Messaging channels feed a policy-bounded executive agent runtime with controlled tool access, explicit approval checkpoints, and rerun logic for broader capabilities.</em>
+</p>
+
+### Reply Pipeline
+
+This path is intentionally strict: deterministic filtering first, then a schema-validated LLM gate, then a planner/style split where the style stage is not allowed to add facts.
+
+<p align="center">
+  <img src="docs/diagrams/01-reply-pipeline.svg" alt="Clira reply pipeline architecture diagram" width="100%" />
+</p>
+
+<p align="center">
+  <em>Incoming Gmail events move through deterministic filtering, reply routing, planner and style stages, then into a human-reviewed draft queue before send.</em>
 </p>
 
 For the code-level component map and file references behind these diagrams, see [`docs/architecture.md`](docs/architecture.md).
