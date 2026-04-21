@@ -52,7 +52,9 @@ describe('Executive agent prompt', () => {
     });
 
     expect(prompt.systemPrompt).toBe(readPromptFile('whatsapp/executiveAgentPrompt.md'));
+    expect(prompt.systemPrompt).toContain('Answer first.');
     expect(prompt.systemPrompt).toContain('Catch contradictions proactively');
+    expect(prompt.systemPrompt).toContain('Shorthand is user-specific, not house style.');
     expect(prompt.systemPrompt).toContain('Reminder awareness in normal conversation');
     expect(prompt.systemPrompt).toContain('Never append synthetic link footers or tracking URLs');
     expect(prompt.systemPrompt).toContain('confirming the draft, canceling it, revising it, or switching to a different topic');

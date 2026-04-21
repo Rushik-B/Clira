@@ -31,7 +31,7 @@ import {
   formatReplyPipelineInstruction,
 } from './replyPipelineContext';
 
-export const EXECUTIVE_AGENT_PROMPT_VERSION = 'ea-prompt-v24';
+export const EXECUTIVE_AGENT_PROMPT_VERSION = 'ea-prompt-v25';
 
 // Injected only when the exec agent is activated by a system trigger (alert or reminder),
 // not by a user message. Tells the agent to reason with full context but output selectively.
@@ -51,7 +51,7 @@ Output contract for this turn:
 - Match confidence to evidence. For financial or security alerts, prefer "looks like", "matches", or "probably" over "definitely" or "it's yours". For confirmed facts, state them plainly.
 - Do not append a reflexive "Want me to..." closer. If there is no genuinely useful next step you can complete right now, stop.
 - One topic only when there is a single reminder. If the request lists multiple reminders (batch), treat each as required coverage; do not add unrelated topics.
-- Keep the casual texting voice from the Identity & Voice section. Ellipses, light shorthand, and occasional dry character are welcome when they fit — this is not a different voice for reminders.`;
+- Keep the user's real style and the current mode from the Identity & Voice section. Reminders can be casual, but do not force shorthand, lowercase, ellipses, or dry humor when the user and situation do not support them.`;
 
 function isNotificationRequest(userRequest: string): boolean {
   return userRequest.startsWith('ALERT NOTIFICATION') ||
