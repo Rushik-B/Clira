@@ -14,7 +14,6 @@ import {
   SlidersHorizontal,
   UserX,
   UserPlus,
-  Clock,
   Calendar as CalendarIcon,
   CalendarPlus,
 } from 'lucide-react';
@@ -32,6 +31,8 @@ interface EmailFilterSettings {
 
 interface CalendarSettings {
   calendarTimezone: string;
+  calendarTimezoneSource?: string;
+  calendarTimezoneDegradedReason?: string | null;
   calendarContextCalendarIds: string[];
 }
 
@@ -56,6 +57,8 @@ export const AssistantRepliesPage: React.FC = () => {
   const [errorMessage, setErrorMessage] = useState('');
   const [calendarSettings, setCalendarSettings] = useState<CalendarSettings>({
     calendarTimezone: 'America/Los_Angeles',
+    calendarTimezoneSource: 'default',
+    calendarTimezoneDegradedReason: null,
     calendarContextCalendarIds: [],
   });
   const [calendars, setCalendars] = useState<UserCalendar[]>([]);
@@ -89,6 +92,8 @@ export const AssistantRepliesPage: React.FC = () => {
         if (data.success) {
           setCalendarSettings({
             calendarTimezone: data.settings.calendarTimezone ?? 'America/Los_Angeles',
+            calendarTimezoneSource: data.settings.calendarTimezoneSource,
+            calendarTimezoneDegradedReason: data.settings.calendarTimezoneDegradedReason,
             calendarContextCalendarIds: data.settings.calendarContextCalendarIds ?? [],
           });
           setCalendars(data.calendars || []);
@@ -143,7 +148,6 @@ export const AssistantRepliesPage: React.FC = () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          calendarTimezone: calendarSettings.calendarTimezone,
           selectedCalendarIds: calendarSettings.calendarContextCalendarIds,
         }),
       });
@@ -274,8 +278,8 @@ export const AssistantRepliesPage: React.FC = () => {
           </SettingsSectionCard>
 
           <SettingsSectionCard
-            title="Calendar & timezone"
-            description="Choose which calendars  uses and how times should be interpreted."
+            title="Calendar"
+            description="Choose which calendars  uses for context."
             icon={<CalendarIcon className="w-5 h-5 text-blue-300" />}
           >
             <div className="space-y-4">
@@ -283,25 +287,19 @@ export const AssistantRepliesPage: React.FC = () => {
                 <label className="text-sm font-medium text-gray-300 mb-2 block">
                   Timezone
                 </label>
-                <div className="flex items-center space-x-2">
-                  <Clock className="w-4 h-4 text-blue-400" />
-                  <input
-                    type="text"
-                    className="flex-1 px-3 py-2 rounded-lg bg-gray-900/80 border border-gray-800 text-sm text-white placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                    placeholder="e.g. America/Los_Angeles"
-                    value={calendarSettings.calendarTimezone}
-                    onChange={(e) =>
-                      setCalendarSettings((prev) => ({
-                        ...prev,
-                        calendarTimezone: e.target.value,
-                      }))
-                    }
-                  />
+                <div className="rounded-lg bg-gray-900/80 border border-gray-800 px-3 py-2">
+                  <p className="text-sm text-white">{calendarSettings.calendarTimezone}</p>
+                  <p className="mt-1 text-xs text-gray-500">
+                    {calendarSettings.calendarTimezoneSource === 'google_primary_calendar'
+                      ? 'Synced from primary Google Calendar'
+                      : 'Using cached timezone until Google Calendar is available'}
+                  </p>
                 </div>
-                <p className="mt-2 text-xs text-gray-500">
-                  Use an IANA timezone like <code>America/Los_Angeles</code>.  defaults
-                  to PST if not configured.
-                </p>
+                {calendarSettings.calendarTimezoneDegradedReason && (
+                  <p className="mt-2 text-xs text-amber-300">
+                    Google Calendar timezone sync is degraded: {calendarSettings.calendarTimezoneDegradedReason}
+                  </p>
+                )}
               </div>
 
               <div>

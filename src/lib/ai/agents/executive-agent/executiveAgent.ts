@@ -454,6 +454,7 @@ export class ExecutiveAgent {
           availableSkillLines: skillPromptFragments.availableSkillLines,
           selectedSkillFragments: skillPromptFragments.selectedSkillFragments,
           skillDegradedSummaryLines: skillPromptFragments.degradedSummaryLines,
+          resolvedUserTimezone,
         });
         const {
           systemPrompt: promptSystemPrompt,

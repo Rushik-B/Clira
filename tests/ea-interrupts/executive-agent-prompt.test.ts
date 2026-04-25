@@ -14,6 +14,10 @@ vi.mock('@/lib/prisma', () => ({
   },
 }));
 
+vi.mock('@/lib/services/calendarTimezone', () => ({
+  resolveCalendarTimezoneForUser: vi.fn(),
+}));
+
 vi.mock('@/lib/services/supermemory/client', () => ({
   isSupermemoryConfigured: vi.fn(() => false),
 }));
@@ -21,7 +25,12 @@ vi.mock('@/lib/services/supermemory/client', () => ({
 describe('Executive agent prompt', () => {
   beforeEach(async () => {
     const { prisma } = await import('@/lib/prisma');
+    const { resolveCalendarTimezoneForUser } = await import('@/lib/services/calendarTimezone');
     vi.mocked(prisma.userSettings.findUnique).mockResolvedValue(null);
+    vi.mocked(resolveCalendarTimezoneForUser).mockResolvedValue({
+      timeZone: 'America/Los_Angeles',
+      source: 'cached_user_settings',
+    });
   });
 
   test('uses the markdown prompt as the sole system prompt and injects runtime reminders into the latest user message', async () => {
@@ -138,10 +147,11 @@ describe('Executive agent prompt', () => {
   });
 
   test('formats prior conversation timestamps in the user timezone instead of raw UTC', async () => {
-    const { prisma } = await import('@/lib/prisma');
-    vi.mocked(prisma.userSettings.findUnique).mockResolvedValue({
-      calendarTimezone: 'America/Los_Angeles',
-    } as never);
+    const { resolveCalendarTimezoneForUser } = await import('@/lib/services/calendarTimezone');
+    vi.mocked(resolveCalendarTimezoneForUser).mockResolvedValue({
+      timeZone: 'America/Los_Angeles',
+      source: 'google_primary_calendar',
+    });
 
     const input: ExecutiveAgentInput = {
       userId: 'user-1',

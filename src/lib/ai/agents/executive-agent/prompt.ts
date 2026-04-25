@@ -1,5 +1,4 @@
 import { readPromptFile } from '@/lib/prompts';
-import { prisma } from '@/lib/prisma';
 import { DEFAULT_CALENDAR_TIMEZONE } from '@/constants/time';
 import type {
   CalendarEventDraftDTO,
@@ -25,6 +24,7 @@ import {
   formatDateTimeInTimeZone,
 } from '@/lib/utils/timezone';
 import { logger } from '@/lib/logger';
+import { resolveCalendarTimezoneForUser } from '@/lib/services/calendarTimezone';
 import { buildRunContextPromptFragment } from '@/lib/services/messaging-orchestration';
 import {
   fetchReplyPipelineSnapshot,
@@ -284,19 +284,24 @@ export function buildPendingCalendarInstruction(params: {
 }
 
 export async function resolveUserCalendarTimezone(userId: string): Promise<string> {
-  let userTimezone = DEFAULT_CALENDAR_TIMEZONE;
-
   try {
-    const userSettings = await prisma.userSettings.findUnique({
-      where: { userId },
-      select: { calendarTimezone: true },
-    });
-    userTimezone = userSettings?.calendarTimezone || DEFAULT_CALENDAR_TIMEZONE;
+    const resolved = await resolveCalendarTimezoneForUser(userId);
+    if (resolved.degradedReason) {
+      logger.warn('[executiveAgent] Timezone resolver degraded', {
+        userId,
+        source: resolved.source,
+        degradedReason: resolved.degradedReason,
+      });
+    }
+    return resolved.timeZone;
   } catch (error) {
-    logger.debug('[executiveAgent] Failed to fetch user settings for timezone:', error);
+    logger.warn('[executiveAgent] Failed to resolve user timezone', {
+      userId,
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 
-  return userTimezone;
+  return DEFAULT_CALENDAR_TIMEZONE;
 }
 
 function buildCurrentTurnMessage(params: {
@@ -427,11 +432,12 @@ export async function buildExecutiveAgentPrompt(
     availableSkillLines?: string[];
     selectedSkillFragments?: string[];
     skillDegradedSummaryLines?: string[];
+    resolvedUserTimezone?: string;
   },
 ): Promise<PromptContext> {
   const systemPrompt = readPromptFile('whatsapp/executiveAgentPrompt.md');
 
-  const userTimezone = await resolveUserCalendarTimezone(input.userId);
+  const userTimezone = options?.resolvedUserTimezone ?? await resolveUserCalendarTimezone(input.userId);
   const now = new Date();
   const currentTimeUtc = now.toISOString();
   let currentDateUserTzDateOnly = now.toISOString().split('T')[0]!;

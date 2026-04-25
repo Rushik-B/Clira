@@ -3,8 +3,13 @@ import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth/auth';
 import { prisma } from '@/lib/prisma';
 import { CalendarService } from '@/lib/services/core/calendarService';
-import { DEFAULT_CALENDAR_TIMEZONE } from '@/constants/time';
 import { REQUIRED_SCOPES } from '@/lib/auth/scope-utils';
+import { resolveCalendarTimezoneForUser } from '@/lib/services/calendarTimezone';
+import { z } from 'zod';
+
+const updateCalendarSettingsSchema = z.object({
+  selectedCalendarIds: z.array(z.string().trim().min(1)).optional().default([]),
+});
 
 // GET: return available calendars + current preferences
 export async function GET() {
@@ -47,12 +52,16 @@ export async function GET() {
       console.error('⚠️ Failed to load calendar list for settings:', err);
     }
 
+    const resolvedTimezone = await resolveCalendarTimezoneForUser(session.userId);
+
     return NextResponse.json({
       success: true,
       calendars,
       hasCalendarWriteAccess,
       settings: {
-        calendarTimezone: userSettings?.calendarTimezone ?? DEFAULT_CALENDAR_TIMEZONE,
+        calendarTimezone: resolvedTimezone.timeZone,
+        calendarTimezoneSource: resolvedTimezone.source,
+        calendarTimezoneDegradedReason: resolvedTimezone.degradedReason ?? null,
         calendarContextCalendarIds: userSettings?.calendarContextCalendarIds ?? [],
       },
     });
@@ -65,7 +74,7 @@ export async function GET() {
   }
 }
 
-// POST: update selected calendars + timezone
+// POST: update selected calendars. Timezone is derived from the user's primary Google Calendar.
 export async function POST(request: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
@@ -73,37 +82,21 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const body = await request.json();
-    const { calendarTimezone, selectedCalendarIds } = body as {
-      calendarTimezone?: string;
-      selectedCalendarIds?: string[];
-    };
-
-    // Basic validation
-    if (calendarTimezone && typeof calendarTimezone !== 'string') {
+    const parsed = updateCalendarSettingsSchema.safeParse(await request.json());
+    if (!parsed.success) {
       return NextResponse.json(
-      { error: 'calendarTimezone must be a string (IANA timezone like "America/Los_Angeles")' },
+        { error: 'INVALID_CALENDAR_SETTINGS', issues: parsed.error.flatten() },
         { status: 400 },
       );
     }
 
-    if (selectedCalendarIds && !Array.isArray(selectedCalendarIds)) {
-      return NextResponse.json(
-        { error: 'selectedCalendarIds must be an array of calendar IDs' },
-        { status: 400 },
-      );
-    }
-
-    // Normalize input
-    const safeTimezone = calendarTimezone || DEFAULT_CALENDAR_TIMEZONE;
-    const safeCalendarIds = (selectedCalendarIds || []).filter(
-      (id: unknown): id is string => typeof id === 'string' && id.length > 0,
-    );
+    const resolvedTimezone = await resolveCalendarTimezoneForUser(session.userId);
+    const safeCalendarIds = [...new Set(parsed.data.selectedCalendarIds)];
 
     const updated = await prisma.userSettings.upsert({
       where: { userId: session.userId },
       update: {
-        calendarTimezone: safeTimezone,
+        calendarTimezone: resolvedTimezone.timeZone,
         calendarContextCalendarIds: safeCalendarIds,
       },
       create: {
@@ -114,7 +107,7 @@ export async function POST(request: NextRequest) {
         preferencesSaved: true,
         autoFileLowPriority: 50,
         autoSendConfidence: 95,
-        calendarTimezone: safeTimezone,
+        calendarTimezone: resolvedTimezone.timeZone,
         calendarContextCalendarIds: safeCalendarIds,
       },
     });
@@ -123,6 +116,8 @@ export async function POST(request: NextRequest) {
       success: true,
       settings: {
         calendarTimezone: updated.calendarTimezone,
+        calendarTimezoneSource: resolvedTimezone.source,
+        calendarTimezoneDegradedReason: resolvedTimezone.degradedReason ?? null,
         calendarContextCalendarIds: updated.calendarContextCalendarIds,
       },
     });
@@ -134,5 +129,3 @@ export async function POST(request: NextRequest) {
     );
   }
 }
-
-

@@ -7,8 +7,8 @@ import { models } from '@/lib/ai/models';
 import { ReplyPlanSchema, type ReplyPlanDTO } from '@/lib/ai/schemas/schemas';
 import { pruneEmailContentForPlanning } from '@/lib/services/onboarding-services/utils/emailPruner';
 import { logger } from '@/lib/logger';
-import { prisma } from '@/lib/prisma';
 import { DEFAULT_CALENDAR_TIMEZONE } from '@/constants/time';
+import { resolveCalendarTimezoneForUser } from '@/lib/services/calendarTimezone';
 import {
   compileEffectiveReplyInstructionDoc,
   resolveReplyInstructionSenderEmail,
@@ -82,10 +82,13 @@ export async function buildReplyPlannerPrompt(input: ReplyPlannerAgentInput): Pr
 
   const senderEmail = resolveReplyInstructionSenderEmail(input.message.from);
 
-  const [userSettings, replyInstructionDoc] = await Promise.all([
-    prisma.userSettings.findUnique({
-      where: { userId: input.userId },
-      select: { calendarTimezone: true },
+  const [timezoneResult, replyInstructionDoc] = await Promise.all([
+    resolveCalendarTimezoneForUser(input.userId).catch((error) => {
+      logger.warn('[replyPlanner] Failed to resolve calendar timezone', {
+        userId: input.userId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
     }),
     compileEffectiveReplyInstructionDoc({
       userId: input.userId,
@@ -94,7 +97,7 @@ export async function buildReplyPlannerPrompt(input: ReplyPlannerAgentInput): Pr
     }),
   ]);
 
-  const userTimezone = userSettings?.calendarTimezone || DEFAULT_CALENDAR_TIMEZONE;
+  const userTimezone = timezoneResult?.timeZone || DEFAULT_CALENDAR_TIMEZONE;
 
   const now = new Date();
   const currentTimeUtc = now.toISOString();

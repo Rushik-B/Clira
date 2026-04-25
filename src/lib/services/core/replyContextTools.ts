@@ -7,6 +7,7 @@ import type { EmailData } from '@/lib/email/gmail';
 import { getSupermemoryClient, isSupermemoryConfigured } from '@/lib/services/supermemory/client';
 import type { SupermemorySearchResult } from '@/lib/services/supermemory/types';
 import { addDaysToDateOnly, convertUserLocalTimeToUtc, getUserReferenceDate } from '@/lib/utils/timezone';
+import { resolveCalendarTimezoneForUser } from '@/lib/services/calendarTimezone';
 
 const parseMessyTime = require('parse-messy-time');
 
@@ -100,13 +101,12 @@ export async function getCalendarSnapshot({
     const userSettings = await prisma.userSettings.findUnique({
       where: { userId },
       select: {
-        calendarTimezone: true,
         calendarContextCalendarIds: true,
       },
     });
 
     const calendarIds = userSettings?.calendarContextCalendarIds || [];
-    const timeZone = userSettings?.calendarTimezone || DEFAULT_CALENDAR_TIMEZONE;
+    const { timeZone } = await resolveCalendarTimezoneForUser(userId);
 
     const calendarService = await CalendarService.create({
       userId,
@@ -204,13 +204,12 @@ export async function getCalendarMutationSnapshot({
     const userSettings = await prisma.userSettings.findUnique({
       where: { userId },
       select: {
-        calendarTimezone: true,
         calendarContextCalendarIds: true,
       },
     });
 
     const calendarIds = userSettings?.calendarContextCalendarIds || [];
-    const timeZone = userSettings?.calendarTimezone || DEFAULT_CALENDAR_TIMEZONE;
+    const { timeZone } = await resolveCalendarTimezoneForUser(userId);
 
     const calendarService = await CalendarService.create({
       userId,
@@ -308,13 +307,12 @@ export async function gatherCalendarContextForReply({
     const userSettings = await prisma.userSettings.findUnique({
       where: { userId },
       select: {
-        calendarTimezone: true,
         calendarContextCalendarIds: true,
       },
     });
 
     const calendarIds = userSettings?.calendarContextCalendarIds || [];
-    const timeZone = userSettings?.calendarTimezone || DEFAULT_CALENDAR_TIMEZONE;
+    const { timeZone } = await resolveCalendarTimezoneForUser(userId);
 
     const calendarService = await CalendarService.create({
       userId,

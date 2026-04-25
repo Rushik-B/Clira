@@ -21,6 +21,7 @@ import {
 import { resolveMessagingTargets } from '@/lib/services/messagingDeliveryTargets';
 import { buildNotificationProgressContext } from '@/lib/services/notificationProgressContext';
 import { parseReminderDescription } from '@/lib/services/reminderMetadata';
+import { resolveCalendarTimezoneForUser } from '@/lib/services/calendarTimezone';
 import { convertUserLocalTimeToUtc, getZonedTimeComponents } from '@/lib/utils/timezone';
 import type { ReminderNotificationJobData } from '@/lib/services/utils/queues';
 import type { NotificationDeliveryChannel, Prisma, ReminderStatus } from '@prisma/client';
@@ -886,7 +887,15 @@ export async function triggerReminderNotifications(data: ReminderNotificationJob
 
       const recurrence = normalizeRecurrence(reminder.recurrence);
       if (recurrence) {
-        const timeZone = settings?.calendarTimezone ?? DEFAULT_CALENDAR_TIMEZONE;
+        const timezoneResult = await resolveCalendarTimezoneForUser(reminder.userId).catch((error) => {
+          logger.warn('[reminderNotification] Failed to resolve recurrence timezone from calendar', {
+            userId: reminder.userId,
+            reminderId: reminder.id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return null;
+        });
+        const timeZone = timezoneResult?.timeZone ?? settings?.calendarTimezone ?? DEFAULT_CALENDAR_TIMEZONE;
         const nextScheduledAt = calculateNextOccurrence(reminder.scheduledAt, recurrence, timeZone);
 
         if (nextScheduledAt) {
